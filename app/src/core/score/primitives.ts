@@ -22,7 +22,7 @@ export async function extractPrims(page: any, OPS: Record<string, number>): Prom
   const ol = await page.getOperatorList()
   const out: PagePrims = { width: x1 - x0, height: y1 - y0, glyphs: [], segs: [], polys: [], curves: [] }
 
-  let ctm = I, stack: M[] = [], tm = I, font = '', lineW = 1, charSp = 0
+  let ctm = I, stack: M[] = [], tm = I, lx = 0, ly = 0, font = '', fontSize = 1, lineW = 1, charSp = 0 // (lx, ly): where the text line has been moved to (Td) since the last text matrix
   for (let i = 0; i < ol.fnArray.length; i++) {
     const op = ol.fnArray[i], a = ol.argsArray[i]
     if (op === OPS.save) stack.push(ctm)
@@ -30,15 +30,17 @@ export async function extractPrims(page: any, OPS: Record<string, number>): Prom
     else if (op === OPS.transform) ctm = compose(ctm, Array.from(typeof a[0] === 'number' ? a : a[0]) as M)
     else if (op === OPS.setLineWidth) lineW = a[0]
     else if (op === OPS.setCharSpacing) charSp = a[0]
-    else if (op === OPS.setFont) font = a[0]
-    else if (op === OPS.setTextMatrix) tm = Array.from(typeof a[0] === 'number' ? a : a[0]) as M // some pdf.js builds nest the matrix
+    else if (op === OPS.beginText) { tm = I; lx = ly = 0 }
+    else if (op === OPS.moveText) { lx += a[0]; ly += a[1] } // MuseScore 4 places every symbol with Td
+    else if (op === OPS.setFont) { font = a[0]; fontSize = typeof a[1] === 'number' && a[1] ? a[1] : 1 } // some writers keep the size here, others fold it into the text matrix
+    else if (op === OPS.setTextMatrix) { tm = Array.from(typeof a[0] === 'number' ? a : a[0]) as M; lx = ly = 0 } // some pdf.js builds nest the matrix
     else if (op === OPS.showText) {
       let adv = 0 // advance in text space
       for (const g of a[0] as any[]) {
-        const w = (g.width ?? 0) / 1000
+        const w = ((g.width ?? 0) / 1000) * fontSize
         if (g.unicode && !g.isSpace) {
-          const [x, y] = apply(ctm, tm[4] + adv * tm[0], tm[5])
-          out.glyphs.push({ font, code: g.unicode.codePointAt(0)!, x, y, size: Math.abs(tm[0] * ctm[0]), w: w * Math.abs(tm[0] * ctm[0]) })
+          const [x, y] = apply(ctm, ...apply(tm, lx + adv, ly))
+          out.glyphs.push({ font, code: g.unicode.codePointAt(0)!, x, y, size: Math.abs(fontSize * tm[0] * ctm[0]), w: w * Math.abs(tm[0] * ctm[0]) })
         }
         adv += w + charSp
       }

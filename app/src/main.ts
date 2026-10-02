@@ -172,6 +172,7 @@ export async function loadFile(file: File) {
     const data = await file.arrayBuffer()
     if (isPdf(file.name)) {
       score = await readPdfScore(data)
+      if (score.tempo) $<HTMLInputElement>('tempo').value = String(score.tempo) // the "♩ = 93" printed at the top
       return await showScore()
     }
     score = undefined

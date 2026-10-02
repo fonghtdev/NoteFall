@@ -3,6 +3,7 @@
 // Glyph codes follow the Sonata/Maestro layout; codes marked "unverified" are absent from the sample PDF and rely on the bar-length check.
 import type { Glyph, PagePrims, Poly, Seg } from './primitives'
 import { readNavigation, type BarGeom } from './navigation'
+import { fromSmufl, isSmufl } from './smufl'
 import { realizeVoice } from './realize'
 
 // ---- glyph vocabulary -------------------------------------------------------------------------------------
@@ -37,7 +38,7 @@ export interface Measure {
   fine?: boolean         // after a D.C./D.S. al Fine, playing this bar ends the piece
   jump?: { kind: 'dc' | 'ds'; al: 'end' | 'fine' | 'coda' } // at the end of this bar go back to the start / the segno
 }
-export interface Score { measures: Measure[]; beatsPerBar: number; beatUnit: number; warnings: string[]; title?: string; keyFifths?: number; clefs?: ('treble' | 'bass')[] }
+export interface Score { measures: Measure[]; beatsPerBar: number; beatUnit: number; warnings: string[]; title?: string; keyFifths?: number; tempo?: number; clefs?: ('treble' | 'bass')[] }
 
 type VSeg = Seg & { lo: number; hi: number }
 interface Staff { bottom: number; sp: number; top: number; x0: number; x1: number }
@@ -94,7 +95,8 @@ const isBeam = (p: Poly) => {
 }
 
 // ---- main ------------------------------------------------------------------------------------------------
-export function readScore(pages: PagePrims[]): Score {
+export function readScore(rawPages: PagePrims[]): Score {
+  const pages = rawPages.map((p) => (isSmufl(p) ? fromSmufl(p) : p)) // MuseScore 4 / Dorico / LilyPond style fonts
   const warnings: string[] = []
   const measures: Measure[] = []
   let beats = 4, unit = 4
@@ -336,7 +338,8 @@ export function readScore(pages: PagePrims[]): Score {
             dur *= 2 - 0.5 ** dots
             events.push({ x: Math.min(...chord.map((o) => o.g.x)), heads: chord, dur, dir: h.dir, grace: h.grace, y: h.g.y })
           }
-          for (const r of rs) events.push({ x: r.g.x, heads: [], rest: r.g, dur: r.dur, grace: false, y: r.g.y })
+          // a whole rest standing alone in a bar means "the whole bar", whatever the time signature (3/8, 6/8, 2/4 …)
+          for (const r of rs) events.push({ x: r.g.x, heads: [], rest: r.g, dur: r.dur === 4 && rs.length === 1 && !hs.length ? barLen : r.dur, grace: false, y: r.g.y })
           events.sort((a, b) => a.x - b.x)
 
           // voices: one unless two different events share an x column (e.g. a rest above a half note).
@@ -448,5 +451,15 @@ export function readScore(pages: PagePrims[]): Score {
   }
   if (!timeSigSeen) warnings.push('no time signature found: assuming 4/4')
   for (const [code, n] of unknown) warnings.push(`unrecognised music symbol U+${code.toString(16).toUpperCase()} (${n}×): ignored`)
-  return { measures, beatsPerBar: beats, beatUnit: unit, warnings, keyFifths, clefs: firstClefs }
+  return { measures, beatsPerBar: beats, beatUnit: unit, warnings, keyFifths, clefs: firstClefs, tempo: readTempo(rawPages[0]) }
+}
+
+/** "♩ = 93" at the top of the first page (SMuFL metronome note, then digits on the same line). Only quarter-note marks are trusted. */
+function readTempo(p?: PagePrims): number | undefined {
+  if (!p) return undefined
+  const note = p.glyphs.find((g) => g.code === 0xeca5 || g.code === 0xe1d5) // metNoteQuarterUp / noteQuarterUp
+  if (!note) return undefined
+  const digits = p.glyphs.filter((g) => g.code >= 0x30 && g.code <= 0x39 && Math.abs(g.y - note.y) < 4 && g.x > note.x && g.x < note.x + 90).sort((a, b) => a.x - b.x)
+  const v = digits.length ? Number(digits.map((g) => String.fromCharCode(g.code)).join('')) : NaN
+  return v >= 20 && v <= 400 ? v : undefined
 }

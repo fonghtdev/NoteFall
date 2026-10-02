@@ -1,0 +1,8 @@
+node_modules/
+dist/
+release/
+.venv/
+.pytest_cache/
+__pycache__/
+.DS_Store
+app/shot.png

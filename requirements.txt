@@ -1,0 +1,6 @@
+PySide6
+mido
+numpy
+soundfile
+basic-pitch[onnx]
+pytest

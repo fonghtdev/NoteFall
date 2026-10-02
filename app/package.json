@@ -1,0 +1,60 @@
+{
+  "name": "notefall",
+  "version": "0.1.0",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "vite build && electron .",
+    "build": "vite build",
+    "test": "vitest run",
+    "dist": "vite build && electron-builder --mac --win"
+  },
+  "devDependencies": {
+    "@spotify/basic-pitch": "^1.0.1",
+    "@tonejs/midi": "^2.0.28",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
+    "jsdom": "^30.1.1",
+    "mp4-muxer": "^5.2.2",
+    "pdfjs-dist": "^6.3.289",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.2",
+    "vitest": "^5.0.3"
+  },
+  "build": {
+    "appId": "dev.notefall.app",
+    "files": [
+      "main.js",
+      "preload.cjs",
+      "dist/**"
+    ],
+    "mac": {
+      "target": {
+        "target": "dmg",
+        "arch": [
+          "arm64",
+          "x64"
+        ]
+      }
+    },
+    "win": {
+      "target": {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      }
+    },
+    "productName": "Notefall",
+    "directories": {
+      "output": "release"
+    }
+  },
+  "description": "Notefall - falling-notes piano visualizer",
+  "author": "fonght.dev@gmail.com",
+  "dependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "fflate": "^0.8.3",
+    "vexflow": "^5.0.0"
+  }
+}

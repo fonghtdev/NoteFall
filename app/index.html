@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NoteFall</title>
+</head>
+<body>
+  <header id="top">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect width="24" height="24" rx="6" fill="#7653fa"/><path d="M7.5 5v6M12 5v10M16.5 5v4.5" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/><path d="M5.5 19h13" stroke="#fff" stroke-opacity=".55" stroke-width="1.8" stroke-linecap="round"/></svg>
+      NoteFall
+    </div>
+    <nav class="seg" role="tablist" aria-label="Chế độ làm việc">
+      <button id="tab-falling" class="on" role="tab" aria-selected="true"><span data-icon="bars"></span>Nốt rơi</button>
+      <button id="tab-composer" role="tab" aria-selected="false"><span data-icon="pencil"></span>Soạn nhạc</button>
+    </nav>
+    <div class="top-actions" id="top-actions"><button id="open" class="btn"><span data-icon="folder"></span>Mở file…</button><button id="btn-keys" class="btn ghost icon" aria-label="Phím tắt" title="Phím tắt (?)"><span data-icon="help"></span></button></div>
+  </header>
+
+  <main id="falling">
+    <div id="stage">
+      <canvas id="gl"></canvas><canvas id="view"></canvas>
+      <div id="nowplaying"></div>
+      <section id="empty" class="empty" aria-labelledby="empty-title">
+        <div class="card">
+          <span class="chip" style="color:var(--accent-hover)"><span data-icon="music"></span>Nhạc piano → nốt rơi</span>
+          <h1 id="empty-title">Thả một bài nhạc vào đây</h1>
+          <p>NoteFall biến bản nhạc, MIDI hoặc bản ghi âm piano thành nốt rơi xuống đúng phím, rồi xuất thành video.</p>
+          <div class="formats"><span class="chip">PDF bản nhạc</span><span class="chip">MIDI</span><span class="chip">MP3</span><span class="chip">WAV</span><span class="chip">FLAC</span></div>
+          <div class="actions">
+            <button id="empty-open" class="btn primary"><span data-icon="folder"></span>Mở file…</button>
+            <button id="empty-demo" class="btn"><span data-icon="music"></span>Thử bản mẫu Minuet</button>
+            <button id="empty-compose" class="btn"><span data-icon="pencil"></span>Soạn nhạc mới</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <footer id="dock">
+      <progress id="progress" max="1" hidden aria-label="Tiến độ xử lý"></progress>
+      <button id="play" class="btn primary icon" data-state="paused" aria-label="Phát" title="Phát / tạm dừng (Space)" disabled><span data-icon="play" data-i="play"></span><span data-icon="pause" data-i="pause"></span></button>
+      <span id="time" aria-live="off">0:00 / 0:00</span>
+      <input id="seek" type="range" min="0" max="0" step="0.01" value="0" aria-label="Vị trí phát" />
+      <span id="status" role="status">Chưa mở bài nào</span>
+
+      <div class="pop-anchor">
+        <button id="btn-settings" class="btn" aria-label="Cài đặt hiển thị và nhịp"><span data-icon="sliders"></span>Cài đặt</button>
+        <div id="pop-settings" class="popover" role="dialog" aria-label="Cài đặt" hidden>
+          <section>
+            <span class="label">Hiển thị</span>
+            <label class="row between">Tốc độ rơi <input id="speed" type="range" min="2" max="8" step="0.5" value="6" style="width:150px" aria-label="Tốc độ rơi" /></label>
+            <label class="row between">Giao diện <select id="theme" class="field"></select></label>
+            <label class="switch"><input id="sparks" type="checkbox" checked /> Hạt lửa khi chạm phím</label>
+            <label class="switch"><input id="glass" type="checkbox" checked /> Nốt kính (liquid glass)</label>
+            <label class="switch"><input id="showbeats" type="checkbox" checked /> Vạch beat</label>
+          </section>
+          <section id="bgctl" hidden>
+            <span class="label">Ảnh nền</span>
+            <div class="row"><button id="bg-pick" class="btn sm"><span data-icon="folder"></span>Chọn ảnh…</button><button id="bg-clear" class="btn sm ghost">Gỡ ảnh</button></div>
+            <label class="row between">Độ tối <input id="bg-dim" type="range" min="0" max="85" value="45" style="width:150px" aria-label="Độ tối của ảnh nền" /></label>
+            <label class="row between">Làm mờ <input id="bg-blur" type="range" min="0" max="24" value="6" style="width:150px" aria-label="Độ mờ của ảnh nền" /></label>
+            <p style="margin:0;color:var(--text-3);font-size:12px">Ảnh được làm tối để nốt luôn dễ nhìn. Cũng có thể kéo thả một ảnh vào cửa sổ.</p>
+          </section>
+          <section>
+            <span class="label">Tiếng</span>
+            <label class="row between" title="Độ dài của nốt nhỏ (láy) trước nốt chính, tính theo phách">Nốt láy
+              <select id="grace" class="field">
+                <option value="0.0625">Rất nhanh (1/16 phách)</option>
+                <option value="0.125" selected>Nhanh (1/8 phách)</option>
+                <option value="0.25">Vừa (1/4 phách)</option>
+              </select>
+            </label>
+          </section>
+          <section id="beatctl" hidden>
+            <span class="label">Nhịp</span>
+            <div class="row between"><span>Tempo hiện tại</span><b id="bpm"></b></div>
+            <div class="row grid-only">
+              <button id="half" class="btn sm" title="Giảm một nửa tempo">÷2</button>
+              <button id="double" class="btn sm" title="Gấp đôi tempo">×2</button>
+              <button id="reset" class="btn sm" title="Dò lại beat từ đầu">Dò lại</button>
+              <button id="offm" class="btn sm" title="Dịch beat sớm 10 ms">◀ 10ms</button>
+              <button id="offp" class="btn sm" title="Dịch beat muộn 10 ms">10ms ▶</button>
+            </div>
+            <label class="switch grid-only"><input id="quant" type="checkbox" /> Làm tròn nốt về 1/16 (quantize)</label>
+            <div id="scorectl" hidden>
+              <label class="row between">Tempo bản nhạc (♩ =) <input id="tempo" class="field" type="number" min="30" max="300" value="120" /></label>
+              <label class="switch" style="margin-top:8px"><input id="repeats" type="checkbox" checked /> Chơi theo dấu lặp, ô 1/ô 2, D.C.</label>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <div class="pop-anchor">
+        <button id="btn-export" class="btn" aria-label="Xuất video" disabled><span data-icon="download"></span>Xuất video</button>
+        <div id="pop-export" class="popover" role="dialog" aria-label="Xuất video" hidden>
+          <section>
+            <span class="label">Video MP4 (H.264 + AAC)</span>
+            <label class="row between">Độ phân giải <select id="res" class="field"><option value="720">720p</option><option value="1080" selected>1080p</option></select></label>
+            <p style="margin:0;color:var(--text-3);font-size:12px">Hình được dựng từng khung ở 60 fps, nên luôn mượt dù máy yếu.</p>
+            <button id="export" class="btn primary" disabled>Xuất video</button>
+          </section>
+        </div>
+      </div>
+
+      <button id="editbtn" class="btn" disabled title="Mở bản nhạc này trong trình soạn để sửa từng nốt"><span data-icon="pencil"></span>Sửa trong trình soạn</button>
+    </footer>
+    <input id="bg-file" type="file" accept="image/*" hidden />
+    <input id="file" type="file" accept=".mid,.midi,.wav,.mp3,.flac,.ogg,.m4a,.pdf" hidden />
+  </main>
+
+  <main id="composer" hidden></main>
+  <dialog id="dlg-keys" class="dlg" aria-labelledby="dlg-keys-title">
+    <header><span id="dlg-keys-title">Phím tắt</span><form method="dialog"><button class="btn ghost icon" aria-label="Đóng"><span data-icon="x"></span></button></form></header>
+    <div class="body">
+      <div>
+        <h3>Soạn nhạc — nhập nốt</h3>
+        <dl>
+          <dt><kbd>N</kbd></dt><dd>Bật / tắt chế độ nhập nốt</dd>
+          <dt><kbd>1</kbd>–<kbd>7</kbd></dt><dd>Độ dài: móc 4 … tròn</dd>
+          <dt><kbd>.</kbd></dt><dd>Nốt chấm</dd>
+          <dt><kbd>A</kbd>–<kbd>G</kbd></dt><dd>Nhập nốt (gần nốt trước)</dd>
+          <dt><kbd>Shift</kbd>+<kbd>A–G</kbd></dt><dd>Thêm vào hợp âm</dd>
+          <dt><kbd>R</kbd></dt><dd>Dấu lặng</dd>
+          <dt><kbd>+</kbd> <kbd>−</kbd></dt><dd>Thăng / giáng</dd>
+          <dt><kbd>Ctrl</kbd>+<kbd>3</kbd></dt><dd>Bộ ba</dd>
+          <dt><kbd>Alt</kbd>+bấm</dt><dd>Đặt con trỏ, không nhập</dd>
+        </dl>
+      </div>
+      <div>
+        <h3>Soạn nhạc — chọn và sửa</h3>
+        <dl>
+          <dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Đổi cao độ nửa cung</dd>
+          <dt><kbd>Shift</kbd>+<kbd>↑↓</kbd></dt><dd>Đổi một quãng tám</dd>
+          <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Nốt trước / sau</dd>
+          <dt><kbd>Shift</kbd>+bấm</dt><dd>Chọn cả đoạn</dd>
+          <dt><kbd>Delete</kbd></dt><dd>Xoá nốt (thành dấu lặng)</dd>
+          <dt><kbd>T</kbd></dt><dd>Nối nốt (tie)</dd>
+          <dt><kbd>S</kbd></dt><dd>Dấu luyến (slur)</dd>
+          <dt><kbd>Ctrl</kbd>+<kbd>Z</kbd></dt><dd>Hoàn tác</dd>
+          <dt><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd></dt><dd>Làm lại</dd>
+          <dt><kbd>Esc</kbd></dt><dd>Bỏ chọn / thoát nhập nốt</dd>
+        </dl>
+        <h3>Chung</h3>
+        <dl>
+          <dt><kbd>Space</kbd></dt><dd>Phát / dừng</dd>
+          <dt><kbd>?</kbd></dt><dd>Mở bảng này</dd>
+        </dl>
+      </div>
+    </div>
+  </dialog>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

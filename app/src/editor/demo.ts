@@ -1,4 +1,4 @@
-import { TPQ, addGrace, emptyScore, makeTuplet, putInTuplet, putNote, setBarline, setBreak, setClef, setDyn, setKey, setRehearsal, setTempoMark, setText, toggleArt, toggleEv, toggleSpan, type Pitch, type Score, type StepName } from './model'
+import { TPQ, moveEv, addGrace, emptyScore, makeTuplet, putInTuplet, putNote, setBarline, setBreak, setClef, setDyn, setKey, setRehearsal, setTempoMark, setText, toggleArt, toggleEv, toggleSpan, type Pitch, type Score, type StepName } from './model'
 
 /** "F#4" -> Pitch */
 export const pitch = (s: string): Pitch => {
@@ -120,3 +120,21 @@ export function palette(): Score {
   s.measures[7].barline = 'final'
   return s
 }
+
+
+/** Two voices in one staff, as in a piano texture: a melody above, a moving line below, rests that step aside. */
+export function voices(): Score {
+  const s = fromText([
+    { rh: 'E5:1.5 D5:0.5 C5:1 r:1', lh: 'C3:1 G3+C4+E4:1 G3+C4+E4:2' },
+    { rh: 'D5:2 r:2', lh: 'G2:1 G3+B3+D4:1 G3+B3+D4:2' },
+    { rh: 'C5:1 D5:1 E5:1 F5:1', lh: 'C3:1 G3+C4+E4:1 G3+C4+E4:2' },
+  ], { title: 'Hai giọng', tempo: 90 })
+  const v = (m: number, k: number) => s.measures[m].staves[0][0][k]
+  // lower voice in the same staff, from the same beats
+  moveEv(s, v(0, 0).id, { m: 0, staff: 0, voice: 0, at: 0 }, 0)
+  const lower = (m: number, at: number, pitch: string, ticks: number) => { const id = putNote(s, { m, staff: 0, voice: 1 }, at, ticks, pitch.length ? pitchOf(pitch) : pitchOf('C4')); return id }
+  lower(0, 0, 'G4', TPQ * 2); lower(0, 2 * TPQ, 'E4', TPQ * 2)
+  lower(1, 0, 'B4', TPQ); lower(1, TPQ, 'G4', TPQ)
+  return s
+}
+const pitchOf = pitch

@@ -61,6 +61,7 @@ export interface Measure {
   time?: TimeSig          // set when it changes here
   key?: number            // fifths (-7..7), set when it changes here
   tempo?: number          // quarter notes per minute, set when it changes here
+  tempoAt?: number        // where in the bar the tempo mark stands, in ticks from the barline (absent = at the barline)
   tempoText?: string      // "Allegro", "rit." … printed above the bar (with the tempo, when there is one)
   rehearsal?: string      // rehearsal mark (A, B, 1…) in a box
   clefs?: (ClefName | undefined)[] // per staff, set when a clef changes here
@@ -188,7 +189,7 @@ export function contextAt(s: Score, i: number): { time: TimeSig; key: number; te
     const m = s.measures[k]
     if (m.time) time = m.time
     if (m.key !== undefined) key = m.key
-    if (m.tempo) tempo = m.tempo
+    if (m.tempo && (k < i || !m.tempoAt)) tempo = m.tempo // a change in the middle of bar i only holds from its position on
   }
   return { time, key, tempo }
 }
@@ -662,12 +663,27 @@ export function setTimeSymbol(s: Score, i: number, symbol?: 'common' | 'cut') {
   else s.measures[i].time = next
 }
 
-export function setTempoMark(s: Score, i: number, bpm?: number, text?: string) {
+export function setTempoMark(s: Score, i: number, bpm?: number, text?: string, at = 0) {
   const m = s.measures[i]
   if (!m) return
-  if (i === 0 && bpm) s.tempo = bpm
+  if (i === 0 && bpm && !at) s.tempo = bpm
   else m.tempo = bpm
   m.tempoText = text || undefined
+  m.tempoAt = at > 0 ? at : undefined
+}
+
+/** Move a tempo mark (not the one at the very start of the piece) to another bar and position. Returns false when there is nothing to move. */
+export function moveTempo(s: Score, from: number, to: number, at = 0): boolean {
+  const a = s.measures[from], b = s.measures[to]
+  if (!a || !b || (from === 0 && !a.tempoAt)) return false
+  if (!a.tempo && !a.tempoText) return false
+  const bar = barTicks(contextAt(s, to).time)
+  const pos = Math.max(0, Math.min(bar - 1, at))
+  if (to === 0 && !pos) return false // the start of the piece keeps its own tempo
+  const { tempo, tempoText } = a
+  a.tempo = undefined; a.tempoText = undefined; a.tempoAt = undefined
+  b.tempo = tempo; b.tempoText = tempoText; b.tempoAt = pos > 0 ? pos : undefined
+  return true
 }
 export function setRehearsal(s: Score, i: number, text?: string) { const m = s.measures[i]; if (m) m.rehearsal = text?.trim() || undefined }
 export function setBarline(s: Score, i: number, kind?: BarlineKind) {
@@ -690,4 +706,47 @@ export function copyPrevious(s: Score, i: number) {
     if (c.tup) { if (!groups.has(c.tup.group)) groups.set(c.tup.group, newId(s)); c.tup = { ...c.tup, group: groups.get(c.tup.group)! } }
     return c
   })))
+}
+
+// ---- moving notes and marks -----------------------------------------------------------------------------
+export type MarkField = 'dyn' | 'staffText' | 'expr' | 'chord' | 'lyric'
+export const MARK_FIELDS: MarkField[] = ['dyn', 'staffText', 'expr', 'chord', 'lyric']
+
+/** Take a text / dynamic mark off one note and put it on another (what was there is replaced). */
+export function moveMark(s: Score, from: number, field: MarkField, to: number): boolean {
+  const a = findEv(s, from), b = findEv(s, to)
+  if (!a || !b || a.ev[field] === undefined) return false
+  if (from === to) return true
+  ;(b.ev as unknown as Record<string, unknown>)[field] = a.ev[field]
+  a.ev[field] = undefined as never
+  return true
+}
+export function clearMark(s: Score, id: number, field: MarkField) {
+  const f = findEv(s, id)
+  if (f) f.ev[field] = undefined as never
+}
+
+/**
+ * Move an event to another place: another beat, bar, staff or voice (voices stack: the same beat in voice 2 keeps voice 1).
+ * `steps` moves its pitches up or down by that many diatonic steps on the way. Keeps the event's id and all its marks.
+ * Returns false when it cannot be done (a tuplet member, a rest, no room).
+ */
+export function moveEv(s: Score, id: number, dest: Loc & { at: number }, steps = 0): boolean {
+  const f = findEv(s, id)
+  if (!f || !f.ev.pitches.length || f.ev.tup) return false
+  const ev: Ev = clone(f.ev)
+  const { key } = contextAt(s, dest.m)
+  if (steps) ev.pitches = ev.pitches.map((p) => { const q = fromDiatonic(diatonic(p) + steps); q.alter = keyAlterFor(key, q.step); return q })
+  const bar = barTicks(contextAt(s, dest.m).time)
+  if (dest.at >= bar) return false
+  const len = Math.min(ev.ticks, bar - dest.at)
+  const here = voiceOf(s, dest)
+  const hit = here.find((e, i) => starts(here)[i] < dest.at + len && starts(here)[i] + e.ticks > dest.at && e.tup) // do not cut into a tuplet
+  if (hit && hit.id !== id) return false
+  const stay = f.m === dest.m && f.staff === dest.staff && f.voice === dest.voice && f.at === dest.at
+  if (!stay) { if (f.ev.tup) return false; putRest(s, f, f.at, f.ev.ticks) } // the old place becomes silence
+  ev.ticks = len
+  if (len !== f.ev.ticks) ev.tie = false
+  overwrite(s, dest, dest.at, len, [ev])
+  return true
 }

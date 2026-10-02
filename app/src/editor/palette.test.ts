@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { palette, fromText, pitch } from './demo'
-import { TPQ, addGrace, clefAt, copyPrevious, flipStem, graceStep, octShift, ottavaShiftAt, ottavaShifts, setBarline, setBreak, setClef, setStretch, setTempoMark, setText, toggleEv, toggleSpan, validate } from './model'
+import { TPQ, addGrace, clearMark, clefAt, contextAt, moveEv, moveMark, moveTempo, copyPrevious, flipStem, graceStep, octShift, ottavaShiftAt, ottavaShifts, setBarline, setBreak, setClef, setStretch, setTempoMark, setText, toggleEv, toggleSpan, validate } from './model'
 import { toPerformance } from './perform'
 import { tempoRatios, toNotes, unroll } from '../core/score/playback'
 
@@ -133,5 +133,59 @@ describe('palette bookkeeping', () => {
     expect(clefAt(back, 4, 1)).toBe('tenor')
     expect(validate(back)).toEqual([])
     expect(play(back as typeof s).length).toBe(play(s).length)
+  })
+})
+
+describe('moving things', () => {
+  it('moveEv: another beat of the same voice leaves a rest behind and keeps the id and marks', () => {
+    const s = fromText([{ rh: 'C5:1 r:1 E5:1 F5:1', lh: 'r:4' }]); const e = s.measures[0].staves[0][0]
+    e[0].dyn = 'p'; e[0].art = ['staccato']
+    expect(moveEv(s, e[0].id, { m: 0, staff: 0, voice: 0, at: TPQ }, 0)).toBe(true)
+    const v = s.measures[0].staves[0][0]
+    expect(v.map((x) => (x.pitches.length ? x.pitches[0].step : 'r') + x.ticks / TPQ).join(' ')).toBe('r1 C1 E1 F1')
+    expect(v[1].id).toBe(e[0].id); expect(v[1].dyn).toBe('p'); expect(v[1].art).toEqual(['staccato'])
+    expect(validate(s)).toEqual([])
+  })
+  it('moveEv with steps moves the pitch by diatonic steps in the key', () => {
+    const s = fromText([{ rh: 'F4:1 r:3', lh: 'r:4' }], { key: 1 })       // G major: F is sharp
+    const id = s.measures[0].staves[0][0][0].id
+    moveEv(s, id, { m: 0, staff: 0, voice: 0, at: 0 }, 2)                 // F -> A
+    expect(s.measures[0].staves[0][0][0].pitches[0]).toEqual({ step: 'A', alter: 0, octave: 4 })
+    moveEv(s, id, { m: 0, staff: 0, voice: 0, at: 0 }, -2)                // back down to F: sharp again
+    expect(s.measures[0].staves[0][0][0].pitches[0].alter).toBe(1)
+  })
+  it('moveEv into voice 2 stacks the note on the same beat without touching voice 1', () => {
+    const s = fromText([{ rh: 'C5:1 D5:1 E5:2', lh: 'r:4' }]); const e = s.measures[0].staves[0][0]
+    expect(moveEv(s, e[1].id, { m: 0, staff: 0, voice: 1, at: 0 }, -3)).toBe(true)
+    const st = s.measures[0].staves[0]
+    expect(st).toHaveLength(2)
+    expect(st[1][0].pitches[0].step).toBe('A'); expect(st[0][0].pitches[0].step).toBe('C')   // C5 and A4 sound together
+    expect(st[0][1].pitches.length).toBe(0)                                                    // D5 left its place
+    expect(validate(s)).toEqual([])
+  })
+  it('moveEv refuses tuplet members and beats past the bar', () => {
+    const s = fromText([{ rh: 'C5:4', lh: 'r:4' }]); const id = s.measures[0].staves[0][0][0].id
+    expect(moveEv(s, id, { m: 0, staff: 0, voice: 0, at: 4 * TPQ }, 0)).toBe(false)
+  })
+  it('moveMark moves a dynamic or text from one note to another', () => {
+    const s = fromText([{ rh: 'C5:1 D5:1 E5:2', lh: 'r:4' }]); const e = s.measures[0].staves[0][0]
+    e[0].dyn = 'f'; e[0].lyric = 'la'
+    expect(moveMark(s, e[0].id, 'dyn', e[2].id)).toBe(true)
+    expect(e[2].dyn).toBe('f'); expect(e[0].dyn).toBeUndefined(); expect(e[0].lyric).toBe('la')
+    clearMark(s, e[0].id, 'lyric'); expect(e[0].lyric).toBeUndefined()
+    expect(moveMark(s, e[1].id, 'dyn', e[2].id)).toBe(false)           // nothing to move
+  })
+  it('a tempo mark moves to another bar and to the middle of a bar; the starting tempo stays', () => {
+    const s = fromText([{ rh: 'C5:4', lh: 'r:4' }, { rh: 'D5:2 E5:2', lh: 'r:4' }, { rh: 'F5:4', lh: 'r:4' }], { tempo: 60 })
+    setTempoMark(s, 1, 120, 'Allegro')
+    expect(moveTempo(s, 1, 2, 0)).toBe(true)
+    expect(s.measures[1].tempo).toBeUndefined(); expect(s.measures[2].tempo).toBe(120); expect(s.measures[2].tempoText).toBe('Allegro')
+    expect(moveTempo(s, 2, 1, 2 * TPQ)).toBe(true)                       // to beat 3 of bar 2
+    expect(s.measures[1].tempoAt).toBe(2 * TPQ)
+    expect(moveTempo(s, 0, 1, 0)).toBe(false)                            // the very first tempo is not movable
+    // sound: bar 1 slow, first half of bar 2 slow, second half and bar 3 fast
+    const n = play(s).filter((x) => x.pitch >= 60)
+    expect(n.map((x) => +x.start.toFixed(3))).toEqual([0, 4, 6, 7])      // C at 0; D at 4; E at 4+2=6 (still 60 bpm) ; F: E lasts 2 beats at 120 = 1 s -> 7
+    expect(contextAt(s, 1).tempo).toBe(60); expect(contextAt(s, 2).tempo).toBe(120)
   })
 })

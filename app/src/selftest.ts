@@ -118,6 +118,67 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
         c.undo(); c.undo()
         c.setScore(d.minuet())
       }
+      { // picking up and moving notes and marks with the mouse; stacking voices; rests stepping aside
+        const d = await import('./editor/demo')
+        c.setScore(d.fromText([{ rh: 'C5:1 D5:1 E5:1 F5:1', lh: 'C3:4' }, { rh: 'G5:4', lh: 'r:4' }, { rh: 'r:4', lh: 'r:4' }]))
+        c.score.measures[0].staves[0][0][0].dyn = 'p'; c.refresh()
+        const svgNow = () => document.querySelector('.cmp-sheet svg') as SVGElement // the page is redrawn after every edit: always take the current one
+        const toClient = (x: number, y: number) => { const r = svgNow().getBoundingClientRect(); return { clientX: r.left + (x * r.width) / c.layout.width, clientY: r.top + (y * r.width) / c.layout.width } }
+        const fire = (el: EventTarget, type: string, x: number, y: number, extra: MouseEventInit = {}) => el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...toClient(x, y), ...extra }))
+        const drag = (x0: number, y0: number, x1: number, y1: number, extra: MouseEventInit = {}, from?: EventTarget) => { fire(from ?? svgNow(), 'mousedown', x0, y0, extra); fire(window, 'mousemove', (x0 + x1) / 2, (y0 + y1) / 2, extra); fire(window, 'mousemove', x1, y1, extra); fire(window, 'mouseup', x1, y1, extra); fire(svgNow(), 'click', x1, y1, extra) }
+        c.setMode('select')
+        const m0 = () => c.layout.measures[0], ev = (k: number) => m0().evs.filter((e) => e.staff === 0 && e.voice === 0)[k]
+        const sp = m0().staves[0].spacing
+        // 1. drag D5 up two steps
+        const e1 = ev(1)
+        drag(e1.x + 5, e1.ys[0], e1.x + 5, e1.ys[0] - sp)
+        ok('drag a note up: pitch changes by steps', c.score.measures[0].staves[0][0][1].pitches[0].step === 'F' && c.score.measures[0].staves[0][0][1].pitches[0].octave === 5)
+        // 2. drag the first note to bar 2 (next to G5): it moves in time and leaves a rest behind
+        const e0 = ev(0), dm1 = c.layout.measures[1], g5 = dm1.evs.find((e) => e.staff === 0)!
+        drag(e0.x + 5, e0.ys[0], g5.x + 6, e0.ys[0])
+        ok('drag a note to another bar: it lands there', c.score.measures[1].staves[0][0].some((e) => e.pitches[0]?.step === 'C') || c.score.measures[1].staves[0][0].length > 1)
+        ok('drag a note to another bar: the old place is a rest', c.score.measures[0].staves[0][0][0].pitches.length === 0)
+        // 3. Shift-drag stacks it into voice 2 on the same beat
+        c.setScore(d.fromText([{ rh: 'C5:1 D5:1 E5:1 F5:1', lh: 'C3:4' }, { rh: 'r:4', lh: 'r:4' }]))
+        const f0 = c.layout.measures[0].evs.filter((e) => e.staff === 0 && e.voice === 0)
+        c.voice = 1
+        const a1 = f0[1]
+        drag(a1.x + 5, a1.ys[0], f0[0].x + 5, a1.ys[0] + 2 * c.layout.measures[0].staves[0].spacing, { shiftKey: true })
+        const v0 = c.score.measures[0].staves[0]
+        ok('shift-drag moves a note into voice 2 on that beat (the voices stack)', v0.length === 2 && v0[1][0].pitches.length === 1 && v0[0][0].pitches[0].step === 'C' && v0[0][1].pitches.length === 0)
+        c.voice = 0
+        // 4. a rest of the other voice does not sit on top of the notes
+        const restEv = c.layout.measures[0].evs.find((e) => e.staff === 0 && e.voice === 1 && e.rest)
+        const noteEv = c.layout.measures[0].evs.find((e) => e.staff === 0 && e.voice === 0 && !e.rest)
+        ok('multi-voice: rests are drawn clear of the notes', !!restEv && !!noteEv && restEv.ys.every((y) => noteEv.ys.every((n) => Math.abs(y - n) > c.layout.measures[0].staves[0].spacing * 0.9)))
+        // 5. dynamic: pick it up, drag it to another note, delete it
+        c.setScore(d.fromText([{ rh: 'C5:1 D5:1 E5:1 F5:1', lh: 'C3:4' }]))
+        c.score.measures[0].staves[0][0][0].dyn = 'p'; c.refresh()
+        const dyn = svgNow().querySelector('[data-mark*="dyn"]') as SVGElement
+        const db = dyn.getBoundingClientRect(), r2 = svgNow().getBoundingClientRect(), ex = c.layout.measures[0].evs.filter((e) => e.staff === 0)[2]
+        const dx = ((db.left + db.width / 2 - r2.left) * c.layout.width) / r2.width, dy = ((db.top + db.height / 2 - r2.top) * c.layout.width) / r2.width
+        drag(dx, dy, ex.x + 5, dy, {}, dyn)
+        ok('drag a dynamic onto another note moves it', c.score.measures[0].staves[0][0][2].dyn === 'p' && c.score.measures[0].staves[0][0][0].dyn === undefined)
+        c.key('Delete'); ok('Delete removes the picked mark', c.score.measures[0].staves[0][0][2].dyn === undefined)
+        // 6. tempo mark in the middle of a bar, then dragged to another bar
+        c.setScore(d.fromText([{ rh: 'C5:1 D5:1 E5:1 F5:1', lh: 'C3:4' }, { rh: 'G5:4', lh: 'r:4' }, { rh: 'A5:4', lh: 'r:4' }], { tempo: 60 }))
+        c.sel = c.score.measures[0].staves[0][0][2].id; c.tempoMark(120, 'Allegro')
+        ok('tempo mark at a note in the middle of the bar', c.score.measures[0].tempo === 120 && c.score.measures[0].tempoAt === 2 * 960)
+        const tm = svgNow().querySelector('[data-mark*="tempo"]') as SVGElement
+        const tb = tm.getBoundingClientRect(), r3 = svgNow().getBoundingClientRect(), g5b = c.layout.measures[1].evs.find((e) => e.staff === 0)!
+        const tx = ((tb.left + tb.width / 2 - r3.left) * c.layout.width) / r3.width, ty = ((tb.top + tb.height / 2 - r3.top) * c.layout.width) / r3.width
+        drag(tx, ty, g5b.x + 5, ty, {}, tm)
+        ok('drag the tempo mark to bar 2', c.score.measures[1].tempo === 120 && c.score.measures[0].tempo === undefined)
+        // 7. + / - bar follow the picked line, not the last one
+        c.setScore(d.fromText(Array.from({ length: 10 }, () => ({ rh: 'C5:4', lh: 'r:4' }))))
+        const sys0 = c.layout.systems[0], x0 = c.layout.measures.filter((q) => q.system === 0)
+        c.click(c.layout.width - 6, (sys0.y0 + sys0.y1) / 2)             // right of the last bar of the first line
+        const lastOfLine1 = x0[x0.length - 1].m
+        const nBefore = c.score.measures.length
+        c.addBar()
+        ok('"+ ô nhịp" with line 1 picked adds after the last bar of line 1', c.score.measures.length === nBefore + 1 && c.score.measures[lastOfLine1 + 1].staves[0][0].every((e) => !e.pitches.length) && c.score.measures[lastOfLine1].staves[0][0][0].pitches.length === 1)
+        c.undo()
+      }
       { // preview sound: a second click cancels instead of doubling, and leaving the tab silences it
         const playing = () => !!(c as unknown as { playing?: unknown }).playing || (c as unknown as { starting: boolean }).starting
         void c.togglePlay(); void c.togglePlay()
@@ -139,8 +200,8 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
     }
     if (new URLSearchParams(location.search).get('ui') === 'menu') (document.querySelector('[aria-label="Tệp"]') as HTMLElement).click()
     // a little tune for the screenshot
-    const { minuet, showcase, endings, palette } = await import('./editor/demo')
-    c.setScore(location.search.includes('endings') ? endings() : location.search.includes('palette') ? palette() : location.search.includes('showcase') ? showcase() : minuet())
+    const { minuet, showcase, endings, palette, voices } = await import('./editor/demo')
+    c.setScore(location.search.includes('endings') ? endings() : location.search.includes('palette') ? palette() : location.search.includes('voices') ? voices() : location.search.includes('showcase') ? showcase() : minuet())
     c.setMode('select')
     c.click(c.layout.measures[1].evs.find((e) => e.staff === 0)!.x, c.layout.measures[1].staves[0].top + 5)
     if (location.search.includes('pdf')) { // export a longer score (several pages) as vector PDF
@@ -164,7 +225,7 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
   }
   if (location.search.includes('editor')) { // render a score with the engraver and look at it
     const { renderScore } = await import('./editor/render')
-    const { minuet, showcase, endings, palette } = await import('./editor/demo')
+    const { minuet, showcase, endings, palette, voices } = await import('./editor/demo')
     const host = document.createElement('div')
     host.style.cssText = 'position:fixed;inset:0;background:#fff;z-index:99;overflow:auto'
     document.body.append(host)

@@ -1,8 +1,8 @@
 import { Accidental, Articulation, Barline, Beam, Curve, Dot, Formatter, Fraction, GhostNote, GraceNote, GraceNoteGroup, Modifier, Ornament, PedalMarking, Renderer, Stave, StaveConnector, StaveNote, StaveTie, Stroke, TextBracket, Tremolo, Tuplet, Voice, Volta } from 'vexflow/bravura'
-import { CLEFS, barTicks, clefAt, contextAt, nominalTicks, notationOf, ottavaShifts, starts, type Art, type ClefName, type Ev, type Score } from './model'
+import { CLEFS, barTicks, clefAt, contextAt, diatonic, nominalTicks, notationOf, ottavaShifts, starts, type Art, type ClefName, type Ev, type Score } from './model'
 
 /** One drawn event, for hit-testing and selection. */
-export interface DrawnEv { id: number; m: number; staff: number; voice: number; at: number; ticks: number; x: number; rest: boolean }
+export interface DrawnEv { id: number; m: number; staff: number; voice: number; at: number; ticks: number; x: number; rest: boolean; ys: number[] }
 export interface DrawnStaff { top: number; bottom: number; spacing: number; clef: ClefName }
 export interface DrawnMeasure { m: number; x: number; w: number; system: number; staves: DrawnStaff[]; evs: DrawnEv[] }
 export interface Layout { width: number; height: number; measures: DrawnMeasure[]; systems: { y0: number; y1: number; pageBreakAfter?: boolean }[] }
@@ -20,6 +20,9 @@ const MARGIN = 20, STAFF_GAP = 105, SYSTEM_GAP = 60, STAFF_H = 80, TOP_SPACE = 4
 
 const pitchKey = (p: { step: string; alter: number; octave: number }, shift = 0) =>
   `${p.step.toLowerCase()}${p.alter > 0 ? '#'.repeat(p.alter) : p.alter < 0 ? 'b'.repeat(-p.alter) : ''}/${p.octave + shift}`
+
+/** The only thing in the bar for its voice and no other voice has music: a whole-bar rest stays centred. */
+const wholeBarSolo = (vs: Ev[][], ev: Ev) => vs.every((o) => o.every((e) => e === ev || !e.pitches.length)) && vs[0]?.length === 1
 
 interface Built { notes: Map<number, StaveNote | GhostNote>; voices: Voice[]; beams: Beam[]; tuplets: Tuplet[]; order: { ev: Ev; voice: number; staff: number; at: number }[] }
 
@@ -49,8 +52,18 @@ function build(score: Score, mi: number, staves: Stave[], selected: Set<number>,
           return
         }
         const wholeBar = rest && ev.ticks === bar && vs.length === 1
-        const restKey = clef === 'treble' ? (vi ? 'g/4' : 'b/4') : clef === 'bass' ? (vi ? 'f/2' : 'd/3') : vi ? 'a/3' : 'c/4'
+        let restKey = clef === 'treble' ? (vi ? 'g/4' : 'b/4') : clef === 'bass' ? (vi ? 'f/2' : 'd/3') : vi ? 'a/3' : 'c/4'
         const sh = cd.shift + (shifts.get(ev.id) ?? 0)
+        if (rest && multi) { const r0 = vi === 0 ? cd.bottom + 6 : cd.bottom + 2; restKey = `${'cdefgab'[r0 % 7]}/${Math.floor(r0 / 7)}` } // two voices resting together: the upper one's rest high, the other's low
+        if (rest && multi && !wholeBarSolo(vs, ev)) { // with several voices a rest sits clear of the other voices' notes: the upper voice's above them, the others' below
+          const others = vs.flatMap((o, ov) => (ov === vi ? [] : o.map((e, k) => ({ e, at: starts(o)[k] })))).filter(({ e, at }) => e.pitches.length && at < ts[ei] + ev.ticks && at + e.ticks > ts[ei])
+          const ds = others.flatMap(({ e }) => e.pitches.map((p) => diatonic(p) + 7 * (cd.shift + (shifts.get(e.id) ?? 0))))
+          if (ds.length) {
+            const d = vi === 0 ? Math.max(...ds) + 3 : Math.min(...ds) - 3
+            const r = Math.max(cd.bottom - 4, Math.min(cd.bottom + 12, d))
+            restKey = `${'cdefgab'[((r % 7) + 7) % 7]}/${Math.floor(r / 7)}`
+          }
+        }
         const n = new StaveNote({
           clef,
           keys: rest ? [wholeBar ? (clef === 'treble' ? 'd/5' : clef === 'bass' ? 'f/3' : 'c/4') : restKey] : ev.pitches.map((p) => pitchKey(p, sh)),
@@ -141,12 +154,15 @@ function minWidth(score: Score, mi: number, first: boolean): number {
   return (Math.max(70, content + 28) + mods) * (score.measures[mi].stretch ?? 1)
 }
 
-export interface RenderOptions { width: number; selected?: Set<number> }
+/** A mark picked up for moving: a text / dynamic on a note, the tempo or the rehearsal mark of a bar. */
+export type MarkRef = { kind: 'ev'; field: 'dyn' | 'staffText' | 'expr' | 'chord' | 'lyric'; id: number } | { kind: 'tempo' | 'rehearsal'; bar: number }
+export interface RenderOptions { width: number; selected?: Set<number>; selectedMark?: MarkRef }
 
 /** Draw the whole score into `host` (an SVG) and return where things ended up. */
 export function renderScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout {
   host.innerHTML = ''
   const selected = opts.selected ?? new Set<number>()
+  const isSel = (m: MarkRef) => { const q = opts.selectedMark; return !!q && q.kind === m.kind && ((q.kind === 'ev' && m.kind === 'ev') ? q.id === m.id && q.field === m.field : (q as { bar?: number }).bar === (m as { bar?: number }).bar) }
   const usable = opts.width - 2 * MARGIN
   const n = score.measures.length
 
@@ -244,7 +260,7 @@ export function renderScore(host: HTMLElement, score: Score, opts: RenderOptions
       }
       b.order.forEach((o) => {
         const note = b.notes.get(o.ev.id)!
-        dm.evs.push({ id: o.ev.id, m: mi, staff: o.staff, voice: o.voice, at: o.at, ticks: o.ev.ticks, x: note.getAbsoluteX(), rest: o.ev.pitches.length === 0 })
+        dm.evs.push({ id: o.ev.id, m: mi, staff: o.staff, voice: o.voice, at: o.at, ticks: o.ev.ticks, x: note.getAbsoluteX(), rest: o.ev.pitches.length === 0, ys: note instanceof StaveNote ? note.getYs() : [] })
         noteOf.set(o.ev.id, { note, system: sIdx })
         where.set(o.ev.id, { m: mi, voice: o.voice, index: 0 })
       })
@@ -319,6 +335,9 @@ export function renderScore(host: HTMLElement, score: Score, opts: RenderOptions
       t.textContent = DYN_GLYPH[ev.dyn]
       t.setAttribute('x', String(a.note.getAbsoluteX() - 4)); t.setAttribute('y', String(st.bottom + 38))
       t.setAttribute('font-family', 'Bravura, serif'); t.setAttribute('font-size', '30')
+      const dm_: MarkRef = { kind: 'ev', field: 'dyn', id: ev.id }
+      t.setAttribute('data-mark', JSON.stringify(dm_)); t.setAttribute('style', 'cursor:grab'); t.setAttribute('stroke', 'transparent'); t.setAttribute('stroke-width', '8')
+      if (isSel(dm_)) t.setAttribute('fill', '#1d6fff')
       svg.appendChild(t)
     }
     if (ev.hairpin) {
@@ -348,13 +367,17 @@ export function renderScore(host: HTMLElement, score: Score, opts: RenderOptions
 
   // 5. the rest of the palette: texts, tempo, rehearsal marks, ottava, pedal, glissando, breath marks
   const NS = 'http://www.w3.org/2000/svg'
-  const put = (t: string, x: number, y: number, o: { size?: number; italic?: boolean; bold?: boolean; font?: string; anchor?: string } = {}) => {
+  const put = (t: string, x: number, y: number, o: { size?: number; italic?: boolean; bold?: boolean; font?: string; anchor?: string; mark?: MarkRef } = {}) => {
     const e = document.createElementNS(NS, 'text')
     e.textContent = t
     e.setAttribute('x', String(x)); e.setAttribute('y', String(y)); e.setAttribute('text-anchor', o.anchor ?? 'start')
     e.setAttribute('font-family', o.font ?? 'Georgia, serif'); e.setAttribute('font-size', String(o.size ?? 13))
     if (o.italic) e.setAttribute('font-style', 'italic')
     if (o.bold) e.setAttribute('font-weight', 'bold')
+    if (o.mark) { // a mark you can pick up: click to select, drag to another note or bar
+      e.setAttribute('data-mark', JSON.stringify(o.mark)); e.setAttribute('style', 'cursor:grab'); e.setAttribute('stroke', 'transparent'); e.setAttribute('stroke-width', '8')
+      if (isSel(o.mark)) e.setAttribute('fill', '#1d6fff')
+    }
     svg.appendChild(e)
     return e
   }
@@ -362,11 +385,14 @@ export function renderScore(host: HTMLElement, score: Score, opts: RenderOptions
     const m = score.measures[dm.m], top = dm.staves[0].top
     const x0 = (dm.evs[0]?.x ?? dm.x + 30) - 10
     if (dm.m === 0 || m.tempo || m.tempoText) {
-      const bpm = dm.m === 0 ? score.tempo : m.tempo
-      put(`${m.tempoText ? m.tempoText + (bpm ? '  ' : '') : ''}${bpm ? `♩ = ${bpm}` : ''}`, x0, top - 60, { size: 14, bold: true })
+      const bpm = dm.m === 0 && !m.tempoAt ? score.tempo : m.tempo
+      const col = m.tempoAt ? dm.evs.filter((q) => q.staff === 0).find((q) => q.at >= m.tempoAt!) : undefined // a mark in the middle of the bar stands over the first note at or after its position
+      const tx = col ? col.x - 10 : x0
+      put(`${m.tempoText ? m.tempoText + (bpm ? '  ' : '') : ''}${bpm ? `♩ = ${bpm}` : ''}`, tx, top - 60, { size: 14, bold: true, mark: dm.m === 0 && !m.tempoAt ? undefined : { kind: 'tempo', bar: dm.m } })
+      if (dm.m === 0 && m.tempoAt) put(`♩ = ${score.tempo}`, x0, top - 60, { size: 14, bold: true })
     }
     if (m.rehearsal) {
-      const e = put(m.rehearsal, x0 + 8, top - 78, { size: 15, bold: true, font: 'Arial, sans-serif' })
+      const e = put(m.rehearsal, x0 + 8, top - 78, { size: 15, bold: true, font: 'Arial, sans-serif', mark: { kind: 'rehearsal', bar: dm.m } })
       const w = 14 + 9 * m.rehearsal.length
       const r = document.createElementNS(NS, 'rect')
       r.setAttribute('x', String(x0)); r.setAttribute('y', String(top - 94)); r.setAttribute('width', String(w)); r.setAttribute('height', '22')
@@ -401,10 +427,10 @@ export function renderScore(host: HTMLElement, score: Score, opts: RenderOptions
       const n = noteOf.get(ev.id)
       if (!n) return
       const st = layout.measures[m].staves[si], x = n.note.getAbsoluteX()
-      if (ev.chord) put(ev.chord, x - 2, st.top - 34, { size: 14, bold: true, font: 'Arial, sans-serif' })
-      if (ev.staffText) put(ev.staffText, x - 2, st.top - (ev.chord ? 52 : 34), { size: 13, bold: true, italic: true })
-      if (ev.expr) put(ev.expr, x - 2, st.bottom + 54, { size: 14, bold: true, italic: true })
-      if (ev.lyric) put(ev.lyric, x + 5, st.bottom + 26, { size: 13, anchor: 'middle' })
+      if (ev.chord) put(ev.chord, x - 2, st.top - 34, { size: 14, bold: true, font: 'Arial, sans-serif', mark: { kind: 'ev', field: 'chord', id: ev.id } })
+      if (ev.staffText) put(ev.staffText, x - 2, st.top - (ev.chord ? 52 : 34), { size: 13, bold: true, italic: true, mark: { kind: 'ev', field: 'staffText', id: ev.id } })
+      if (ev.expr) put(ev.expr, x - 2, st.bottom + 54, { size: 14, bold: true, italic: true, mark: { kind: 'ev', field: 'expr', id: ev.id } })
+      if (ev.lyric) put(ev.lyric, x + 5, st.bottom + 26, { size: 13, anchor: 'middle', mark: { kind: 'ev', field: 'lyric', id: ev.id } })
       if (ev.breath) put(ev.breath === 'breath' ? '\uE4CE' : '\uE4D1', x + 20, st.top - 2, { size: 30, font: 'Bravura, serif' })
       if (ev.ottava) {
         const j = chain.findIndex((q) => q.ev.id === ev.ottava!.end)

@@ -102,7 +102,7 @@ export function scoreToMusicXml(s: Score): string {
       o.push('</attributes>')
     }
     if (m.rehearsal) o.push(`<direction placement="above"><direction-type><rehearsal>${esc(m.rehearsal)}</rehearsal></direction-type></direction>`)
-    if (first || m.tempo || m.tempoText) {
+    if (first || (m.tempo || m.tempoText) && !m.tempoAt) {
       const bpm = first ? s.tempo : m.tempo
       o.push(`<direction placement="above">${m.tempoText ? `<direction-type><words>${esc(m.tempoText)}</words></direction-type>` : ''}${bpm ? `<direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>${bpm}</per-minute></metronome></direction-type><sound tempo="${bpm}"/>` : ''}</direction>`)
     }
@@ -126,6 +126,7 @@ export function scoreToMusicXml(s: Score): string {
         const nt = notationOf(nominalTicks(e))
         const rest = e.pitches.length === 0
         const dirs: string[] = []
+        if (si === 0 && vi === 0 && m.tempoAt && starts(events)[k] === m.tempoAt && (m.tempo || m.tempoText)) o.push(`<direction placement="above">${m.tempoText ? `<direction-type><words>${esc(m.tempoText)}</words></direction-type>` : ''}${m.tempo ? `<direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>${m.tempo}</per-minute></metronome></direction-type><sound tempo="${m.tempo}"/>` : ''}</direction>`)
         if (e.dyn) dirs.push(`<dynamics><${e.dyn}/></dynamics>`)
         if (e.staffText) dirs.push(`<words>${esc(e.staffText)}</words>`)
         if (e.expr) dirs.push(`<words font-style="italic">${esc(e.expr)}</words>`)
@@ -272,6 +273,7 @@ export function scoreFromMusicXml(xml: string): { score: Score; warnings: string
             })
           } else if (el.tagName === 'direction') {
             const t = el.querySelector('sound')?.getAttribute('tempo') ?? el.querySelector('metronome > per-minute')?.textContent; if (t && si === 0) { tempo = Math.round(Number(t)); if (mi === 0) s.tempo = tempo; else m.tempo = tempo }
+            if (t && si === 0 && pos > 0 && mi > 0) m.tempoAt = pos // after some music of the bar: a change in the middle of it
             const rh = el.querySelector('rehearsal')?.textContent; if (rh && si === 0) m.rehearsal = rh.trim()
             const dirWords = el.querySelector('words')?.textContent?.trim()
             if (dirWords && si === 0 && (t || (!el.querySelector('sound') && !voices.size && TEMPO_WORDS.test(dirWords)))) m.tempoText = dirWords

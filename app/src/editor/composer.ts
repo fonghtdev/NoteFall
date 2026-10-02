@@ -5,11 +5,11 @@ import { tempoRatios, toNotes, unroll } from '../core/score/playback'
 import { hitTest, keyAlter, type Hit } from './hit'
 import {
   CLEFS, STEPS, TPQ, addGrace, barTicks, clearGrace, contextAt, copyPrevious, deleteEv, deleteMeasure, diatonic, emptyScore, findEv, flipStem, fromDiatonic, graceStep, insertMeasure, ottavaShiftAt, putNote, putRest,
-  TUPLETS, makeTuplet, navigationProblems, pruneRefs, setBarline, setBreak, setClef, setJump, setRehearsal, setStretch, setTempoMark, setText, setTimeSymbol, setVolta, toggleEv, toggleMark, type BarlineKind, type ClefName, type Mark, type Orn, type SpanKind, type TextField,
-  putInTuplet, removeTuplet, setDyn, setKey, setLength, setTime, starts, toggleArt, toggleSpan, toggleTie, transpose, validate, type Art, type Dyn, type Ev, type Pitch, type Score,
+  TUPLETS, makeTuplet, navigationProblems, pruneRefs, setBarline, setBreak, setClef, setJump, setRehearsal, setTempoMark, setText, setTimeSymbol, setVolta, toggleEv, toggleMark, type BarlineKind, type ClefName, type Mark, type Orn, type SpanKind, type TextField,
+  putInTuplet, removeTuplet, setDyn, setKey, setLength, setTime, starts, toggleArt, toggleSpan, toggleTie, transpose, validate, clearMark, moveEv, moveMark, moveTempo, type Art, type Dyn, type Ev, type Pitch, type Score,
 } from './model'
 import { toPerformance } from './perform'
-import { DYN_GLYPH, keyName, renderScore, type Layout } from './render'
+import { DYN_GLYPH, keyName, renderScore, type DrawnEv, type Layout, type MarkRef } from './render'
 import { exportMidi, exportMusicXml, exportPdf, importFile, saveJson } from './io'
 
 export interface ComposerHooks { toFalling(score: Score): void | Promise<void> }
@@ -45,6 +45,10 @@ export class Composer {
   private playing?: AudioBufferSourceNode
   private ctx?: AudioContext
   private btns = new Map<string, HTMLButtonElement>()
+  selMark?: MarkRef                  // a text / dynamic / tempo / rehearsal mark picked up (click it; drag it; Delete removes it)
+  sysRange?: [number, number]        // a whole line (system) picked by clicking beside its bars: add / remove bar act on it
+  private drag?: { kind: 'note'; ev: DrawnEv; sx: number; sy: number; moved: boolean } | { kind: 'mark'; mark: MarkRef; sx: number; sy: number; moved: boolean }
+  private suppressClick = false
 
   constructor(private root: HTMLElement, private hooks: ComposerHooks) {
     this.score = this.loadDraft() ?? emptyScore(8)
@@ -64,6 +68,7 @@ export class Composer {
   /** The bars the navigation buttons act on: those of the selected notes, otherwise the bar of the cursor. */
   measureRange(): [number, number] {
     const bars = this.targets().map((id) => findEv(this.score, id)?.m).filter((m): m is number => m !== undefined)
+    if (!bars.length && this.sysRange) return this.sysRange
     return bars.length ? [Math.min(...bars), Math.max(...bars)] : [Math.min(this.cursor.m, this.score.measures.length - 1), Math.min(this.cursor.m, this.score.measures.length - 1)]
   }
 
@@ -131,7 +136,7 @@ export class Composer {
   // ---- drawing -----------------------------------------------------------------------------------------
   refresh() {
     const keep = this.root.querySelector('.cmp-page')?.scrollTop ?? 0
-    this.layout = renderScore(this.host, this.score, { width: LOGICAL_WIDTH, selected: new Set(this.targets()) })
+    this.layout = renderScore(this.host, this.score, { width: LOGICAL_WIDTH, selected: new Set(this.targets()), selectedMark: this.selMark })
     const page = this.root.querySelector('.cmp-page')
     if (page) page.scrollTop = keep
     this.drawBarHighlight()
@@ -183,8 +188,26 @@ export class Composer {
 
   /** A click in score coordinates (also used by tests). */
   click(x: number, y: number, mods: { shift?: boolean; alt?: boolean } = {}) {
+    if (this.suppressClick) { this.suppressClick = false; return }
+    this.selMark = undefined
     const hit = hitTest(this.layout, x, y, this.voice)
-    if (!hit) { if (this.mode === 'select') { this.sel = undefined; this.range = []; this.refresh() } return }
+    if (!hit) { // beside the bars but on a line: pick the whole line, so + / − bar know which one you mean
+      const sys = this.layout.systems.findIndex((q) => y >= q.y0 && y <= q.y1)
+      if (sys >= 0) {
+        const bars = this.layout.measures.filter((dm) => dm.system === sys).map((dm) => dm.m)
+        if (bars.length) {
+          this.sysRange = [bars[0], bars[bars.length - 1]]; this.sel = undefined; this.range = []
+          this.cursor = { m: bars[bars.length - 1], staff: this.cursor.staff, at: 0 }
+          this.refresh()
+          this.say(`Đã chọn dòng ${sys + 1} (ô ${bars[0] + 1}–${bars[bars.length - 1] + 1}): "+ Ô nhịp" thêm ô sau ô ${bars[bars.length - 1] + 1}, "− Ô nhịp" xoá ô ${bars[bars.length - 1] + 1}`)
+          return
+        }
+      }
+      this.sysRange = undefined
+      if (this.mode === 'select') { this.sel = undefined; this.range = []; this.refresh() }
+      return
+    }
+    this.sysRange = undefined
     this.cursor = { m: hit.m, staff: hit.staff, at: hit.at }
     if (this.mode === 'input' && !mods.alt) { this.enterAt(hit, mods.shift ?? false); return }
     const near = hit.ev && Math.abs(hit.ev.x - x) < 28 ? hit.ev : undefined
@@ -192,6 +215,144 @@ export class Composer {
     else { this.sel = near?.id; this.range = [] }
     this.refresh()
     if (near) this.say(this.describe(near.id))
+    else this.say(`Đã chọn ô ${hit.m + 1} (dòng ${this.layout.measures[hit.m].system + 1}): "+ Ô nhịp" thêm sau ô này, "− Ô nhịp" xoá ô này`)
+  }
+
+  // ---- picking up and moving notes and marks -------------------------------------------------------------
+  /** The note whose head lies under the pointer (any voice), for dragging. */
+  private pickNote(x: number, y: number): DrawnEv | undefined {
+    let best: { ev: DrawnEv; d: number } | undefined
+    for (const dm of this.layout.measures) {
+      if (x < dm.x - 12 || x > dm.x + dm.w + 12) continue
+      for (const ev of dm.evs) {
+        if (ev.rest) continue
+        const sp = dm.staves[ev.staff].spacing
+        for (const hy of ev.ys) {
+          const d = Math.hypot(ev.x + 5 - x, hy - y)
+          if (Math.abs(ev.x + 5 - x) < 10 && Math.abs(hy - y) < 0.9 * sp && (!best || d < best.d)) best = { ev, d }
+        }
+      }
+    }
+    return best?.ev
+  }
+
+  private mouseDown(e: MouseEvent) {
+    if (e.button !== 0) return
+    const el = (e.target as Element).closest?.('[data-mark]')
+    if (el) { this.drag = { kind: 'mark', mark: JSON.parse(el.getAttribute('data-mark')!) as MarkRef, sx: e.clientX, sy: e.clientY, moved: false }; this.suppressClick = true; return }
+    if (this.mode !== 'select') return
+    const [x, y] = this.toLogical(e)
+    const ev = this.pickNote(x, y)
+    if (ev) this.drag = { kind: 'note', ev, sx: e.clientX, sy: e.clientY, moved: false }
+  }
+  private mouseMove(e: MouseEvent) {
+    const d = this.drag
+    if (!d) return
+    if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 5) return
+    if (!d.moved) { d.moved = true; this.suppressClick = true; document.body.style.cursor = 'grabbing' }
+    const [x, y] = this.toLogical(e)
+    this.moveGhost(x, y, d.kind === 'note' ? (e.shiftKey ? this.voice : d.ev.voice) : 0, d.kind === 'mark')
+  }
+  private mouseUp(e: MouseEvent) {
+    const d = this.drag
+    this.drag = undefined
+    document.body.style.cursor = ''
+    this.ghost?.remove(); this.ghost = undefined
+    if (!d) return
+    if (!d.moved) { // a click on a mark picks it up (a click on a note is handled by click())
+      if (d.kind === 'mark') { this.selMark = d.mark; this.sel = undefined; this.range = []; this.sysRange = undefined; this.refresh(); this.say(this.markHint(d.mark)); this.suppressClick = true }
+      else this.suppressClick = false
+      return
+    }
+    const [x, y] = this.toLogical(e)
+    if (d.kind === 'note') this.dropNote(d.ev, d.sy, x, y, e.shiftKey)
+    else this.dropMark(d.mark, x, y)
+    setTimeout(() => { this.suppressClick = false }, 0)
+  }
+  private markHint(m: MarkRef) { return m.kind === 'ev' ? 'Đã chọn dấu: kéo sang nốt khác để chuyển, Delete để xoá' : m.kind === 'tempo' ? 'Đã chọn dấu tốc độ: kéo tới ô / vị trí khác, Delete để xoá' : 'Đã chọn dấu tập: kéo sang ô khác, Delete để xoá' }
+
+  /** Where a dragged note would land: same beat of the other voice with Shift, otherwise the voice it came from. */
+  private dropNote(ev: DrawnEv, startY: number, x: number, y: number, shift: boolean) {
+    const voice = shift ? this.voice : ev.voice
+    const hit = hitTest(this.layout, x, y, voice)
+    if (!hit) { this.say('Thả nốt vào khuông'); return }
+    const src = findEv(this.score, ev.id)
+    if (!src) return
+    const st = this.layout.measures[ev.m].staves[ev.staff]
+    // which pitch of a chord is being held: the head nearest the point where the drag started
+    const pitched = src.ev.pitches
+    const hold = ev.ys.reduce((bi, hy, i) => (Math.abs(hy - startY) < Math.abs(ev.ys[bi] - startY) ? i : bi), 0)
+    void st
+    const steps = hit.diatonic - diatonic(pitched[Math.min(hold, pitched.length - 1)])
+    let ok = false
+    const dest = { m: hit.m, staff: hit.staff, voice, at: hit.at }
+    this.commit((s) => { ok = moveEv(s, ev.id, dest, steps) })
+    if (!ok) { this.say('Không chuyển được nốt này (nốt trong bộ ba thì sửa trong bộ ba, hoặc không đủ chỗ)'); this.refresh(); return }
+    this.sel = ev.id; this.range = []
+    this.cursor = { m: dest.m, staff: dest.staff, at: dest.at }
+    this.refresh()
+    this.say(shift && voice !== ev.voice ? `Đã chuyển nốt sang giọng ${voice + 1}` : this.describe(ev.id))
+  }
+
+  /** The bar under a point, also above the first staff of a line (where tempo and rehearsal marks stand). */
+  private barAt(x: number, y: number) {
+    const sys = this.layout.systems.findIndex((q) => y >= q.y0 - 110 && y <= q.y1)
+    return this.layout.measures.find((dm) => (sys < 0 || dm.system === sys) && x >= dm.x && x <= dm.x + dm.w)
+  }
+
+  private dropMark(mark: MarkRef, x: number, y: number) {
+    if (mark.kind === 'ev') {
+      const src = findEv(this.score, mark.id)
+      const hit = hitTest(this.layout, x, y, 0)
+      const dm = hit ? this.layout.measures[hit.m] : this.barAt(x, y)
+      if (!src || !dm) { this.say('Thả dấu lên một nốt'); return }
+      const to = dm.evs.filter((q) => q.staff === src.staff && !q.rest).reduce<DrawnEv | undefined>((a, q) => (!a || Math.abs(q.x - x) < Math.abs(a.x - x) ? q : a), undefined) // stays on its own staff
+      if (!to) { this.say('Không có nốt nào ở đó để gắn dấu'); return }
+      this.commit((s) => { moveMark(s, mark.id, mark.field, to.id) })
+      this.selMark = { kind: 'ev', field: mark.field, id: to.id }
+    } else {
+      const dm = this.barAt(x, y)
+      if (!dm) { this.say('Thả dấu lên một ô nhịp'); return }
+      if (mark.kind === 'tempo') {
+        const col = dm.evs.filter((q) => q.staff === 0).reduce<DrawnEv | undefined>((a, q) => (!a || Math.abs(q.x - x) < Math.abs(a.x - x) ? q : a), undefined)
+        const at = col && col.at > 0 ? col.at : 0
+        let ok = false
+        this.commit((s) => { ok = moveTempo(s, mark.bar, dm.m, at) })
+        if (!ok) { this.say('Không chuyển được dấu tốc độ này (dấu đầu bài giữ nguyên ở đầu)'); return }
+        this.selMark = { kind: 'tempo', bar: dm.m }
+        this.say(`Dấu tốc độ ở ô ${dm.m + 1}${at ? `, phách ${+(at / TPQ + 1).toFixed(2)}` : ''}`)
+      } else {
+        this.commit((s) => { const a = s.measures[mark.bar], b = s.measures[dm.m]; if (a?.rehearsal && b) { b.rehearsal = a.rehearsal; if (a !== b) a.rehearsal = undefined } })
+        this.selMark = { kind: 'rehearsal', bar: dm.m }
+      }
+    }
+    this.refresh()
+  }
+
+  /** Delete / Backspace on a picked mark removes it. */
+  private delMark(): boolean {
+    const m = this.selMark
+    if (!m) return false
+    this.selMark = undefined
+    if (m.kind === 'ev') this.commit((s) => clearMark(s, m.id, m.field))
+    else if (m.kind === 'tempo') this.commit((s) => setTempoMark(s, m.bar, undefined, undefined))
+    else this.commit((s) => setRehearsal(s, m.bar, undefined))
+    return true
+  }
+
+  /** The faint note / mark that follows the pointer while dragging (and in input mode). */
+  private moveGhost(x: number, y: number, voice: number, small = false) {
+    const hit = hitTest(this.layout, x, y, voice)
+    if (!hit) { this.ghost?.remove(); this.ghost = undefined; return }
+    const st = this.layout.measures[hit.m].staves[hit.staff]
+    const half = Math.round((st.bottom - y) / (st.spacing / 2))
+    if (!this.ghost) {
+      this.ghost = document.createElementNS('http://www.w3.org/2000/svg', 'ellipse')
+      this.ghost.setAttribute('fill', '#1d6fff'); this.ghost.setAttribute('opacity', '0.35'); this.ghost.setAttribute('pointer-events', 'none')
+      this.svg().appendChild(this.ghost)
+    }
+    this.ghost.setAttribute('rx', small ? '5' : '6.5'); this.ghost.setAttribute('ry', small ? '5' : '5')
+    this.ghost.setAttribute('cx', String(small ? x : hit.ev?.x ?? x)); this.ghost.setAttribute('cy', String(small ? y : st.bottom - (half * st.spacing) / 2))
   }
 
   private pitchAt(m: number, d: number): Pitch {
@@ -265,8 +426,8 @@ export class Composer {
     else if (k.toLowerCase() === 'x') this.flip()
     else if (k === 'ArrowUp' || k === 'ArrowDown') this.vertical(k === 'ArrowUp' ? 1 : -1, e.shiftKey ? 12 : 1, e.altKey)
     else if (k === 'ArrowLeft' || k === 'ArrowRight') this.horizontal(k === 'ArrowRight' ? 1 : -1)
-    else if (k === 'Delete' || k === 'Backspace') this.del()
-    else if (k === 'Escape') { this.sel = undefined; this.range = []; this.setMode('select') }
+    else if (k === 'Delete' || k === 'Backspace') { if (!this.delMark()) this.del() }
+    else if (k === 'Escape') { if (this.drag) { this.drag = undefined; this.ghost?.remove(); this.ghost = undefined; document.body.style.cursor = '' } this.sel = undefined; this.range = []; this.selMark = undefined; this.sysRange = undefined; this.setMode('select') }
     else if (k === '+' || k === '=') this.accidental(1)
     else if (k === '-') this.accidental(-1)
     else if (k === ' ') void this.togglePlay()
@@ -352,11 +513,25 @@ export class Composer {
     this.commit((s) => { kept = setTime(s, m, { beats, unit }); if (symbol) setTimeSymbol(s, m, symbol) })
     this.say(kept ? `Nhịp ${symbol === 'common' ? 'C' : symbol === 'cut' ? '¢' : `${beats}/${unit}`} từ ô ${m + 1}: các nốt được chia lại theo ô mới` : '⚠ Bộ ba bị cắt ngang bởi vạch nhịp mới, nên các ô bị ảnh hưởng đã được làm trống')
   }
-  tempoMark(bpm?: number, text?: string) { const m = this.here(); this.commit((s) => setTempoMark(s, m, bpm ? Math.min(300, Math.max(20, bpm)) : undefined, text)) }
+  /** A tempo mark at the selected note (so it can sit in the middle of a bar), otherwise at the start of the selected bar. */
+  tempoMark(bpm?: number, text?: string) {
+    const f = this.sel !== undefined ? findEv(this.score, this.sel) : undefined
+    const m = f ? f.m : this.here(), at = f ? f.at : 0
+    this.commit((s) => setTempoMark(s, m, bpm ? Math.min(300, Math.max(20, bpm)) : undefined, text, at))
+  }
   rehearsal(text?: string) { const m = this.here(); this.commit((s) => setRehearsal(s, m, text)) }
   barline(kind: BarlineKind) { const [, b] = this.measureRange(); this.commit((s) => setBarline(s, b, kind)) }
   pageBreak(kind: 'system' | 'page') { const [, b] = this.measureRange(); this.commit((s) => setBreak(s, b, kind)) }
-  stretch(delta: number) { const [a, b] = this.measureRange(); this.commit((s) => { for (let i = a; i <= b; i++) setStretch(s, i, (s.measures[i].stretch ?? 1) + delta) }) }
+  /** The bar the + / − buttons mean: the last bar of the picked line, otherwise the last selected bar. */
+  private barForAdd() { return this.measureRange()[1] }
+  addBar() { const b = this.barForAdd(); this.commit((s) => insertMeasure(s, b)); this.cursor.m = b + 1; if (this.sysRange) this.sysRange = undefined; this.refresh(); this.say(`Đã thêm ô nhịp sau ô ${b + 1}`) }
+  delBar() {
+    if (this.score.measures.length < 2) { this.say('Phải giữ lại ít nhất một ô nhịp'); return }
+    const b = this.barForAdd()
+    this.commit((s) => deleteMeasure(s, b))
+    this.cursor.m = Math.max(0, Math.min(b, this.score.measures.length - 1)); this.sysRange = undefined; this.sel = undefined; this.range = []
+    this.refresh(); this.say(`Đã xoá ô ${b + 1}`)
+  }
   repeatBar() { const m = this.here(); if (m < 1) { this.say('Ô đầu tiên chưa có ô nào đứng trước'); return } this.commit((s) => copyPrevious(s, m)) }
   /** Text on the selected note; a lyric moves on to the next note so a whole line can be typed. */
   text(field: TextField, value: string) {
@@ -634,6 +809,9 @@ export class Composer {
     this.host = this.el('div', 'cmp-sheet', page)
     this.host.addEventListener('click', (e) => { const [x, y] = this.toLogical(e); this.click(x, y, { shift: e.shiftKey, alt: e.altKey }) })
     this.host.addEventListener('mousemove', (e) => this.hover(e))
+    this.host.addEventListener('mousedown', (e) => this.mouseDown(e))
+    window.addEventListener('mousemove', (e) => this.mouseMove(e))
+    window.addEventListener('mouseup', (e) => this.mouseUp(e))
     this.host.addEventListener('mouseleave', () => { this.ghost?.remove(); this.ghost = undefined })
 
     const insp = this.el('aside', 'cmp-insp', body); insp.setAttribute('aria-label', 'Bảng ký hiệu')
@@ -690,7 +868,7 @@ export class Composer {
     const tbpm = this.el('input', 'field', trow); tbpm.type = 'number'; tbpm.min = '20'; tbpm.max = '300'; tbpm.placeholder = '♩ ='; tbpm.id = 'cmp-bpm'; tbpm.setAttribute('aria-label', 'Số phách mỗi phút'); tbpm.style.width = '72px'
     const ttxt = this.el('input', 'field', trow); ttxt.placeholder = 'Chữ (vd. Vivace)'; ttxt.id = 'cmp-tempotext'; ttxt.setAttribute('aria-label', 'Chữ chỉ tốc độ')
     const tapply = this.el('div', 'grid', tp0)
-    this.btn(tapply, 'tp-apply', 'Đặt tốc độ', 'Đặt tốc độ từ ô đang chọn', () => this.tempoMark(+tbpm.value || undefined, ttxt.value.trim() || undefined), { html: 'Đặt' })
+    this.btn(tapply, 'tp-apply', 'Đặt tốc độ', 'Đặt tốc độ tại nốt đang chọn (hoặc đầu ô đang chọn); kéo dấu để đổi chỗ', () => this.tempoMark(+tbpm.value || undefined, ttxt.value.trim() || undefined), { html: 'Đặt' })
     this.btn(tapply, 'tp-clear', 'Bỏ tốc độ', 'Bỏ dấu tốc độ ở ô đang chọn', () => this.tempoMark(undefined, undefined), { html: 'Bỏ' })
     for (const t of ['rit.', 'accel.', 'a tempo']) this.btn(tapply, `tp-${t}`, t, `Chữ "${t}" (chỉ hiển thị, không đổi tốc độ)`, () => { const m = this.here(); this.commit((s) => { s.measures[m].tempoText = t }) }, { html: t })
 
@@ -764,11 +942,9 @@ export class Composer {
     const lay = P('Bố cục', 'Layout'); g = grid(lay)
     this.btn(g, 'sysbreak', 'Xuống dòng', 'Bắt đầu hệ khuông mới sau ô đang chọn', () => this.pageBreak('system'), { html: 'Xuống dòng ↵' })
     this.btn(g, 'pgbreak', 'Sang trang', 'Bắt đầu trang mới sau ô đang chọn (khi xuất PDF)', () => this.pageBreak('page'), { html: 'Sang trang ⎘' })
-    this.btn(g, 'wider', 'Giãn ô', 'Giãn ô đang chọn', () => this.stretch(0.25), { html: 'Giãn ô +' })
-    this.btn(g, 'narrower', 'Hẹp ô', 'Thu hẹp ô đang chọn', () => this.stretch(-0.25), { html: 'Hẹp ô −' })
     g = grid(lay)
-    this.btn(g, 'addbar', 'Thêm ô nhịp', 'Thêm ô nhịp sau ô đang chọn', () => this.commit((s) => insertMeasure(s, this.here())), { html: `${icon('plus')}Ô nhịp` })
-    this.btn(g, 'delbar', 'Xoá ô nhịp', 'Xoá ô nhịp đang chọn', () => { this.commit((s) => deleteMeasure(s, this.here())); this.cursor.m = Math.min(this.cursor.m, this.score.measures.length - 1); this.refresh() }, { html: `${icon('minus')}Ô nhịp` })
+    this.btn(g, 'addbar', 'Thêm ô nhịp', 'Thêm ô nhịp sau ô đang chọn (hoặc sau ô cuối của dòng đang chọn)', () => this.addBar(), { html: `${icon('plus')}Ô nhịp` })
+    this.btn(g, 'delbar', 'Xoá ô nhịp', 'Xoá ô nhịp đang chọn (hoặc ô cuối của dòng đang chọn)', () => this.delBar(), { html: `${icon('minus')}Ô nhịp` })
 
     const tp = P('Bộ ba', 'Tuplets')
     const tup = this.el('select', 'field', tp); tup.id = 'cmp-tup'; tup.title = 'Loại bộ ba'; tup.setAttribute('aria-label', 'Loại bộ ba')
@@ -785,18 +961,9 @@ export class Composer {
 
   /** In input mode a faint note follows the mouse so you can see what a click will do. */
   private hover(e: MouseEvent) {
-    if (this.mode !== 'input') return
+    if (this.mode !== 'input' || this.drag) return
     const [x, y] = this.toLogical(e)
-    const hit = hitTest(this.layout, x, y, this.voice)
-    if (!hit) { this.ghost?.remove(); this.ghost = undefined; return }
-    const dm = this.layout.measures[hit.m], st = dm.staves[hit.staff]
-    const half = Math.round((st.bottom - y) / (st.spacing / 2))
-    if (!this.ghost) {
-      this.ghost = document.createElementNS('http://www.w3.org/2000/svg', 'ellipse')
-      this.ghost.setAttribute('rx', '6.5'); this.ghost.setAttribute('ry', '5'); this.ghost.setAttribute('fill', '#1d6fff'); this.ghost.setAttribute('opacity', '0.35'); this.ghost.setAttribute('pointer-events', 'none')
-      this.svg().appendChild(this.ghost)
-    }
-    this.ghost.setAttribute('cx', String(hit.ev?.x ?? x)); this.ghost.setAttribute('cy', String(st.bottom - (half * st.spacing) / 2))
+    this.moveGhost(x, y, this.voice)
   }
 
   private syncToolbar() {

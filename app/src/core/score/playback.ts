@@ -69,6 +69,7 @@ export function tempoRatios(score: Score, repeats = true): { at: number; ratio: 
     const m = score.measures[mi]
     const ratio = (m.tempo ?? base) / base
     if (Math.abs(ratio - last) > 1e-9) { out.push({ at, ratio }); last = ratio }
+    for (const c of m.tempoChanges ?? []) { const r = c.bpm / base; if (Math.abs(r - last) > 1e-9) { out.push({ at: at + c.at, ratio: r }); last = r } } // a change in the middle of the bar
     at += m.length
   }
   return out

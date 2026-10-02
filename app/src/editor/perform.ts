@@ -64,7 +64,7 @@ export function toPerformance(s: Score): PerfScore {
     }))
     notes.sort((a, b) => a.start - b.start || a.pitch - b.pitch)
     barStart += barTicks(time)
-    return { index: i + 1, length: barTicks(time) / TPQ, tempo, notes, startRepeat: !!m.startRepeat, endRepeat: !!m.endRepeat, volta: m.volta, segno: m.segno, coda: m.coda, toCoda: m.toCoda, fine: m.fine, jump: m.jump }
+    return { index: i + 1, length: barTicks(time) / TPQ, tempo, tempoChanges: m.tempo && m.tempoAt ? [{ at: m.tempoAt / TPQ, bpm: m.tempo }] : undefined, notes, startRepeat: !!m.startRepeat, endRepeat: !!m.endRepeat, volta: m.volta, segno: m.segno, coda: m.coda, toCoda: m.toCoda, fine: m.fine, jump: m.jump }
   })
   return { measures, beatsPerBar: s.time.beats, beatUnit: s.time.unit, warnings: [] }
 }

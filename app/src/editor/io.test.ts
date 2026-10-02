@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
 import { Midi } from '@tonejs/midi'
-import { minuet, fromText, showcase, endings } from './demo'
+import { minuet, fromText, showcase, endings, palette } from './demo'
 import { scoreFromJson, scoreFromMusicXml, scoreFromNotes, scoreToJson, scoreToMidi, scoreToMusicXml } from './io'
-import { TPQ, validate, type Score } from './model'
+import { TPQ, validate, type Ev, type Score } from './model'
 import { toPerformance } from './perform'
 import { toNotes, unroll } from '../core/score/playback'
 
@@ -125,5 +125,53 @@ describe('MIDI', () => {
     expect(validate(s)).toEqual([])
     const perf = toNotes(unroll(toPerformance(s)), 120).map((n) => `${n.pitch}@${n.start}/${n.duration}`).sort()
     expect(perf).toEqual(['60@0/0.5', '60@2/2', '62@0.5/0.5', '64@1/0.5', '64@2/2', '65@1.5/0.5', '67@2/2'].sort())
+  })
+})
+
+describe('MusicXML: palette marks', () => {
+  const strip = (xml: string) => xml.replace(/<miscellaneous>[\s\S]*?<\/miscellaneous>/, '') // as if another program had written it
+  const flat = (s: Score) => s.measures.flatMap((m) => m.staves.flat(2))
+
+  it('a NoteFall file reads back exactly (the score travels inside it)', () => {
+    const s = palette()
+    expect(JSON.stringify(scoreFromMusicXml(scoreToMusicXml(s)).score) === JSON.stringify(s)).toBe(true) // (a boolean: a failing toEqual would print a huge diff)
+  })
+
+  it('the standard notation alone carries the marks too', () => {
+    const s = palette()
+    const xml = strip(scoreToMusicXml(s))
+    expect(xml).toContain('<arpeggiate direction="up"/>'); expect(xml).toContain('<trill-mark/>'); expect(xml).toContain('<turn/>')
+    expect(xml).toContain('<tremolo type="single">2</tremolo>'); expect(xml).toContain('<staccatissimo/>'); expect(xml).toContain('<caesura/>')
+    expect(xml).toContain('<octave-shift type="down" size="8"'); expect(xml).toContain('<pedal type="start"'); expect(xml).toContain('<rehearsal>B</rehearsal>')
+    expect(xml).toContain('<sfz/>'); expect(xml).toContain('<fp/>'); expect(xml).toContain('<grace slash="yes"/>'); expect(xml).toContain('<lyric number="1">')
+    expect(xml).not.toContain('<clef-octave-change>') // the tenor clef has none
+    expect(xml).toContain('<sign>C</sign><line>4</line>')
+    const { score: b } = scoreFromMusicXml(xml)
+    const a = flat(s), c = flat(b)
+    const has = <K extends keyof Ev>(list: Ev[], k: K) => list.filter((e) => e[k] !== undefined).length
+    for (const k of ['orn', 'arp', 'trem', 'gliss', 'graces', 'dyn', 'lyric', 'chord', 'expr', 'staffText', 'breath', 'ottava', 'pedal'] as const) expect(has(c, k), k).toBe(has(a, k))
+    expect(c.find((e) => e.orn === 'trill')?.pitches[0].step).toBe('C')
+    expect(c.find((e) => e.graces)?.graceKind).toBe('acc')
+    expect(c.find((e) => e.ottava)?.ottava?.n).toBe(8)
+    const ids = new Map(c.map((e, i) => [e.id, i])), oi = c.findIndex((e) => e.ottava)
+    expect(ids.get(c[oi].ottava!.end)! - oi).toBe(3)                 // an 8va over four notes
+    expect(b.measures[4].tempoText).toBe('Andante'); expect(b.measures[4].tempo).toBe(80); expect(b.measures[4].rehearsal).toBe('B')
+    expect(b.measures[3].barline).toBe('double'); expect(b.measures[6].barline).toBe('dashed'); expect(b.measures[5].break).toBe('system')
+    expect(b.measures[4].clefs?.[1]).toBe('tenor'); expect(b.measures[0].staves[0][0].some((e) => e.art?.includes('staccatissimo'))).toBe(true)
+    expect(validate(b)).toEqual([])
+  })
+
+  it('clefs with octave marks, time symbols and keys survive the notation', () => {
+    const s = fromText([{ rh: 'C5:4', lh: 'C3:4' }, { rh: 'C5:4', lh: 'C3:4' }])
+    s.clefs = ['treble8vb', 'bass8vb']; s.time = { beats: 4, unit: 4, symbol: 'common' }
+    const b = scoreFromMusicXml(strip(scoreToMusicXml(s))).score
+    expect(b.clefs).toEqual(['treble8vb', 'bass8vb']); expect(b.time.symbol).toBe('common')
+  })
+
+  it('tempo changes reach MIDI as tempo events', () => {
+    const s = fromText([{ rh: 'C5:4', lh: 'r:4' }, { rh: 'D5:4', lh: 'r:4' }], { tempo: 60 })
+    s.measures[1].tempo = 120
+    const m = new Midi(scoreToMidi(s))
+    expect(m.header.tempos.map((t) => Math.round(t.bpm))).toEqual([60, 120])
   })
 })

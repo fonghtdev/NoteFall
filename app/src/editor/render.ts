@@ -1,23 +1,29 @@
-import { Accidental, Articulation, Barline, Beam, Curve, Dot, Formatter, Fraction, GhostNote, GraceNote, GraceNoteGroup, Modifier, Ornament, Renderer, Stave, StaveConnector, StaveNote, StaveTie, Tuplet, Voice, Volta } from 'vexflow/bravura'
-import { barTicks, contextAt, nominalTicks, notationOf, starts, type Art, type Ev, type Score } from './model'
+import { Accidental, Articulation, Barline, Beam, Curve, Dot, Formatter, Fraction, GhostNote, GraceNote, GraceNoteGroup, Modifier, Ornament, PedalMarking, Renderer, Stave, StaveConnector, StaveNote, StaveTie, Stroke, TextBracket, Tremolo, Tuplet, Voice, Volta } from 'vexflow/bravura'
+import { CLEFS, barTicks, clefAt, contextAt, nominalTicks, notationOf, ottavaShifts, starts, type Art, type ClefName, type Ev, type Score } from './model'
 
 /** One drawn event, for hit-testing and selection. */
 export interface DrawnEv { id: number; m: number; staff: number; voice: number; at: number; ticks: number; x: number; rest: boolean }
-export interface DrawnStaff { top: number; bottom: number; spacing: number; clef: 'treble' | 'bass' }
+export interface DrawnStaff { top: number; bottom: number; spacing: number; clef: ClefName }
 export interface DrawnMeasure { m: number; x: number; w: number; system: number; staves: DrawnStaff[]; evs: DrawnEv[] }
-export interface Layout { width: number; height: number; measures: DrawnMeasure[]; systems: { y0: number; y1: number }[] }
+export interface Layout { width: number; height: number; measures: DrawnMeasure[]; systems: { y0: number; y1: number; pageBreakAfter?: boolean }[] }
 
 const FIFTHS = ['Cb', 'Gb', 'Db', 'Ab', 'Eb', 'Bb', 'F', 'C', 'G', 'D', 'A', 'E', 'B', 'F#', 'C#']
 export const keyName = (fifths: number) => FIFTHS[fifths + 7]
 
-const MARGIN = 20, STAFF_GAP = 105, SYSTEM_GAP = 60, STAFF_H = 80, TOP_SPACE = 40, TITLE_H = 70
+const L = { p: '\uE520', m: '\uE521', f: '\uE522', r: '\uE523', s: '\uE524', z: '\uE525' } // SMuFL dynamic letters
+export const DYN_GLYPH: Record<string, string> = {
+  pppp: L.p + L.p + L.p + L.p, ppp: L.p + L.p + L.p, pp: L.p + L.p, p: L.p, mp: L.m + L.p, mf: L.m + L.f, f: L.f, ff: L.f + L.f, fff: L.f + L.f + L.f, ffff: L.f + L.f + L.f + L.f,
+  sf: L.s + L.f, sfz: L.s + L.f + L.z, fp: L.f + L.p, sfp: L.s + L.f + L.p, rfz: L.r + L.f + L.z,
+}
 
-const pitchKey = (p: { step: string; alter: number; octave: number }) =>
-  `${p.step.toLowerCase()}${p.alter > 0 ? '#'.repeat(p.alter) : p.alter < 0 ? 'b'.repeat(-p.alter) : ''}/${p.octave}`
+const MARGIN = 20, STAFF_GAP = 105, SYSTEM_GAP = 60, STAFF_H = 80, TOP_SPACE = 40, TITLE_H = 100
+
+const pitchKey = (p: { step: string; alter: number; octave: number }, shift = 0) =>
+  `${p.step.toLowerCase()}${p.alter > 0 ? '#'.repeat(p.alter) : p.alter < 0 ? 'b'.repeat(-p.alter) : ''}/${p.octave + shift}`
 
 interface Built { notes: Map<number, StaveNote | GhostNote>; voices: Voice[]; beams: Beam[]; tuplets: Tuplet[]; order: { ev: Ev; voice: number; staff: number; at: number }[] }
 
-function build(score: Score, mi: number, staves: Stave[], selected: Set<number>): Built {
+function build(score: Score, mi: number, staves: Stave[], selected: Set<number>, shifts: Map<number, number> = new Map()): Built {
   const { time, key } = contextAt(score, mi)
   const m = score.measures[mi]
   const bar = barTicks(time)
@@ -25,7 +31,7 @@ function build(score: Score, mi: number, staves: Stave[], selected: Set<number>)
   const groups = time.unit === 8 && time.beats % 3 === 0 ? new Fraction(3, 8) : new Fraction(1, 4)
 
   m.staves.forEach((vs, si) => {
-    const clef = score.clefs[si]
+    const cd = CLEFS[clefAt(score, mi, si)], clef = cd.vf
     const multi = vs.length > 1
     const staffVoices: Voice[] = []
     vs.forEach((events, vi) => {
@@ -43,29 +49,33 @@ function build(score: Score, mi: number, staves: Stave[], selected: Set<number>)
           return
         }
         const wholeBar = rest && ev.ticks === bar && vs.length === 1
-        const restKey = clef === 'treble' ? (vi ? 'g/4' : 'b/4') : vi ? 'f/2' : 'd/3'
+        const restKey = clef === 'treble' ? (vi ? 'g/4' : 'b/4') : clef === 'bass' ? (vi ? 'f/2' : 'd/3') : vi ? 'a/3' : 'c/4'
+        const sh = cd.shift + (shifts.get(ev.id) ?? 0)
         const n = new StaveNote({
           clef,
-          keys: rest ? [wholeBar ? (clef === 'treble' ? 'd/5' : 'f/3') : restKey] : ev.pitches.map(pitchKey),
+          keys: rest ? [wholeBar ? (clef === 'treble' ? 'd/5' : clef === 'bass' ? 'f/3' : 'c/4') : restKey] : ev.pitches.map((p) => pitchKey(p, sh)),
           duration: wholeBar ? 'wr' : nt.name + (rest ? 'r' : ''),
           dots: wholeBar ? 0 : nt.dots,
           alignCenter: wholeBar,
           ...(multi ? { stemDirection: vi === 0 ? 1 : -1 } : { autoStem: true }),
         })
         n.setStave(staves[si])
+        if (ev.flip && !rest) n.setStemDirection(n.getStemDirection() === 1 ? -1 : 1)
         if (nt.dots && !wholeBar) Dot.buildAndAttach([n], { all: true })
         if (ev.art?.length && !rest) {
-          const CODE: Record<Art, string> = { staccato: 'a.', accent: 'a>', tenuto: 'a-', marcato: 'a^', fermata: 'a@a' }
+          const CODE: Record<Art, string> = { staccato: 'a.', accent: 'a>', tenuto: 'a-', marcato: 'a^', fermata: 'a@a', staccatissimo: 'av', upbow: 'a|', downbow: 'am' }
           for (const a of ev.art) {
             const art = new Articulation(CODE[a])
-            if (a === 'marcato' || a === 'fermata') art.setPosition(Modifier.Position.ABOVE)
+            if (a === 'marcato' || a === 'fermata' || a === 'upbow' || a === 'downbow') art.setPosition(Modifier.Position.ABOVE)
             else art.setPosition(n.getStemDirection() === 1 ? Modifier.Position.BELOW : Modifier.Position.ABOVE) // on the notehead side
             n.addModifier(art, 0)
           }
         }
-        if (ev.orn && !rest) n.addModifier(new Ornament(ev.orn === 'mordent' ? 'mordent' : 'mordent_inverted'), 0)
+        if (ev.orn && !rest) n.addModifier(new Ornament({ mordent: 'mordent', inverted: 'mordent_inverted', trill: 'tr', turn: 'turn' }[ev.orn]), 0)
+        if (ev.arp && ev.pitches.length > 1) n.addModifier(new Stroke(ev.arp === 'up' ? Stroke.Type.ROLL_UP : ev.arp === 'down' ? Stroke.Type.ROLL_DOWN : Stroke.Type.ARPEGGIO_DIRECTIONLESS), 0)
+        if (ev.trem && !rest) n.addModifier(new Tremolo(ev.trem), 0)
         if (ev.graces?.length && !rest) {
-          const gns = ev.graces.map((g) => new GraceNote({ keys: [pitchKey(g)], duration: '8', clef, slash: false }))
+          const gns = ev.graces.map((g) => new GraceNote({ keys: [pitchKey(g, sh)], duration: '8', clef, slash: ev.graceKind === 'acc' }))
           n.addModifier(new GraceNoteGroup(gns, true), 0)
         }
         if (selected.has(ev.id)) n.setStyle({ fillStyle: '#1d6fff', strokeStyle: '#1d6fff' })
@@ -81,7 +91,7 @@ function build(score: Score, mi: number, staves: Stave[], selected: Set<number>)
       })
       const v = new Voice({ numBeats: bar / 960, beatValue: 4 }).setMode(Voice.Mode.SOFT).addTickables(tickables)
       staffVoices.push(v)
-      out.beams.push(...Beam.generateBeams(tickables.filter((t): t is StaveNote => t instanceof StaveNote), { groups: [groups], stemDirection: multi ? (vi === 0 ? 1 : -1) : undefined, maintainStemDirections: multi }))
+      out.beams.push(...Beam.generateBeams(tickables.filter((t): t is StaveNote => t instanceof StaveNote), { groups: [groups], stemDirection: multi ? (vi === 0 ? 1 : -1) : undefined, maintainStemDirections: multi || events.some((e) => e.flip) }))
       out.tuplets.forEach((tp) => tp.setTupletLocation(Tuplet.LOCATION_TOP)) // beams move the number to their side; keep it above the staff, clear of dynamics
     })
     Accidental.applyAccidentals(staffVoices, keyName(key))
@@ -111,9 +121,11 @@ function voltaType(score: Score, mi: number): number | undefined {
 const modifierStave = (score: Score, mi: number, first: boolean, x: number, y: number, w: number, si: number): Stave => {
   const ctx = contextAt(score, mi), m = score.measures[mi]
   const st = new Stave(x, y, w)
-  if (first) st.addClef(score.clefs[si])
+  const cd = CLEFS[clefAt(score, mi, si)]
+  if (first) st.addClef(cd.vf, 'default', cd.ann)
+  else if (m.clefs?.[si]) st.addClef(cd.vf, 'small', cd.ann) // a clef change in the middle of a line
   if (first || m.key !== undefined || (mi === 0)) st.addKeySignature(keyName(ctx.key))
-  if (mi === 0 || m.time) st.addTimeSignature(`${ctx.time.beats}/${ctx.time.unit}`)
+  if (mi === 0 || m.time) st.addTimeSignature(ctx.time.symbol === 'common' ? 'C' : ctx.time.symbol === 'cut' ? 'C|' : `${ctx.time.beats}/${ctx.time.unit}`)
   return st
 }
 
@@ -126,7 +138,7 @@ function minWidth(score: Score, mi: number, first: boolean): number {
   byStaff.forEach((vs) => vs.length && f.joinVoices(vs))
   const content = f.preCalculateMinTotalWidth(b.voices)
   const mods = Math.max(...staves.map((s) => s.getNoteStartX() - s.getX()))
-  return Math.max(70, content + 28) + mods
+  return (Math.max(70, content + 28) + mods) * (score.measures[mi].stretch ?? 1)
 }
 
 export interface RenderOptions { width: number; selected?: Set<number> }
@@ -140,19 +152,24 @@ export function renderScore(host: HTMLElement, score: Score, opts: RenderOptions
 
   // 1. system breaks: greedy fill on minimum widths
   const first = (mi: number, startOfSystem: boolean) => startOfSystem
-  const systems: { from: number; to: number; mins: number[] }[] = []
+  const systems: { from: number; to: number; mins: number[]; forced?: boolean }[] = []
   let cur: number[] = [], sum = 0, from = 0
   for (let mi = 0; mi < n; mi++) {
     const w = minWidth(score, mi, cur.length === 0)
     if (cur.length && sum + w > usable) { systems.push({ from, to: mi - 1, mins: cur }); cur = []; sum = 0; from = mi }
     cur.push(cur.length === 0 ? w : minWidth(score, mi, false))
     sum += cur[cur.length - 1]
+    if (score.measures[mi].break && mi < n - 1) { systems.push({ from, to: mi, mins: cur, forced: true }); cur = []; sum = 0; from = mi + 1 } // the user asked for a new line here
   }
   if (cur.length) systems.push({ from, to: n - 1, mins: cur })
   void first
 
   // 2. draw
-  const height = TITLE_H + systems.length * (STAFF_GAP + STAFF_H + TOP_SPACE + SYSTEM_GAP) + MARGIN
+  const SYS_H = STAFF_GAP + STAFF_H + TOP_SPACE + SYSTEM_GAP, PAGE_GAP = 70
+  const sysY: number[] = [] // top of each system; a page break leaves a visible gap (and starts a new sheet in the PDF)
+  { let y = TITLE_H; systems.forEach((sys, i) => { sysY.push(y); y += SYS_H + (score.measures[sys.to].break === 'page' && i < systems.length - 1 ? PAGE_GAP : 0) }) }
+  const height = sysY.length ? sysY[sysY.length - 1] + SYS_H + MARGIN : TITLE_H + MARGIN
+  const shifts = ottavaShifts(score)
   const r = new Renderer(host as HTMLDivElement, Renderer.Backends.SVG)
   r.resize(opts.width, height)
   const ctx = r.getContext()
@@ -170,18 +187,17 @@ export function renderScore(host: HTMLElement, score: Score, opts: RenderOptions
   }
   text(score.title, opts.width / 2, 36, 26, 'middle', 'bold')
   if (score.composer) text(score.composer, opts.width - MARGIN, 58, 14, 'end')
-  text(`♩ = ${score.tempo}`, MARGIN, 58, 14, 'start')
 
   const layout: Layout = { width: opts.width, height, measures: [], systems: [] }
   const noteOf = new Map<number, { note: StaveNote | GhostNote; system: number }>()
   const where = new Map<number, { m: number; voice: number; index: number }>()
 
   systems.forEach((sys, sIdx) => {
-    const y0 = TITLE_H + sIdx * (STAFF_GAP + STAFF_H + TOP_SPACE + SYSTEM_GAP)
+    const y0 = sysY[sIdx]
     const last = sIdx === systems.length - 1
-    layout.systems.push({ y0: y0 + 5, y1: y0 + STAFF_GAP + TOP_SPACE + STAFF_H + 40 }) // room for ledger lines above/below
+    layout.systems.push({ y0: y0 + 5, y1: y0 + STAFF_GAP + TOP_SPACE + STAFF_H + 40, pageBreakAfter: score.measures[sys.to].break === 'page' }) // room for ledger lines above/below
     const total = sys.mins.reduce((a, b) => a + b, 0)
-    const stretch = last ? Math.min(1.25, usable / total) : usable / total
+    const stretch = last ? Math.min(1.25, usable / total) : sys.forced ? Math.min(2, usable / total) : usable / total
     let x = MARGIN
     const rowStaves: Stave[][] = []
     sys.mins.forEach((min, k) => {
@@ -197,12 +213,15 @@ export function renderScore(host: HTMLElement, score: Score, opts: RenderOptions
         }
         if (m.startRepeat) st.setBegBarType(Barline.type.REPEAT_BEGIN)
         if (m.endRepeat) st.setEndBarType(Barline.type.REPEAT_END)
+        else if (m.barline === 'double') st.setEndBarType(Barline.type.DOUBLE)
+        else if (m.barline === 'final') st.setEndBarType(Barline.type.END)
+        else if (m.barline === 'none' || m.barline === 'dashed' || m.barline === 'dotted') st.setEndBarType(Barline.type.NONE)
         else if (mi === n - 1) st.setEndBarType(Barline.type.END)
         st.setContext(ctx).draw()
       })
       rowStaves.push(staves)
 
-      const b = build(score, mi, staves, selected)
+      const b = build(score, mi, staves, selected, shifts)
       const f = new Formatter()
       score.clefs.forEach((_, si) => {
         const vs = b.voices.filter((v) => b.order.find((o) => b.notes.get(o.ev.id) === v.getTickables()[0])?.staff === si)
@@ -220,7 +239,7 @@ export function renderScore(host: HTMLElement, score: Score, opts: RenderOptions
 
       const dm: DrawnMeasure = {
         m: mi, x, w, system: sIdx,
-        staves: staves.map((s, si) => ({ top: s.getYForLine(0), bottom: s.getYForLine(4), spacing: s.getSpacingBetweenLines(), clef: score.clefs[si] })),
+        staves: staves.map((s, si) => ({ top: s.getYForLine(0), bottom: s.getYForLine(4), spacing: s.getSpacingBetweenLines(), clef: clefAt(score, mi, si) })),
         evs: [],
       }
       b.order.forEach((o) => {
@@ -237,7 +256,20 @@ export function renderScore(host: HTMLElement, score: Score, opts: RenderOptions
     const left = rowStaves[0]
     new StaveConnector(left[0], left[left.length - 1]).setType('brace').setContext(ctx).draw()
     new StaveConnector(left[0], left[left.length - 1]).setType('singleLeft').setContext(ctx).draw()
-    rowStaves.forEach((sts) => new StaveConnector(sts[0], sts[sts.length - 1]).setType('singleRight').setContext(ctx).draw())
+    rowStaves.forEach((sts, k) => {
+      const m = score.measures[sys.from + k]
+      const kind = m.endRepeat ? 'single' : m.barline ?? (sys.from + k === n - 1 ? 'final' : 'single')
+      if (kind === 'none' || kind === 'dashed' || kind === 'dotted') {
+        if (kind === 'none') return
+        const x = layout.measures.find((q) => q.m === sys.from + k)!, xr = x.x + x.w
+        const p = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+        p.setAttribute('d', `M${xr} ${sts[0].getYForLine(0)}V${sts[sts.length - 1].getYForLine(4)}`)
+        p.setAttribute('stroke', '#000'); p.setAttribute('stroke-width', '1.3'); p.setAttribute('stroke-dasharray', kind === 'dashed' ? '5 4' : '1.5 3.5')
+        svg.appendChild(p)
+        return
+      }
+      new StaveConnector(sts[0], sts[sts.length - 1]).setType(kind === 'double' ? 'thinDouble' : kind === 'final' && !m.endRepeat ? 'boldDoubleRight' : 'singleRight').setContext(ctx).draw()
+    })
   })
 
   // 3. ties (a tie may run into the next bar, or even the next system)
@@ -278,7 +310,6 @@ export function renderScore(host: HTMLElement, score: Score, opts: RenderOptions
   })
 
   // 4. dynamics under the staff, hairpins and slurs (may span bars)
-  const DYN_GLYPH: Record<string, string> = { ppp: '\uE52A', pp: '\uE52B', p: '\uE520', mp: '\uE52C', mf: '\uE52D', f: '\uE522', ff: '\uE52F', fff: '\uE530' }
   score.measures.forEach((m, mi) => m.staves.forEach((vs, si) => vs.forEach((events, vi) => events.forEach((ev, ei) => {
     const a = noteOf.get(ev.id)
     if (!a) return
@@ -314,6 +345,94 @@ export function renderScore(host: HTMLElement, score: Score, opts: RenderOptions
     }
     void ei; void vi
   }))))
+
+  // 5. the rest of the palette: texts, tempo, rehearsal marks, ottava, pedal, glissando, breath marks
+  const NS = 'http://www.w3.org/2000/svg'
+  const put = (t: string, x: number, y: number, o: { size?: number; italic?: boolean; bold?: boolean; font?: string; anchor?: string } = {}) => {
+    const e = document.createElementNS(NS, 'text')
+    e.textContent = t
+    e.setAttribute('x', String(x)); e.setAttribute('y', String(y)); e.setAttribute('text-anchor', o.anchor ?? 'start')
+    e.setAttribute('font-family', o.font ?? 'Georgia, serif'); e.setAttribute('font-size', String(o.size ?? 13))
+    if (o.italic) e.setAttribute('font-style', 'italic')
+    if (o.bold) e.setAttribute('font-weight', 'bold')
+    svg.appendChild(e)
+    return e
+  }
+  layout.measures.forEach((dm) => {
+    const m = score.measures[dm.m], top = dm.staves[0].top
+    const x0 = (dm.evs[0]?.x ?? dm.x + 30) - 10
+    if (dm.m === 0 || m.tempo || m.tempoText) {
+      const bpm = dm.m === 0 ? score.tempo : m.tempo
+      put(`${m.tempoText ? m.tempoText + (bpm ? '  ' : '') : ''}${bpm ? `♩ = ${bpm}` : ''}`, x0, top - 60, { size: 14, bold: true })
+    }
+    if (m.rehearsal) {
+      const e = put(m.rehearsal, x0 + 8, top - 78, { size: 15, bold: true, font: 'Arial, sans-serif' })
+      const w = 14 + 9 * m.rehearsal.length
+      const r = document.createElementNS(NS, 'rect')
+      r.setAttribute('x', String(x0)); r.setAttribute('y', String(top - 94)); r.setAttribute('width', String(w)); r.setAttribute('height', '22')
+      r.setAttribute('fill', 'none'); r.setAttribute('stroke', '#000'); r.setAttribute('stroke-width', '1.4')
+      svg.insertBefore(r, e)
+    }
+  })
+  // events of every staff+voice in order, to follow marks that run from one note to a later one (and across a line break)
+  const chains = new Map<string, { ev: Ev; m: number }[]>()
+  score.measures.forEach((m, mi) => m.staves.forEach((vs, si) => vs.forEach((evs, vi) => {
+    const k = `${si}:${vi}`, c = chains.get(k) ?? []
+    evs.forEach((ev) => c.push({ ev, m: mi }))
+    chains.set(k, c)
+  })))
+  /** A mark that cannot be drawn (e.g. a line over a single note) is left out instead of breaking the whole page. */
+  const guard = (draw: () => void, p: { a: StaveNote; b: StaveNote }) => { if (p.a === p.b) return; try { draw() } catch (e) { console.warn('mark skipped:', (e as Error).message) } }
+  /** First and last drawn note of chain[i..j] on every line it touches. */
+  const pieces = (chain: { ev: Ev }[], i: number, j: number) => {
+    const out: { a: StaveNote; b: StaveNote; system: number }[] = []
+    for (let k = i; k <= j; k++) {
+      const n = noteOf.get(chain[k].ev.id)
+      if (!n || !(n.note instanceof StaveNote)) continue
+      const last = out[out.length - 1]
+      if (last && last.system === n.system) last.b = n.note
+      else out.push({ a: n.note, b: n.note, system: n.system })
+    }
+    return out
+  }
+  chains.forEach((chain, key) => {
+    const si = +key.split(':')[0]
+    chain.forEach(({ ev, m }, i) => {
+      const n = noteOf.get(ev.id)
+      if (!n) return
+      const st = layout.measures[m].staves[si], x = n.note.getAbsoluteX()
+      if (ev.chord) put(ev.chord, x - 2, st.top - 34, { size: 14, bold: true, font: 'Arial, sans-serif' })
+      if (ev.staffText) put(ev.staffText, x - 2, st.top - (ev.chord ? 52 : 34), { size: 13, bold: true, italic: true })
+      if (ev.expr) put(ev.expr, x - 2, st.bottom + 54, { size: 14, bold: true, italic: true })
+      if (ev.lyric) put(ev.lyric, x + 5, st.bottom + 26, { size: 13, anchor: 'middle' })
+      if (ev.breath) put(ev.breath === 'breath' ? '\uE4CE' : '\uE4D1', x + 20, st.top - 2, { size: 30, font: 'Bravura, serif' })
+      if (ev.ottava) {
+        const j = chain.findIndex((q) => q.ev.id === ev.ottava!.end)
+        const up = ev.ottava.n > 0, big = Math.abs(ev.ottava.n) === 15
+        if (j >= i) for (const p of pieces(chain, i, j)) guard(() => new TextBracket({ start: p.a, stop: p.b, text: big ? '15' : '8', superscript: up ? (big ? 'ma' : 'va') : big ? 'mb' : 'vb', position: up ? 1 : -1 }).setLine(up ? 3 : 2).setContext(ctx).draw(), p)
+      }
+      if (ev.pedal) {
+        const j = chain.findIndex((q) => q.ev.id === ev.pedal!.end)
+        if (j >= i) for (const p of pieces(chain, i, j)) guard(() => PedalMarking.createSustain([p.a, p.b]).setType(PedalMarking.type.MIXED).setLine(4).setContext(ctx).draw(), p)
+      }
+      if (ev.gliss) {
+        const nx = chain[i + 1], b = nx && noteOf.get(nx.ev.id)
+        if (b && b.system === n.system && n.note instanceof StaveNote && b.note instanceof StaveNote && nx.ev.pitches.length) {
+          const x1 = n.note.getNoteHeadEndX() + 3, y1 = Math.min(...n.note.getYs()), x2 = b.note.getNoteHeadBeginX() - 3, y2 = Math.min(...b.note.getYs())
+          const p = document.createElementNS(NS, 'path')
+          let d = `M${x1} ${y1}`
+          if (ev.gliss === 'straight') d += `L${x2} ${y2}`
+          else { // wavy: a sine laid along the line
+            const len = Math.hypot(x2 - x1, y2 - y1), steps = Math.max(8, Math.round(len / 2)), nx_ = (y2 - y1) / len, ny = -(x2 - x1) / len
+            for (let q = 1; q <= steps; q++) { const t = q / steps, w = Math.sin((t * len) / 4.2) * 2.4; d += `L${x1 + (x2 - x1) * t + nx_ * w} ${y1 + (y2 - y1) * t + ny * w}` }
+            put('gliss.', (x1 + x2) / 2 - 8, Math.min(y1, y2) - 16, { size: 11, italic: true })
+          }
+          p.setAttribute('d', d); p.setAttribute('fill', 'none'); p.setAttribute('stroke', '#000'); p.setAttribute('stroke-width', '1.2')
+          svg.appendChild(p)
+        }
+      }
+    })
+  })
 
   return layout
 }

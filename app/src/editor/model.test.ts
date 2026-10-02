@@ -90,14 +90,36 @@ describe('editing', () => {
     expect(findEv(s, id)!.ev.tie).toBe(true)
   })
 
-  it('time signature change refills the bars', () => {
+  it('time signature change re-bars the music and keeps the notes', () => {
     const s = emptyScore(3)
     putNote(s, { m: 1, staff: 0, voice: 0 }, 0, TPQ, P('C', 4))
-    setTime(s, 1, { beats: 3, unit: 4 })
-    expect(shape(s, 1)).toBe('r:3')
-    expect(shape(s, 2)).toBe('r:3')   // inherited by the following bars
-    expect(shape(s, 0)).toBe('r:4')
+    putNote(s, { m: 1, staff: 0, voice: 0 }, 3 * TPQ, TPQ, P('D', 4))      // last beat of bar 2
+    expect(setTime(s, 1, { beats: 3, unit: 4 })).toBe(true)
     expect(validate(s)).toEqual([])
+    expect(s.measures[1].time).toEqual({ beats: 3, unit: 4 })
+    expect(shape(s, 0)).toBe('r:4')
+    const notes = s.measures.flatMap((m) => m.staves[0][0]).filter((e) => e.pitches.length)
+    expect(notes.map((e) => `${e.pitches[0].step}${e.ticks / TPQ}`)).toEqual(['C1', 'D1'])
+    expect(s.measures.length).toBe(1 + Math.ceil(8 / 3)) // 8 beats now take 3 bars of 3/4
+  })
+
+  it('a note that crosses a new barline becomes tied pieces', () => {
+    const s = emptyScore(2)
+    putNote(s, { m: 0, staff: 0, voice: 0 }, 2 * TPQ, 2 * TPQ, P('G', 4))   // half note on beats 3-4
+    setTime(s, 0, { beats: 3, unit: 4 })                                    // bars of 3: the half note spans beat 3 | beat 1
+    expect(validate(s)).toEqual([])
+    const g = s.measures.flatMap((m) => m.staves[0][0]).filter((e) => e.pitches.length)
+    expect(g.map((e) => [e.ticks / TPQ, !!e.tie])).toEqual([[1, true], [1, false]])
+  })
+
+  it('a tuplet that would be cut makes the bars clear instead', () => {
+    const s = emptyScore(2)
+    makeTuplet(s, { m: 0, staff: 0, voice: 0 }, 2 * TPQ, TPQ / 2)              // triplet of eighths on beat 3
+    expect(setTime(s, 0, { beats: 2, unit: 4 })).toBe(true)                    // fits inside bar 2 of 2/4: fine
+    const t = emptyScore(2)
+    makeTuplet(t, { m: 0, staff: 0, voice: 0 }, 2 * TPQ, TPQ / 2 * 2)          // a quarter-note triplet over beats 3-4
+    expect(setTime(t, 0, { beats: 3, unit: 4 })).toBe(false)                   // would cross the new barline
+    expect(validate(t)).toEqual([])
   })
 
   it('inserts bars and sets the key', () => {

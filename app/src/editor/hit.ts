@@ -1,3 +1,4 @@
+import { CLEFS } from './model'
 import type { DrawnEv, DrawnMeasure, Layout } from './render'
 
 export interface Hit {
@@ -8,7 +9,6 @@ export interface Hit {
   at: number           // tick (within the bar) where that column starts
 }
 
-const BOTTOM_LINE = { treble: 4 * 7 + 2, bass: 2 * 7 + 4 } // diatonic index of the bottom line: E4, G2
 
 /** Which bar / staff / pitch / beat does a click on the score mean? `voice` picks which voice's columns to snap to. */
 export function hitTest(layout: Layout, x: number, y: number, voice = 0): Hit | null {
@@ -28,7 +28,8 @@ export function hitTest(layout: Layout, x: number, y: number, voice = 0): Hit | 
   const half = Math.round((st.bottom - y) / (st.spacing / 2))
   const col = dm.evs.filter((e) => e.staff === staff && e.voice === voice)
   const ev = col.reduce<DrawnEv | undefined>((a, b) => (!a || Math.abs(b.x - x) < Math.abs(a.x - x) ? b : a), undefined)
-  return { m: dm.m, staff, diatonic: BOTTOM_LINE[st.clef] + half, ev, at: ev?.at ?? 0 }
+  const c = CLEFS[st.clef] // `diatonic` is what sounds, whatever octave the clef writes it in
+  return { m: dm.m, staff, diatonic: c.bottom - 7 * c.shift + half, ev, at: ev?.at ?? 0 }
 }
 
 const SHARP_ORDER = ['F', 'C', 'G', 'D', 'A', 'E', 'B'], FLAT_ORDER = ['B', 'E', 'A', 'D', 'G', 'C', 'F']

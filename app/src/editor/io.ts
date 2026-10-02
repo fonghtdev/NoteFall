@@ -2,8 +2,8 @@ import { Midi } from '@tonejs/midi'
 import { unzipSync, strFromU8 } from 'fflate'
 import { parseMidi } from '../core/midi'
 import type { Note } from '../core/models'
-import { toNotes, unroll } from '../core/score/playback'
-import { TPQ, barTicks, blankMeasure, contextAt, emptyScore, midiOf, newId, nominalTicks, notationOf, putNote, spell, splitLength, starts, validate, type Art, type Dyn, type Ev, type Measure, type Pitch, type Score, type StepName } from './model'
+import { tempoRatios, toNotes, unroll } from '../core/score/playback'
+import { CLEFS, TPQ, barTicks, blankMeasure, clefAt, type BarlineKind, type ClefName, type Orn, contextAt, emptyScore, midiOf, newId, nominalTicks, notationOf, putNote, spell, splitLength, starts, validate, type Art, type Dyn, type Ev, type Measure, type Pitch, type Score, type StepName } from './model'
 import { toPerformance } from './perform'
 
 const download = (name: string, data: BlobPart, type: string) => {
@@ -33,8 +33,11 @@ export function scoreToMidi(s: Score): Uint8Array {
   midi.header.setTempo(s.tempo)
   midi.header.timeSignatures.push({ ticks: 0, timeSignature: [s.time.beats, s.time.unit] })
   midi.header.name = s.title
-  const timed = toNotes(unroll(toPerformance(s)), s.tempo)
-  const perf = unroll(toPerformance(s))
+  const pf = toPerformance(s), changes = tempoRatios(pf)
+  for (const c of changes) midi.header.tempos.push({ ticks: Math.round(c.at * midi.header.ppq), bpm: s.tempo * c.ratio })
+  midi.header.update() // works out each tempo's time in seconds; without it the library cannot convert times and never returns
+  const timed = toNotes(unroll(pf), s.tempo, 85, changes)
+  const perf = unroll(pf)
   const tracks = s.clefs.map((_, i) => { const t = midi.addTrack(); t.name = i === 0 ? 'Right hand' : 'Left hand'; return t })
   timed.forEach((n, i) => tracks[perf[i].staff]?.addNote({ midi: n.pitch, time: n.start, duration: n.duration, velocity: 0.7 }))
   return midi.toArray()
@@ -45,19 +48,39 @@ export const exportMidi = (s: Score) => download(fileName(s, 'mid'), scoreToMidi
 const XML_TYPE: Record<string, string> = { w: 'whole', h: 'half', q: 'quarter', '8': 'eighth', '16': '16th', '32': '32nd', '64': '64th' }
 const esc = (t: string) => t.replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c]!)
 
+const CLEF_XML: Record<ClefName, { sign: string; line: number; oct: number }> = {
+  treble: { sign: 'G', line: 2, oct: 0 }, bass: { sign: 'F', line: 4, oct: 0 }, alto: { sign: 'C', line: 3, oct: 0 }, tenor: { sign: 'C', line: 4, oct: 0 },
+  treble8vb: { sign: 'G', line: 2, oct: -1 }, treble8va: { sign: 'G', line: 2, oct: 1 }, bass8vb: { sign: 'F', line: 4, oct: -1 }, bass8va: { sign: 'F', line: 4, oct: 1 },
+}
+const ORN_XML: Record<Orn, string> = { mordent: '<mordent/>', inverted: '<inverted-mordent/>', trill: '<trill-mark/>', turn: '<turn/>' }
+const BAR_XML: Record<BarlineKind, string> = { single: 'regular', double: 'light-light', final: 'light-heavy', dashed: 'dashed', dotted: 'dotted', none: 'none' }
+
 export function scoreToMusicXml(s: Score): string {
   const o: string[] = []
   o.push('<?xml version="1.0" encoding="UTF-8"?>')
   o.push('<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 3.1 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">')
   o.push('<score-partwise version="3.1">')
   o.push(`<work><work-title>${esc(s.title)}</work-title></work>`)
-  o.push(`<identification><creator type="composer">${esc(s.composer)}</creator><encoding><software>NoteFall</software></encoding></identification>`)
+  o.push(`<identification><creator type="composer">${esc(s.composer)}</creator><encoding><software>NoteFall</software></encoding><miscellaneous><miscellaneous-field name="notefall-score">${esc(JSON.stringify(s))}</miscellaneous-field></miscellaneous></identification>`) // the whole score, so opening it again here loses nothing
   o.push('<part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>')
   o.push('<part id="P1">')
   // spans end on a different event than they start on: remember which events close what
   const slurEnd = new Map<number, number[]>(), wedgeEnd = new Map<number, number[]>()
   let spanNo = 0
   const slurNo = new Map<number, number>(), wedgeNo = new Map<number, number>()
+  const ottEnd = new Map<number, { no: number; size: number }[]>(), pedEnd = new Map<number, number[]>(), glissEnd = new Map<number, number>(), glissStart = new Map<number, number>(), hyph = new Map<number, string>()
+  s.measures.forEach((m) => m.staves.forEach((vs) => vs.forEach((v) => v.forEach((e, k, arr) => {
+    if (e.ottava) ottEnd.set(e.ottava.end, [...(ottEnd.get(e.ottava.end) ?? []), { no: (spanNo++ % 6) + 1, size: Math.abs(e.ottava.n) }])
+    if (e.pedal) pedEnd.set(e.pedal.end, [...(pedEnd.get(e.pedal.end) ?? []), (spanNo++ % 6) + 1])
+    void k; void arr
+  }))))
+  s.clefs.forEach((_, si) => { for (let vi = 0; vi < 8; vi++) { // glissando and lyrics follow the notes of one voice across bars
+    const chain = s.measures.flatMap((m) => m.staves[si]?.[vi] ?? [])
+    chain.forEach((e, k) => {
+      if (e.gliss && chain[k + 1]?.pitches.length) { const n = (spanNo++ % 6) + 1; glissEnd.set(chain[k + 1].id, n); glissStart.set(e.id, n) }
+      if (e.lyric) { const prev = chain.slice(0, k).reverse().find((x) => x.lyric); hyph.set(e.id, e.lyric.endsWith('-') ? (prev?.lyric?.endsWith('-') ? 'middle' : 'begin') : prev?.lyric?.endsWith('-') ? 'end' : 'single') }
+    })
+  } })
   s.measures.forEach((m) => m.staves.forEach((vs) => vs.forEach((v) => v.forEach((e) => {
     if (e.slur !== undefined) { const n = (spanNo++ % 6) + 1; slurNo.set(e.id, n); slurEnd.set(e.slur, [...(slurEnd.get(e.slur) ?? []), n]) }
     if (e.hairpin) { const n = (spanNo++ % 6) + 1; wedgeNo.set(e.id, n); wedgeEnd.set(e.hairpin.end, [...(wedgeEnd.get(e.hairpin.end) ?? []), n]) }
@@ -66,18 +89,23 @@ export function scoreToMusicXml(s: Score): string {
     const ctx = contextAt(s, i), bar = barTicks(ctx.time)
     o.push(`<measure number="${i + 1}">`)
     const first = i === 0
-    if (first || m.key !== undefined || m.time) {
+    const brk = s.measures[i - 1]?.break
+    if (brk) o.push(brk === 'page' ? '<print new-page="yes"/>' : '<print new-system="yes"/>')
+    const clefXml = (c: ClefName, si: number) => { const { sign, line, oct } = CLEF_XML[c]; return `<clef number="${si + 1}"><sign>${sign}</sign><line>${line}</line>${oct ? `<clef-octave-change>${oct}</clef-octave-change>` : ''}</clef>` }
+    if (first || m.key !== undefined || m.time || m.clefs?.some(Boolean)) {
       o.push('<attributes>')
       if (first) o.push(`<divisions>${TPQ}</divisions>`)
       if (first || m.key !== undefined) o.push(`<key><fifths>${ctx.key}</fifths></key>`)
-      if (first || m.time) o.push(`<time><beats>${ctx.time.beats}</beats><beat-type>${ctx.time.unit}</beat-type></time>`)
-      if (first) {
-        o.push(`<staves>${s.clefs.length}</staves>`)
-        s.clefs.forEach((c, si) => o.push(`<clef number="${si + 1}"><sign>${c === 'treble' ? 'G' : 'F'}</sign><line>${c === 'treble' ? 2 : 4}</line></clef>`))
-      }
+      if (first || m.time) o.push(`<time${ctx.time.symbol ? ` symbol="${ctx.time.symbol === 'cut' ? 'cut' : 'common'}"` : ''}><beats>${ctx.time.beats}</beats><beat-type>${ctx.time.unit}</beat-type></time>`)
+      if (first) o.push(`<staves>${s.clefs.length}</staves>`)
+      s.clefs.forEach((_, si) => { if (first || m.clefs?.[si]) o.push(clefXml(clefAt(s, i, si), si)) })
       o.push('</attributes>')
     }
-    if (first || m.tempo) o.push(`<direction placement="above"><direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>${ctx.tempo}</per-minute></metronome></direction-type><sound tempo="${ctx.tempo}"/></direction>`)
+    if (m.rehearsal) o.push(`<direction placement="above"><direction-type><rehearsal>${esc(m.rehearsal)}</rehearsal></direction-type></direction>`)
+    if (first || m.tempo || m.tempoText) {
+      const bpm = first ? s.tempo : m.tempo
+      o.push(`<direction placement="above">${m.tempoText ? `<direction-type><words>${esc(m.tempoText)}</words></direction-type>` : ''}${bpm ? `<direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>${bpm}</per-minute></metronome></direction-type><sound tempo="${bpm}"/>` : ''}</direction>`)
+    }
     const prevVolta = JSON.stringify(s.measures[i - 1]?.volta), thisVolta = JSON.stringify(m.volta)
     const endingStart = m.volta?.length && prevVolta !== thisVolta
     if (m.startRepeat || endingStart) {
@@ -99,11 +127,17 @@ export function scoreToMusicXml(s: Score): string {
         const rest = e.pitches.length === 0
         const dirs: string[] = []
         if (e.dyn) dirs.push(`<dynamics><${e.dyn}/></dynamics>`)
+        if (e.staffText) dirs.push(`<words>${esc(e.staffText)}</words>`)
+        if (e.expr) dirs.push(`<words font-style="italic">${esc(e.expr)}</words>`)
+        if (e.ottava) { const n = ottEnd.get(e.ottava.end)?.[0].no ?? 1; dirs.push(`<octave-shift type="${e.ottava.n > 0 ? 'down' : 'up'}" size="${Math.abs(e.ottava.n)}" number="${n}"/>`) } // 8va: written lower than it sounds
+        if (e.pedal) dirs.push(`<pedal type="start" line="yes" number="${pedEnd.get(e.pedal.end)?.[0] ?? 1}"/>`)
+
         if (e.hairpin) dirs.push(`<wedge type="${e.hairpin.type === 'cresc' ? 'crescendo' : 'diminuendo'}" number="${wedgeNo.get(e.id)}"/>`)
         for (const n of wedgeEnd.get(e.id) ?? []) dirs.push(`<wedge type="stop" number="${n}"/>`)
         dirs.forEach((d) => o.push(`<direction placement="below"><direction-type>${d}</direction-type><staff>${si + 1}</staff></direction>`))
         const pieces = rest ? [null] : e.pitches
-        if (e.graces?.length) e.graces.forEach((g) => o.push(`<note><grace slash="no"/><pitch><step>${g.step}</step>${g.alter ? `<alter>${g.alter}</alter>` : ''}<octave>${g.octave}</octave></pitch><voice>${si * 4 + vi + 1}</voice><type>eighth</type><staff>${si + 1}</staff></note>`))
+        if (e.chord) { const mm = /^([A-G])([#b♯♭]?)(.*)$/.exec(e.chord); o.push(mm ? `<harmony><root><root-step>${mm[1]}</root-step>${mm[2] ? `<root-alter>${mm[2] === '#' || mm[2] === '♯' ? 1 : -1}</root-alter>` : ''}</root><kind text="${esc(mm[3])}">other</kind></harmony>` : `<direction placement="above"><direction-type><words>${esc(e.chord)}</words></direction-type><staff>${si + 1}</staff></direction>`) }
+        if (e.graces?.length) e.graces.forEach((g) => o.push(`<note><grace slash="${e.graceKind === 'acc' ? 'yes' : 'no'}"/><pitch><step>${g.step}</step>${g.alter ? `<alter>${g.alter}</alter>` : ''}<octave>${g.octave}</octave></pitch><voice>${si * 4 + vi + 1}</voice><type>eighth</type><staff>${si + 1}</staff></note>`))
         pieces.forEach((p, pi) => {
           o.push(rest && e.hidden ? '<note print-object="no">' : '<note>')
           if (pi > 0) o.push('<chord/>')
@@ -127,16 +161,25 @@ export function scoreToMusicXml(s: Score): string {
           }
           if (pi === 0 && slurNo.has(e.id)) bits.push(`<slur type="start" number="${slurNo.get(e.id)}"/>`)
           if (pi === 0) for (const n of slurEnd.get(e.id) ?? []) bits.push(`<slur type="stop" number="${n}"/>`)
-          if (!rest && e.orn && last) bits.push(`<ornaments>${e.orn === 'mordent' ? '<mordent/>' : '<inverted-mordent/>'}</ornaments>`)
+          const orns = (!rest && e.orn && last ? [ORN_XML[e.orn]] : []).concat(!rest && e.trem && pi === 0 ? [`<tremolo type="single">${e.trem}</tremolo>`] : [])
+          if (orns.length) bits.push(`<ornaments>${orns.join('')}</ornaments>`)
+          if (!rest && e.arp && e.pitches.length > 1) bits.push(`<arpeggiate${e.arp === 'plain' ? '' : ` direction="${e.arp}"`}/>`)
+          if (!rest && pi === 0 && glissStart.has(e.id)) bits.push(`<glissando type="start" line-type="${e.gliss === 'wavy' ? 'wavy' : 'solid'}" number="${glissStart.get(e.id)}"/>`)
+          if (!rest && pi === 0 && glissEnd.has(e.id)) bits.push(`<glissando type="stop" number="${glissEnd.get(e.id)}"/>`)
           if (e.art?.length && (pi === 0 || rest)) {
-            const ARTS: Partial<Record<Art, string>> = { staccato: '<staccato/>', accent: '<accent/>', tenuto: '<tenuto/>', marcato: '<strong-accent/>' }
-            const list = e.art.map((a) => ARTS[a]).filter(Boolean).join('')
+            const ARTS: Partial<Record<Art, string>> = { staccato: '<staccato/>', accent: '<accent/>', tenuto: '<tenuto/>', marcato: '<strong-accent/>', staccatissimo: '<staccatissimo/>' }
+            const list = e.art.map((a) => ARTS[a]).filter(Boolean).join('') + (pi === 0 && e.breath ? (e.breath === 'breath' ? '<breath-mark/>' : '<caesura/>') : '')
             if (list) bits.push(`<articulations>${list}</articulations>`)
+            const tech = e.art.map((a) => (a === 'upbow' ? '<up-bow/>' : a === 'downbow' ? '<down-bow/>' : '')).join('')
+            if (tech) bits.push(`<technical>${tech}</technical>`)
             if (e.art.includes('fermata')) bits.push('<fermata/>')
-          }
+          } else if (pi === 0 && e.breath) bits.push(`<articulations>${e.breath === 'breath' ? '<breath-mark/>' : '<caesura/>'}</articulations>`)
           if (bits.length) o.push(`<notations>${bits.join('')}</notations>`)
+          if (pi === 0 && e.lyric) o.push(`<lyric number="1"><syllabic>${hyph.get(e.id) ?? 'single'}</syllabic><text>${esc(e.lyric.replace(/-$/, ''))}</text></lyric>`)
           o.push('</note>')
         })
+        const stops = [...(ottEnd.get(e.id) ?? []).map((q) => `<octave-shift type="stop" size="${q.size}" number="${q.no}"/>`), ...(pedEnd.get(e.id) ?? []).map((n) => `<pedal type="stop" line="yes" number="${n}"/>`)]
+        stops.forEach((d) => o.push(`<direction placement="below"><direction-type>${d}</direction-type><staff>${si + 1}</staff></direction>`))
       })
     }))
     // marks that act at the END of the bar
@@ -147,8 +190,8 @@ export function scoreToMusicXml(s: Score): string {
       o.push(`<direction placement="above"><direction-type><words>${m.jump.kind === 'dc' ? 'D.C.' : 'D.S.'}${al}</words></direction-type><sound ${m.jump.kind === 'dc' ? 'dacapo="yes"' : 'dalsegno="segno"'}/></direction>`)
     }
     const endingStop = m.volta?.length && JSON.stringify(s.measures[i + 1]?.volta) !== thisVolta
-    if (m.endRepeat || endingStop) {
-      o.push(`<barline location="right">${m.endRepeat ? '<bar-style>light-heavy</bar-style>' : ''}${endingStop ? `<ending number="${m.volta!.join(',')}" type="${m.endRepeat ? 'stop' : 'discontinue'}"/>` : ''}${m.endRepeat ? '<repeat direction="backward"/>' : ''}</barline>`)
+    if (m.endRepeat || endingStop || m.barline) {
+      o.push(`<barline location="right">${m.endRepeat ? '<bar-style>light-heavy</bar-style>' : m.barline ? `<bar-style>${BAR_XML[m.barline]}</bar-style>` : ''}${endingStop ? `<ending number="${m.volta!.join(',')}" type="${m.endRepeat ? 'stop' : 'discontinue'}"/>` : ''}${m.endRepeat ? '<repeat direction="backward"/>' : ''}</barline>`)
     }
     o.push('</measure>')
   })
@@ -165,6 +208,8 @@ export function scoreFromMusicXml(xml: string): { score: Score; warnings: string
   if (doc.querySelector('parsererror')) throw new Error('XML không hợp lệ')
   const root = doc.documentElement
   if (root.tagName !== 'score-partwise') throw new Error('chỉ đọc được MusicXML dạng score-partwise')
+  const own = root.querySelector('miscellaneous-field[name="notefall-score"]')?.textContent // a file NoteFall wrote itself carries the whole score
+  if (own) { try { const sc = JSON.parse(own) as Score; if (sc?.measures?.length && !validate(sc).length) return { score: sc, warnings: [] } } catch { /* fall through to the notation */ } }
   const warnings: string[] = []
   const parts = [...root.querySelectorAll(':scope > part')]
   if (!parts.length) throw new Error('không có phần nhạc nào')
@@ -185,14 +230,15 @@ export function scoreFromMusicXml(xml: string): { score: Score; warnings: string
   s.clefs = used.length === 1 ? ['treble', 'bass'] : used.map(() => 'treble' as const)
   s.measures = []
   let divisions = 1
-  const clefOf: ('treble' | 'bass')[] = ['treble', 'bass']
+  const clefOf: ClefName[] = ['treble', 'bass'], curClef: ClefName[] = ['treble', 'bass']
   let time = { beats: 4, unit: 4 }, key = 0, tempo: number | undefined
   let tied: Record<string, boolean> = {}
   let unsupported = 0
 
   // marks that run across bars (slurs, wedges, tuplets) are tracked per staff
-  const laneState = used.map(() => ({ slurs: new Map<string, Ev>(), wedge: undefined as { ev: Ev; type: 'cresc' | 'dim' } | undefined, wedgeStart: undefined as 'cresc' | 'dim' | undefined, wedgeStop: false, dyn: undefined as Dyn | undefined, tupGroup: 0, tupCount: 0, tupN: 0 }))
-  const DYNS: Dyn[] = ['ppp', 'pp', 'p', 'mp', 'mf', 'f', 'ff', 'fff']
+  const laneState = used.map(() => ({ words: [] as { text: string; italic: boolean }[], ott: new Map<string, Ev>(), ottPending: [] as { n: 8 | -8 | 15 | -15; no: string }[], ped: new Map<string, Ev>(), pedPending: [] as string[], gliss: new Map<string, { ev: Ev; wavy: boolean }>(), harmony: undefined as string | undefined, lastEv: undefined as Ev | undefined, slurs: new Map<string, Ev>(), wedge: undefined as { ev: Ev; type: 'cresc' | 'dim' } | undefined, wedgeStart: undefined as 'cresc' | 'dim' | undefined, wedgeStop: false, dyn: undefined as Dyn | undefined, tupGroup: 0, tupCount: 0, tupN: 0 }))
+  const DYNS: Dyn[] = ['pppp', 'ppp', 'pp', 'p', 'mp', 'mf', 'f', 'ff', 'fff', 'ffff', 'sf', 'sfz', 'fp', 'sfp', 'rfz']
+  const TEMPO_WORDS = /^(rit|ritard|rall|accel|a tempo|largo|lento|grave|adagio|andante|moderato|allegretto|allegro|vivace|presto)/i
   const nMeasures = Math.max(...used.map((u) => u.part.querySelectorAll(':scope > measure').length))
   let endingOpen: number[] | undefined, endingClose = false
   for (let mi = 0; mi < nMeasures; mi++) {
@@ -204,19 +250,31 @@ export function scoreFromMusicXml(xml: string): { score: Score; warnings: string
       const voices = new Map<string, Ev[]>()
       let pos = 0, last: { ev: Ev; voice: string } | undefined
       const pendingGraces: Pitch[] = []
+      let graceKind: 'acc' | 'app' = 'app'
       if (me) {
         for (const el of [...me.children]) {
           if (el.tagName === 'attributes') {
             divisions = num(el, 'divisions', divisions) || divisions
             const f = el.querySelector('key > fifths'); if (f && si === 0) { key = Number(f.textContent); if (mi === 0) s.key = key; else m.key = key }
             const b = el.querySelector('time > beats'), u = el.querySelector('time > beat-type')
-            if (b && u && si === 0) { time = { beats: Number(b.textContent), unit: Number(u.textContent) }; if (mi === 0) s.time = time; else m.time = time }
+            if (b && u && si === 0) { const sym = el.querySelector('time')?.getAttribute('symbol'); time = { beats: Number(b.textContent), unit: Number(u.textContent), ...(sym === 'common' ? { symbol: 'common' as const } : sym === 'cut' ? { symbol: 'cut' as const } : {}) }; if (mi === 0) s.time = time; else m.time = time }
             el.querySelectorAll('clef').forEach((c) => {
               const no = Number(c.getAttribute('number') ?? 1)
-              if (no === lane.staffNo) { const sign = c.querySelector('sign')?.textContent; clefOf[si] = sign === 'F' ? 'bass' : 'treble'; if (sign && !'GF'.includes(sign)) warnings.push(`khoá ${sign} được hiển thị như khoá Sol`) }
+              if (no === lane.staffNo) {
+                const sign = c.querySelector('sign')?.textContent ?? 'G', line = num(c, 'line', sign === 'F' ? 4 : sign === 'C' ? 3 : 2), oct = num(c, 'clef-octave-change')
+                const name = (Object.keys(CLEF_XML) as ClefName[]).find((k) => CLEF_XML[k].sign === sign && CLEF_XML[k].line === line && CLEF_XML[k].oct === oct)
+                if (!name) warnings.push(`khoá ${sign}${line} chưa hỗ trợ, hiển thị như khoá ${sign === 'F' ? 'Fa' : 'Sol'}`)
+                const c2: ClefName = name ?? (sign === 'F' ? 'bass' : 'treble')
+                if (mi === 0) clefOf[si] = c2
+                else if (c2 !== curClef[si]) { m.clefs = m.clefs ?? used.map(() => undefined); m.clefs[si] = c2 }
+                curClef[si] = c2
+              }
             })
           } else if (el.tagName === 'direction') {
-            const t = el.querySelector('sound')?.getAttribute('tempo'); if (t && si === 0) { tempo = Math.round(Number(t)); if (mi === 0) s.tempo = tempo; else m.tempo = tempo }
+            const t = el.querySelector('sound')?.getAttribute('tempo') ?? el.querySelector('metronome > per-minute')?.textContent; if (t && si === 0) { tempo = Math.round(Number(t)); if (mi === 0) s.tempo = tempo; else m.tempo = tempo }
+            const rh = el.querySelector('rehearsal')?.textContent; if (rh && si === 0) m.rehearsal = rh.trim()
+            const dirWords = el.querySelector('words')?.textContent?.trim()
+            if (dirWords && si === 0 && (t || (!el.querySelector('sound') && !voices.size && TEMPO_WORDS.test(dirWords)))) m.tempoText = dirWords
             const snd = el.querySelector('sound')
             if (snd && si === 0) { // navigation
               if (snd.getAttribute('segno')) m.segno = true
@@ -231,12 +289,37 @@ export function scoreFromMusicXml(xml: string): { score: Score; warnings: string
             if (num(el, 'staff', 1) === lane.staffNo) {
               const dn = el.querySelector('dynamics')?.firstElementChild?.tagName as Dyn | undefined
               if (dn && DYNS.includes(dn)) st.dyn = dn
+              if (dirWords && !t && !el.querySelector('sound') && !(!voices.size && si === 0 && TEMPO_WORDS.test(dirWords))) st.words.push({ text: dirWords, italic: el.querySelector('words')?.getAttribute('font-style') === 'italic' })
+              const os = el.querySelector('octave-shift')
+              if (os) {
+                const ty = os.getAttribute('type'), no = os.getAttribute('number') ?? '1', size = Number(os.getAttribute('size') ?? 8) >= 15 ? 15 : 8
+                if (ty === 'down' || ty === 'up') st.ottPending.push({ n: (ty === 'down' ? size : -size) as 8 | -8 | 15 | -15, no }) // 8va: written lower than it sounds
+                else if (ty === 'stop') { const a = st.ott.get(no); if (a?.ottava && st.lastEv) { a.ottava.end = st.lastEv.id; st.ott.delete(no) } }
+              }
+              const pd = el.querySelector('pedal')
+              if (pd) {
+                const ty = pd.getAttribute('type'), no = pd.getAttribute('number') ?? '1'
+                if (ty === 'start') st.pedPending.push(no)
+                else if (ty === 'stop') { const a = st.ped.get(no); if (a?.pedal && st.lastEv) { a.pedal.end = st.lastEv.id; st.ped.delete(no) } }
+              }
               const wt = el.querySelector('wedge')?.getAttribute('type')
               if (wt === 'crescendo') st.wedgeStart = 'cresc'
               else if (wt === 'diminuendo') st.wedgeStart = 'dim'
               else if (wt === 'stop') st.wedgeStop = true
             }
+          } else if (el.tagName === 'print' && si === 0 && mi > 0) {
+            if (el.getAttribute('new-page') === 'yes') s.measures[mi - 1].break = 'page'
+            else if (el.getAttribute('new-system') === 'yes') s.measures[mi - 1].break = 'system'
+          } else if (el.tagName === 'harmony') {
+            let nx = el.nextElementSibling
+            while (nx && nx.tagName !== 'note') nx = nx.nextElementSibling
+            if (nx && num(nx, 'staff', 1) === lane.staffNo) {
+              const alter = num(el, 'root-alter')
+              st.harmony = `${el.querySelector('root-step')?.textContent ?? ''}${alter > 0 ? '#' : alter < 0 ? 'b' : ''}${el.querySelector('kind')?.getAttribute('text') ?? ''}`
+            }
           } else if (el.tagName === 'barline' && si === 0) {
+            const bs = el.querySelector('bar-style')?.textContent
+            if (el.getAttribute('location') !== 'left' && bs && !el.querySelector('repeat')) { const k = (Object.keys(BAR_XML) as BarlineKind[]).find((b) => BAR_XML[b] === bs); if (k && k !== 'single') m.barline = k }
             const r = el.querySelector('repeat')?.getAttribute('direction')
             if (r === 'forward') m.startRepeat = true
             if (r === 'backward') m.endRepeat = true
@@ -254,7 +337,7 @@ export function scoreFromMusicXml(xml: string): { score: Score; warnings: string
             if (staffNo !== lane.staffNo) continue
             if (el.querySelector('grace')) {
               const gp = el.querySelector('pitch')
-              if (gp) pendingGraces.push(readPitch(gp))
+              if (gp) { pendingGraces.push(readPitch(gp)); graceKind = el.querySelector('grace')?.getAttribute('slash') === 'yes' ? 'acc' : 'app' }
               continue
             }
             const voice = el.querySelector('voice')?.textContent ?? '1'
@@ -264,7 +347,7 @@ export function scoreFromMusicXml(xml: string): { score: Score; warnings: string
             if (!voices.has(voice)) voices.set(voice, arr)
             const pitchEl = el.querySelector('pitch')
             if (chord && last) {
-              if (pitchEl) last.ev.pitches.push(readPitch(pitchEl))
+              if (pitchEl) { last.ev.pitches.push(readPitch(pitchEl)); const ar = el.querySelector('arpeggiate'); if (ar && !last.ev.arp) last.ev.arp = ar.getAttribute('direction') === 'down' ? 'down' : ar.getAttribute('direction') === 'up' ? 'up' : 'plain' }
               continue
             }
             // anything between the end of the previous event and `pos` is silence
@@ -275,7 +358,23 @@ export function scoreFromMusicXml(xml: string): { score: Score; warnings: string
             if (pitchEl && el.querySelector('tie[type="start"]')) ev.tie = true
             if (pitchEl && el.querySelector('ornaments > mordent')) ev.orn = 'mordent'
             if (pitchEl && el.querySelector('ornaments > inverted-mordent')) ev.orn = 'inverted'
-            if (pitchEl && pendingGraces.length) { ev.graces = pendingGraces.splice(0) }
+            if (pitchEl && el.querySelector('ornaments > trill-mark')) ev.orn = 'trill'
+            if (pitchEl && el.querySelector('ornaments > turn')) ev.orn = 'turn'
+            const tr = pitchEl && el.querySelector('ornaments > tremolo[type="single"]'); if (tr) ev.trem = Math.min(3, Math.max(1, Math.round(Number(tr.textContent) || 1))) as 1 | 2 | 3
+            const ar0 = pitchEl && el.querySelector('arpeggiate'); if (ar0) ev.arp = ar0.getAttribute('direction') === 'down' ? 'down' : ar0.getAttribute('direction') === 'up' ? 'up' : 'plain'
+            const ly = el.querySelector('lyric'); if (ly && pitchEl) { const sy = ly.querySelector('syllabic')?.textContent; ev.lyric = (ly.querySelector('text')?.textContent ?? '') + (sy === 'begin' || sy === 'middle' ? '-' : '') }
+            if (pitchEl && st.harmony) { ev.chord = st.harmony; st.harmony = undefined }
+            for (const w of st.words.splice(0)) { if (w.italic) ev.expr = w.text; else ev.staffText = w.text }
+            for (const o_ of st.ottPending.splice(0)) { ev.ottava = { n: o_.n, end: ev.id }; st.ott.set(o_.no, ev) }
+            for (const no of st.pedPending.splice(0)) { ev.pedal = { end: ev.id }; st.ped.set(no, ev) }
+            el.querySelectorAll('glissando').forEach((g_) => {
+              const no = g_.getAttribute('number') ?? '1', ty = g_.getAttribute('type')
+              if (ty === 'start') st.gliss.set(no, { ev, wavy: g_.getAttribute('line-type') === 'wavy' })
+              else if (ty === 'stop') { const a = st.gliss.get(no); if (a) { a.ev.gliss = a.wavy ? 'wavy' : 'straight'; st.gliss.delete(no) } }
+            })
+            if (pitchEl && el.querySelector('breath-mark')) ev.breath = 'breath'
+            if (pitchEl && el.querySelector('caesura')) ev.breath = 'caesura'
+            if (pitchEl && pendingGraces.length) { ev.graces = pendingGraces.splice(0); ev.graceKind = graceKind }
             const tm = el.querySelector('time-modification')
             if (tm) {
               const n = num(tm, 'actual-notes'), mm = num(tm, 'normal-notes')
@@ -288,8 +387,8 @@ export function scoreFromMusicXml(xml: string): { score: Score; warnings: string
               if (st.wedgeStop && st.wedge) { st.wedge.ev.hairpin = { type: st.wedge.type, end: ev.id }; st.wedge = undefined }
               st.wedgeStop = false
               if (st.wedgeStart) { st.wedge = { ev, type: st.wedgeStart }; st.wedgeStart = undefined }
-              const ART: Record<string, Art> = { staccato: 'staccato', accent: 'accent', tenuto: 'tenuto', 'strong-accent': 'marcato' }
-              const arts = [...el.querySelectorAll('articulations')].flatMap((g) => [...g.children]).map((a) => ART[a.tagName]).filter(Boolean)
+              const ART: Record<string, Art> = { staccato: 'staccato', accent: 'accent', tenuto: 'tenuto', 'strong-accent': 'marcato', staccatissimo: 'staccatissimo', 'up-bow': 'upbow', 'down-bow': 'downbow' }
+              const arts = [...el.querySelectorAll('articulations, technical')].flatMap((g) => [...g.children]).map((a) => ART[a.tagName]).filter(Boolean)
               if (el.querySelector('fermata')) arts.push('fermata')
               if (arts.length) ev.art = arts
               el.querySelectorAll('slur').forEach((sl) => {
@@ -300,6 +399,7 @@ export function scoreFromMusicXml(xml: string): { score: Score; warnings: string
             }
             if (ticks && !notationOf(nominalTicks(ev))) unsupported++
             arr.push(ev)
+            st.lastEv = ev
             last = { ev, voice }
             pos += ticks
           }
@@ -318,7 +418,7 @@ export function scoreFromMusicXml(xml: string): { score: Score; warnings: string
     if (endingOpen) { m.volta = endingOpen; if (endingClose) { endingOpen = undefined; endingClose = false } }
     s.measures.push(m)
   }
-  s.clefs = [clefOf[0], used.length > 1 ? clefOf[1] : 'bass']
+  s.clefs = [clefOf[0], used.length > 1 ? clefOf[1] : 'bass'] as ClefName[]
   if (used.length === 1) fillSecondStaff(s)
   if (tempo === undefined) s.tempo = 100
   if (unsupported) warnings.push(`${unsupported} nốt có độ dài chưa hỗ trợ hiển thị (bộ ba…): nhịp vẫn đúng nhưng hình có thể sai`)
@@ -405,7 +505,7 @@ export async function importFile(f: File): Promise<Score> {
 
 
 // ---- PDF export (vector, one engraved system at a time so a page break never cuts a staff) ---------------
-type PageLayout = { width: number; height: number; systems: { y0: number; y1: number }[] }
+type PageLayout = { width: number; height: number; systems: { y0: number; y1: number; pageBreakAfter?: boolean }[] }
 
 /** Split the drawn score into A4 pages: each page shows a slice of the same SVG. */
 export function pdfPages(svg: SVGElement, layout: PageLayout): string {
@@ -413,7 +513,8 @@ export function pdfPages(svg: SVGElement, layout: PageLayout): string {
   const pages: [number, number][] = []
   let from = 0, cut = 0
   layout.systems.forEach((sys, i) => {
-    if (i && sys.y1 - from > pageH) { pages.push([from, cut]); from = layout.systems[i - 1].y1 }
+    if (i && layout.systems[i - 1].pageBreakAfter) { pages.push([from, cut]); from = sys.y0 - 30 } // the user asked for a new page here
+    else if (i && sys.y1 - from > pageH) { pages.push([from, cut]); from = layout.systems[i - 1].y1 }
     cut = sys.y1
   })
   pages.push([from, Math.max(cut, from + 10)])

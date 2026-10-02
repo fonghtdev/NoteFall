@@ -1,14 +1,15 @@
 import { icon, type IconName } from '../ui/icons'
 import { popover } from '../ui/popover'
 import { renderNotes } from '../core/synth'
-import { toNotes, unroll } from '../core/score/playback'
+import { tempoRatios, toNotes, unroll } from '../core/score/playback'
 import { hitTest, keyAlter, type Hit } from './hit'
 import {
-  STEPS, TPQ, barTicks, contextAt, deleteEv, deleteMeasure, diatonic, emptyScore, findEv, fromDiatonic, insertMeasure, putNote, putRest,
-  TUPLETS, makeTuplet, navigationProblems, pruneRefs, setJump, setVolta, toggleMark, type Mark, putInTuplet, removeTuplet, setDyn, setKey, setLength, setTime, starts, toggleArt, toggleSpan, toggleTie, transpose, validate, type Art, type Dyn, type Pitch, type Score,
+  CLEFS, STEPS, TPQ, addGrace, barTicks, clearGrace, contextAt, copyPrevious, deleteEv, deleteMeasure, diatonic, emptyScore, findEv, flipStem, fromDiatonic, graceStep, insertMeasure, ottavaShiftAt, putNote, putRest,
+  TUPLETS, makeTuplet, navigationProblems, pruneRefs, setBarline, setBreak, setClef, setJump, setRehearsal, setStretch, setTempoMark, setText, setTimeSymbol, setVolta, toggleEv, toggleMark, type BarlineKind, type ClefName, type Mark, type Orn, type SpanKind, type TextField,
+  putInTuplet, removeTuplet, setDyn, setKey, setLength, setTime, starts, toggleArt, toggleSpan, toggleTie, transpose, validate, type Art, type Dyn, type Ev, type Pitch, type Score,
 } from './model'
 import { toPerformance } from './perform'
-import { keyName, renderScore, type Layout } from './render'
+import { DYN_GLYPH, keyName, renderScore, type Layout } from './render'
 import { exportMidi, exportMusicXml, exportPdf, importFile, saveJson } from './io'
 
 export interface ComposerHooks { toFalling(score: Score): void | Promise<void> }
@@ -201,7 +202,7 @@ export class Composer {
   }
 
   private enterAt(hit: Hit, chord: boolean) {
-    const p = this.pitchAt(hit.m, hit.diatonic)
+    const p = this.pitchAt(hit.m, hit.diatonic - 7 * ottavaShiftAt(this.score, hit.m, hit.staff, this.voice, hit.at)) // under 8va the page shows it an octave lower than it sounds
     this.pendingAlter = undefined
     this.place(hit.m, hit.staff, this.voice, hit.at, p, chord)
   }
@@ -261,6 +262,7 @@ export class Composer {
     else if (k.toLowerCase() === 'r') this.rest()
     else if (k.toLowerCase() === 't') this.tie()
     else if (k.toLowerCase() === 's') this.slur()
+    else if (k.toLowerCase() === 'x') this.flip()
     else if (k === 'ArrowUp' || k === 'ArrowDown') this.vertical(k === 'ArrowUp' ? 1 : -1, e.shiftKey ? 12 : 1, e.altKey)
     else if (k === 'ArrowLeft' || k === 'ArrowRight') this.horizontal(k === 'ArrowRight' ? 1 : -1)
     else if (k === 'Delete' || k === 'Backspace') this.del()
@@ -326,10 +328,50 @@ export class Composer {
     } else if (this.sel !== undefined) { const id = this.sel; this.commit((s) => deleteEv(s, id)) }
   }
 
-  ornament(kind: 'mordent' | 'inverted') {
-    if (this.sel === undefined) { this.say('Chọn một nốt trước'); return }
-    const id = this.sel
-    this.commit((s) => { const f = findEv(s, id); if (f && f.ev.pitches.length) f.ev.orn = f.ev.orn === kind ? undefined : kind })
+  ornament(kind: Orn) { this.evMark('orn', kind) }
+
+  /** Set (or clear) a mark on the selected notes. `key` is the event field: orn, arp, gliss, trem, breath. */
+  evMark<K extends 'orn' | 'arp' | 'gliss' | 'trem' | 'breath'>(key: K, value: NonNullable<Ev[K]>) {
+    const ids = this.targets()
+    if (!ids.length) { this.say('Chọn một nốt trước'); return }
+    this.commit((s) => ids.forEach((id) => toggleEv(s, id, key, value)))
+    if (key === 'arp' && !ids.some((id) => (findEv(this.score, id)?.ev.pitches.length ?? 0) > 1)) this.say('Rải hợp âm cần một hợp âm (từ 2 nốt trở lên)')
+  }
+  flip() { const ids = this.targets(); if (ids.length) this.commit((s) => ids.forEach((id) => flipStem(s, id))); else this.say('Chọn một nốt trước') }
+  grace(kind: 'acc' | 'app') { const ids = this.targets(); if (!ids.length) { this.say('Chọn nốt chính trước'); return } this.commit((s) => addGrace(s, ids[0], kind)) }
+  graceMove(dir: 1 | -1) { const ids = this.targets(); if (ids.length) this.commit((s) => graceStep(s, ids[0], dir)) }
+  graceClear() { const ids = this.targets(); if (ids.length) this.commit((s) => ids.forEach((id) => clearGrace(s, id))) }
+
+  /** The bar the palettes act on: the first selected bar, otherwise the cursor's. */
+  private here() { return this.measureRange()[0] }
+  clef(c: ClefName) { const staff = this.cursor.staff, m = this.here(); this.commit((s) => setClef(s, m, staff, c)); this.say(`${CLEFS[c].label}: ${m === 0 ? 'cả khuông' : `từ ô ${m + 1} trở đi`} (khuông ${staff + 1})`) }
+  keySig(fifths: number) { const m = this.here(); this.commit((s) => setKey(s, m, fifths)) }
+  timeSig(beats: number, unit: number, symbol?: 'common' | 'cut') {
+    const m = this.here()
+    let kept = true
+    this.commit((s) => { kept = setTime(s, m, { beats, unit }); if (symbol) setTimeSymbol(s, m, symbol) })
+    this.say(kept ? `Nhịp ${symbol === 'common' ? 'C' : symbol === 'cut' ? '¢' : `${beats}/${unit}`} từ ô ${m + 1}: các nốt được chia lại theo ô mới` : '⚠ Bộ ba bị cắt ngang bởi vạch nhịp mới, nên các ô bị ảnh hưởng đã được làm trống')
+  }
+  tempoMark(bpm?: number, text?: string) { const m = this.here(); this.commit((s) => setTempoMark(s, m, bpm ? Math.min(300, Math.max(20, bpm)) : undefined, text)) }
+  rehearsal(text?: string) { const m = this.here(); this.commit((s) => setRehearsal(s, m, text)) }
+  barline(kind: BarlineKind) { const [, b] = this.measureRange(); this.commit((s) => setBarline(s, b, kind)) }
+  pageBreak(kind: 'system' | 'page') { const [, b] = this.measureRange(); this.commit((s) => setBreak(s, b, kind)) }
+  stretch(delta: number) { const [a, b] = this.measureRange(); this.commit((s) => { for (let i = a; i <= b; i++) setStretch(s, i, (s.measures[i].stretch ?? 1) + delta) }) }
+  repeatBar() { const m = this.here(); if (m < 1) { this.say('Ô đầu tiên chưa có ô nào đứng trước'); return } this.commit((s) => copyPrevious(s, m)) }
+  /** Text on the selected note; a lyric moves on to the next note so a whole line can be typed. */
+  text(field: TextField, value: string) {
+    const ids = this.targets()
+    if (!ids.length) { this.say('Chọn một nốt trước'); return }
+    const id = ids[0]
+    this.commit((s) => setText(s, id, field, value))
+    if (field === 'lyric') this.selectNextNote(id)
+  }
+  private selectNextNote(id: number) {
+    const f = findEv(this.score, id)
+    if (!f) return
+    const all = this.voiceEvents(f.staff, f.voice), i = all.findIndex((e) => e.id === id)
+    const nx = all.slice(i + 1).find((e) => e.pitches.length)
+    if (nx) { this.sel = nx.id; this.range = []; this.refresh() }
   }
 
   /** Make a tuplet of the current note length where the cursor / selected note is, then type its notes. */
@@ -355,12 +397,14 @@ export class Composer {
   }
 
   /** Hairpin or slur over the selected notes (first to last). */
-  span(kind: 'slur' | 'cresc' | 'dim') {
+  span(kind: SpanKind) {
     const ids = this.targets()
     if (ids.length < 2) { this.say('Giữ Shift và bấm nốt cuối để chọn cả đoạn, rồi bấm lại') ; return }
+    if (kind === 'o8' || kind === 'o-8' || kind === 'o15' || kind === 'o-15') this.say('Ottava: nốt hiển thị cao/thấp hơn, âm thanh giữ nguyên')
     let ok = false
     this.commit((s) => { ok = toggleSpan(s, kind, ids[0], ids[ids.length - 1]) })
     if (!ok) this.say('Chỉ nối được các nốt cùng khuông và cùng giọng')
+    else if (kind === 'pedal') this.say('Pedal chỉ hiển thị và xuất file; không đổi độ dài nốt')
   }
   slur() { this.span('slur') }
 
@@ -460,7 +504,8 @@ export class Composer {
   async togglePlay() {
     if (this.playing || this.starting) return this.stop()
     this.starting = true // rendering takes a moment: a second click must cancel, not start a second copy
-    const notes = toNotes(unroll(toPerformance(this.score)), this.score.tempo)
+    const perf = toPerformance(this.score)
+    const notes = toNotes(unroll(perf), this.score.tempo, 85, tempoRatios(perf))
     if (!notes.length) { this.starting = false; this.say('Chưa có nốt nào để nghe'); return }
     this.syncToolbar()
     let buf: AudioBuffer
@@ -500,6 +545,10 @@ export class Composer {
     const d = this.el('details', '', parent); d.open = open
     const sm = this.el('summary', '', d); sm.innerHTML = `<span>${title}</span>${icon('chevron')}`
     return this.el('div', 'sec-body', d)
+  }
+  /** A palette button drawn with a music-font glyph (or short text when it has none). */
+  private pal(parent: HTMLElement, id: string, glyph: string, label: string, tip: string, fn: () => void, text = false): HTMLButtonElement {
+    return this.btn(parent, id, label, tip, fn, { cls: 'ghost pal', html: text ? `<span class="ptxt">${glyph}</span>` : `<span class="glyph" aria-hidden="true">${glyph}</span>` })
   }
   private cap(parent: HTMLElement, text: string) { const c = this.el('span', 'cap', parent); c.textContent = text }
 
@@ -560,7 +609,20 @@ export class Composer {
     this.btn(acc, 'sharp', 'Dấu thăng', 'Dấu thăng (+)', () => this.accidental(1), { cls: 'ghost', html: '<span class="glyph" aria-hidden="true"></span>' })
     this.btn(acc, 'flat', 'Dấu giáng', 'Dấu giáng (-)', () => this.accidental(-1), { cls: 'ghost', html: '<span class="glyph" aria-hidden="true"></span>' })
     this.btn(acc, 'natural', 'Dấu bình', 'Dấu bình', () => this.accidental(0), { cls: 'ghost', html: '<span class="glyph" aria-hidden="true"></span>' })
-    this.btn(acc, 'tie', 'Nối nốt', 'Nối nốt đang chọn với nốt sau, cùng cao độ (T)', () => this.tie(), { cls: 'ghost', html: '<span class="glyph" aria-hidden="true"></span>' })
+    this.btn(acc, 'dsharp', 'Thăng kép', 'Thăng kép', () => this.accidental(2), { cls: 'ghost', html: '<span class="glyph" aria-hidden="true">\uE263</span>' })
+    this.btn(acc, 'dflat', 'Giáng kép', 'Giáng kép', () => this.accidental(-2), { cls: 'ghost', html: '<span class="glyph" aria-hidden="true">\uE264</span>' })
+    this.el('span', 'divider', tools)
+    const lk = this.group(tools); lk.setAttribute('role', 'group'); lk.setAttribute('aria-label', 'Nối và luyến')
+    this.btn(lk, 'tie', 'Nối nốt', 'Nối nốt đang chọn với nốt sau, cùng cao độ (T)', () => this.tie(), { cls: 'ghost', html: '<span class="glyph" aria-hidden="true">\uE1FD</span>' })
+    this.btn(lk, 'slur-q', 'Luyến', 'Luyến: chọn đoạn nốt (Shift+bấm) rồi bấm (S)', () => this.slur(), { cls: 'ghost', html: '<span class="ptxt" aria-hidden="true">⌒</span>' })
+    this.el('span', 'divider', tools)
+    const qa = this.group(tools); qa.setAttribute('role', 'group'); qa.setAttribute('aria-label', 'Dấu nhấn nhanh')
+    ;([['q-marc', 'marcato', '\uE4AC', 'Marcato'], ['q-acc', 'accent', '\uE4A0', 'Accent'], ['q-ten', 'tenuto', '\uE4A4', 'Tenuto'], ['q-stac', 'staccato', '\uE4A2', 'Staccato']] as const)
+      .forEach(([id, a, gl, lab]) => this.btn(qa, id, lab, lab, () => this.articulate(a), { cls: 'ghost', html: `<span class="glyph" aria-hidden="true">${gl}</span>` }))
+    this.el('span', 'divider', tools)
+    const tq = this.group(tools); tq.setAttribute('role', 'group'); tq.setAttribute('aria-label', 'Bộ ba và đuôi nốt')
+    this.btn(tq, 'q-tup', 'Bộ ba', 'Bộ ba tại con trỏ (Ctrl+3)', () => this.tuplet(), { cls: 'ghost', html: '<span class="ptxt" aria-hidden="true">3</span>' })
+    this.btn(tq, 'q-flip', 'Đổi hướng đuôi', 'Đổi hướng đuôi nốt (X)', () => this.flip(), { cls: 'ghost', html: '<span class="ptxt" aria-hidden="true">⇅</span>' })
     this.el('span', 'divider', tools)
     const voice = this.el('div', 'seg sm', tools); voice.setAttribute('role', 'group'); voice.setAttribute('aria-label', 'Giọng')
     for (let v = 0; v < 4; v++) { const b = this.el('button', '', voice); b.type = 'button'; b.textContent = `${v + 1}`; b.title = `Nhập vào giọng ${v + 1}`; b.setAttribute('aria-label', `Giọng ${v + 1}`); b.onclick = () => { this.voice = v; this.refresh(); b.blur() }; this.btns.set(`v${v}`, b) }
@@ -583,63 +645,137 @@ export class Composer {
     title.onchange = () => this.commit((s) => { s.title = title.value })
     const comp = this.el('input', 'field', sc); comp.placeholder = 'Tác giả'; comp.id = 'cmp-composer'; comp.setAttribute('aria-label', 'Tác giả')
     comp.onchange = () => this.commit((s) => { s.composer = comp.value })
-    const sigRow = this.el('div', 'row', sc)
-    const key = this.el('select', 'field', sigRow); key.title = 'Hoá biểu từ ô đang chọn'; key.id = 'cmp-key'; key.setAttribute('aria-label', 'Hoá biểu'); key.style.flex = '1.4'
-    for (let f = -7; f <= 7; f++) key.add(new Option(`${keyName(f)} (${f > 0 ? f + '♯' : f < 0 ? -f + '♭' : '0'})`, String(f)))
-    key.onchange = () => this.commit((s) => setKey(s, this.cursor.m, +key.value))
-    const time = this.el('select', 'field', sigRow); time.title = 'Nhịp từ ô đang chọn (xoá nốt trong các ô bị ảnh hưởng)'; time.id = 'cmp-time'; time.setAttribute('aria-label', 'Nhịp'); time.style.flex = '1'
-    TIME_SIGS.forEach((t) => time.add(new Option(t, t)))
-    time.onchange = () => { const [b, u] = time.value.split('/').map(Number); this.commit((s) => setTime(s, this.cursor.m, { beats: b, unit: u })) }
-    const tempoRow = this.el('label', 'row between', sc); tempoRow.append('Tempo (♩ =)')
+    const tempoRow = this.el('label', 'row between', sc); tempoRow.append('Tốc độ đầu bài (♩ =)')
     const tempo = this.el('input', 'field', tempoRow); tempo.type = 'number'; tempo.min = '30'; tempo.max = '300'; tempo.id = 'cmp-tempo'; tempo.title = 'Tempo (♩ = …)'
     tempo.onchange = () => this.commit((s) => { s.tempo = Math.min(300, Math.max(30, +tempo.value || 100)) })
 
-    const mk = this.section(insp, 'Sắc thái & dấu nhấn')
-    this.cap(mk, 'Sắc thái (cho nốt đang chọn)')
-    const dg = this.el('div', 'grid', mk)
-    ;([['pp', ''], ['p', ''], ['mp', ''], ['mf', ''], ['f', ''], ['ff', '']] as [Dyn, string][]).forEach(([d, g]) => this.btn(dg, `dyn-${d}`, d, `Sắc thái ${d}`, () => this.dynamic(d), { cls: 'ghost dyn', html: `<span class="glyph" aria-hidden="true">${g}</span>` }))
-    this.btn(dg, 'dyn-none', 'Bỏ sắc thái', 'Bỏ sắc thái', () => this.dynamic(undefined), { cls: 'ghost', html: 'Bỏ' })
-    this.cap(mk, 'Mạnh dần / nhẹ dần / luyến (chọn đoạn bằng Shift+bấm)')
-    const hg = this.el('div', 'grid', mk)
-    this.btn(hg, 'cresc', 'Mạnh dần', 'Hairpin mạnh dần', () => this.span('cresc'), { html: 'cresc. &lt;' })
-    this.btn(hg, 'dim', 'Nhẹ dần', 'Hairpin nhẹ dần', () => this.span('dim'), { html: 'dim. &gt;' })
-    this.btn(hg, 'slur', 'Luyến', 'Dấu luyến từ nốt đầu đến nốt cuối của đoạn chọn (S)', () => this.slur(), { html: 'Luyến' })
-    this.cap(mk, 'Dấu nhấn')
-    const ag = this.el('div', 'grid', mk)
-    for (const [id, label, a, tip] of [['stac', 'Staccato', 'staccato', 'Ngắt nốt'], ['acc', 'Accent', 'accent', 'Nhấn'], ['ten', 'Tenuto', 'tenuto', 'Giữ đủ giá trị'], ['marc', 'Marcato', 'marcato', 'Nhấn mạnh'], ['ferm', 'Fermata', 'fermata', 'Ngân dài (chỉ hiển thị)']] as const)
-      this.btn(ag, id, label, tip, () => this.articulate(a))
-    this.cap(mk, 'Hoa mỹ')
-    const og = this.el('div', 'grid', mk)
-    this.btn(og, 'mord', 'Mordent', 'Nốt chính – nốt dưới – nốt chính', () => this.ornament('mordent'))
-    this.btn(og, 'invm', 'Mordent đảo', 'Nốt chính – nốt trên – nốt chính', () => this.ornament('inverted'))
+    // ---- palettes, in the order and with the names MuseScore uses
+    const P = (vi: string, en: string, open = false) => this.section(insp, `${vi} <small>${en}</small>`, open)
+    const grid = (p: HTMLElement) => this.el('div', 'grid', p)
+    const needsNote = 'Chọn nốt trước (Shift+bấm để chọn cả đoạn)'
 
-    const tp = this.section(insp, 'Bộ ba', false)
-    const tup = this.el('select', 'field', tp); tup.id = 'cmp-tup'; tup.title = 'Loại bộ ba'; tup.setAttribute('aria-label', 'Loại bộ ba')
-    TUPLETS.forEach((t, i) => tup.add(new Option(t.label, String(i))))
-    const tg = this.el('div', 'grid', tp)
-    this.btn(tg, 'tuplet', 'Tạo bộ ba', 'Tạo bộ ba tại con trỏ với độ dài nốt đang chọn (Ctrl+3)', () => this.tuplet(), { cls: 'sm', html: 'Tạo (Ctrl+3)' })
-    this.btn(tg, 'untuplet', 'Gỡ bộ ba', 'Gỡ bộ ba của nốt đang chọn', () => this.unTuplet(), { html: 'Gỡ' })
+    const ar = P('Rải & lướt', 'Arpeggios & glissandos'); let g = grid(ar)
+    this.pal(g, 'arp-up', '\uE63F', 'Rải lên', 'Rải hợp âm từ thấp lên cao', () => this.evMark('arp', 'up'))
+    this.pal(g, 'arp-down', '\uE640', 'Rải xuống', 'Rải hợp âm từ cao xuống thấp', () => this.evMark('arp', 'down'))
+    this.pal(g, 'arp-plain', '\uE63C', 'Rải', 'Rải hợp âm (không mũi tên)', () => this.evMark('arp', 'plain'))
+    this.pal(g, 'gliss-s', 'gliss ─', 'Lướt thẳng', 'Lướt từ nốt này đến nốt kế (đường thẳng)', () => this.evMark('gliss', 'straight'), true)
+    this.pal(g, 'gliss-w', 'gliss ∿', 'Lướt lượn', 'Lướt từ nốt này đến nốt kế (đường lượn)', () => this.evMark('gliss', 'wavy'), true)
 
-    const bar = this.section(insp, 'Ô nhịp & lặp', false)
-    const bg = this.el('div', 'grid', bar)
-    this.btn(bg, 'addbar', 'Thêm ô nhịp', 'Thêm ô nhịp sau ô đang chọn', () => this.commit((s) => insertMeasure(s, this.cursor.m)), { html: `${icon('plus')}Ô nhịp` })
-    this.btn(bg, 'delbar', 'Xoá ô nhịp', 'Xoá ô nhịp đang chọn', () => { this.commit((s) => deleteMeasure(s, this.cursor.m)); this.cursor.m = Math.min(this.cursor.m, this.score.measures.length - 1); this.refresh() }, { html: `${icon('minus')}Ô nhịp` })
-    this.cap(bar, 'Dấu lặp')
-    const rg = this.el('div', 'grid', bar)
-    this.btn(rg, 'rs', 'Dấu lặp bắt đầu', 'Dấu lặp bắt đầu', () => this.commit((s) => { const m = s.measures[this.cursor.m]; m.startRepeat = !m.startRepeat }), { html: '|:' })
-    this.btn(rg, 're', 'Dấu lặp kết thúc', 'Dấu lặp kết thúc', () => this.commit((s) => { const m = s.measures[this.cursor.m]; m.endRepeat = !m.endRepeat }), { html: ':|' })
+    const tr = P('Tremolo', 'Tremolos'); g = grid(tr)
+    ;([[1, '\uE220'], [2, '\uE221'], [3, '\uE222']] as const).forEach(([n, gl]) => this.pal(g, `trem${n}`, gl, `Tremolo ${n} vạch`, `Tremolo ${n} vạch: nốt lặp 1/${8 * 2 ** (n - 1)}`, () => this.evMark('trem', n)))
+
+    const gr = P('Nốt láy', 'Grace notes'); g = grid(gr)
+    this.pal(g, 'acc', 'Láy ngắn ⁄', 'Acciaccatura', 'Nốt láy ngắn có gạch chéo, thêm trước nốt đang chọn', () => this.grace('acc'), true)
+    this.pal(g, 'app', 'Láy dài', 'Appoggiatura', 'Nốt láy không gạch, thêm trước nốt đang chọn', () => this.grace('app'), true)
+    this.pal(g, 'gup', 'Láy ↑', 'Nâng nốt láy', 'Nâng nốt láy cuối lên một bậc', () => this.graceMove(1), true)
+    this.pal(g, 'gdn', 'Láy ↓', 'Hạ nốt láy', 'Hạ nốt láy cuối xuống một bậc', () => this.graceMove(-1), true)
+    this.pal(g, 'gclr', 'Bỏ láy', 'Xoá nốt láy', 'Xoá nốt láy của nốt đang chọn', () => this.graceClear(), true)
+    this.cap(gr, 'Độ nhanh nốt láy khi nghe: Cài đặt → Nốt láy')
+
+    const cl = P('Khoá nhạc', 'Clefs'); g = grid(cl); g.classList.add('wide')
+    ;(Object.keys(CLEFS) as ClefName[]).forEach((c) => this.pal(g, `clef-${c}`, CLEFS[c].glyph, CLEFS[c].label, `Khoá ${CLEFS[c].label}: đổi từ ô đang chọn trở đi, cho khuông ${'đang chọn'}`, () => this.clef(c)))
+    this.cap(cl, 'Áp dụng cho khuông đang chọn, từ ô đang chọn. Nốt giữ nguyên cao độ.')
+
+    const ks = P('Hoá biểu', 'Key signatures'); g = grid(ks); g.classList.add('wide')
+    for (let f = -7; f <= 7; f++) this.pal(g, `key${f}`, `${keyName(f)}<small>${f > 0 ? f + '♯' : f < 0 ? -f + '♭' : '0'}</small>`, `${keyName(f)} (${f})`, `Hoá biểu ${keyName(f)} từ ô đang chọn`, () => this.keySig(f), true)
+
+    const ts = P('Nhịp', 'Time signatures'); g = grid(ts)
+    for (const t of ['2/4', '3/4', '4/4', '5/4', '6/4', '7/4', '2/2', '3/2', '3/8', '6/8', '9/8', '12/8', '5/8', '7/8']) this.pal(g, `time${t}`, t, `Nhịp ${t}`, `Nhịp ${t} từ ô đang chọn (các nốt được chia lại)`, () => { const [b, u] = t.split('/').map(Number); this.timeSig(b, u) }, true)
+    this.pal(g, 'time-c', '\uE08A', 'Nhịp C', 'Nhịp 4/4 ký hiệu C', () => this.timeSig(4, 4, 'common'))
+    this.pal(g, 'time-cut', '\uE08B', 'Nhịp ¢', 'Nhịp 2/2 ký hiệu ¢', () => this.timeSig(2, 2, 'cut'))
+
+    const tp0 = P('Tốc độ', 'Tempo'); g = grid(tp0)
+    for (const [t, b] of [['Largo', 50], ['Adagio', 70], ['Andante', 90], ['Moderato', 108], ['Allegro', 132], ['Presto', 176]] as const) this.pal(g, `tp-${t}`, t, `${t} ♩=${b}`, `${t}, ♩ = ${b}, từ ô đang chọn`, () => this.tempoMark(b, t), true)
+    const trow = this.el('div', 'row', tp0)
+    const tbpm = this.el('input', 'field', trow); tbpm.type = 'number'; tbpm.min = '20'; tbpm.max = '300'; tbpm.placeholder = '♩ ='; tbpm.id = 'cmp-bpm'; tbpm.setAttribute('aria-label', 'Số phách mỗi phút'); tbpm.style.width = '72px'
+    const ttxt = this.el('input', 'field', trow); ttxt.placeholder = 'Chữ (vd. Vivace)'; ttxt.id = 'cmp-tempotext'; ttxt.setAttribute('aria-label', 'Chữ chỉ tốc độ')
+    const tapply = this.el('div', 'grid', tp0)
+    this.btn(tapply, 'tp-apply', 'Đặt tốc độ', 'Đặt tốc độ từ ô đang chọn', () => this.tempoMark(+tbpm.value || undefined, ttxt.value.trim() || undefined), { html: 'Đặt' })
+    this.btn(tapply, 'tp-clear', 'Bỏ tốc độ', 'Bỏ dấu tốc độ ở ô đang chọn', () => this.tempoMark(undefined, undefined), { html: 'Bỏ' })
+    for (const t of ['rit.', 'accel.', 'a tempo']) this.btn(tapply, `tp-${t}`, t, `Chữ "${t}" (chỉ hiển thị, không đổi tốc độ)`, () => { const m = this.here(); this.commit((s) => { s.measures[m].tempoText = t }) }, { html: t })
+
+    const pt = P('Cao độ', 'Pitch'); g = grid(pt)
+    for (const [k, gl, lab] of [['o8', '8va', '8va (lên 1 quãng tám)'], ['o-8', '8vb', '8vb (xuống 1 quãng tám)'], ['o15', '15ma', '15ma (lên 2 quãng tám)'], ['o-15', '15mb', '15mb (xuống 2 quãng tám)']] as const)
+      this.pal(g, k, gl, lab, `${lab}: chọn đoạn nốt (Shift+bấm) rồi bấm`, () => this.span(k), true)
+    this.cap(pt, 'Nốt trong đoạn được viết thấp/cao hơn một quãng; âm thanh giữ nguyên.')
+
+    const ac = P('Dấu hoá', 'Accidentals'); g = grid(ac)
+    ;([[-2, '\uE264', 'Giáng kép'], [-1, '\uE260', 'Giáng'], [0, '\uE261', 'Bình'], [1, '\uE262', 'Thăng'], [2, '\uE263', 'Thăng kép']] as const).forEach(([al, gl, lab]) => this.pal(g, `acc${al}`, gl, lab, `${lab} cho nốt đang chọn (hoặc nốt kế tiếp khi nhập)`, () => this.accidental(al)))
+
+    const dy = P('Sắc thái', 'Dynamics', true); g = grid(dy)
+    for (const d of ['pppp', 'ppp', 'pp', 'p', 'mp', 'mf', 'f', 'ff', 'fff', 'ffff', 'sf', 'sfz', 'fp', 'sfp', 'rfz'] as Dyn[]) this.btn(g, `dyn-${d}`, d, `Sắc thái ${d}`, () => this.dynamic(d), { cls: 'ghost dyn', html: `<span class="glyph" aria-hidden="true">${DYN_GLYPH[d]}</span>` })
+    this.btn(g, 'dyn-none', 'Bỏ sắc thái', 'Bỏ sắc thái', () => this.dynamic(undefined), { cls: 'ghost', html: 'Bỏ' })
+    this.cap(dy, 'Mạnh dần / nhẹ dần (chọn đoạn bằng Shift+bấm)')
+    g = grid(dy)
+    this.btn(g, 'cresc', 'Mạnh dần', 'Hairpin mạnh dần', () => this.span('cresc'), { html: 'cresc. &lt;' })
+    this.btn(g, 'dim', 'Nhẹ dần', 'Hairpin nhẹ dần', () => this.span('dim'), { html: 'dim. &gt;' })
+
+    const ar2 = P('Dấu nhấn & hoa mỹ', 'Articulations', true); g = grid(ar2)
+    ;([['stac', 'staccato', '\uE4A2', 'Staccato', 'Ngắt nốt'], ['stacc2', 'staccatissimo', '\uE4A6', 'Staccatissimo', 'Ngắt rất ngắn'], ['acc', 'accent', '\uE4A0', 'Accent', 'Nhấn'], ['ten', 'tenuto', '\uE4A4', 'Tenuto', 'Giữ đủ giá trị'], ['marc', 'marcato', '\uE4AC', 'Marcato', 'Nhấn mạnh'], ['ferm', 'fermata', '\uE4C0', 'Fermata', 'Ngân dài (chỉ hiển thị)'], ['upb', 'upbow', '\uE612', 'Kéo lên', 'Up bow'], ['dnb', 'downbow', '\uE610', 'Kéo xuống', 'Down bow']] as const)
+      .forEach(([id, a, gl, lab, tip]) => this.pal(g, id, gl, lab, `${lab}: ${tip}`, () => this.articulate(a)))
+    this.pal(g, 'loure', '\uE4B2', 'Portato', 'Portato (louré): tenuto + staccato', () => { this.articulate('tenuto'); this.articulate('staccato') })
+    g = grid(ar2)
+    this.pal(g, 'trill', '\uE566', 'Trill', 'Trill: luân phiên với nốt trên', () => this.ornament('trill'))
+    this.pal(g, 'turn', '\uE567', 'Turn', 'Turn: trên – chính – dưới – chính', () => this.ornament('turn'))
+    this.pal(g, 'mord', '\uE56D', 'Mordent', 'Nốt chính – nốt dưới – nốt chính', () => this.ornament('mordent'))
+    this.pal(g, 'invm', '\uE56C', 'Mordent đảo', 'Nốt chính – nốt trên – nốt chính', () => this.ornament('inverted'))
+    this.pal(g, 'breath', '\uE4CE', 'Dấu lấy hơi', 'Dấu lấy hơi sau nốt (chỉ hiển thị)', () => this.evMark('breath', 'breath'))
+    this.pal(g, 'caes', '\uE4D1', 'Caesura', 'Caesura // sau nốt (chỉ hiển thị)', () => this.evMark('breath', 'caesura'))
+    this.pal(g, 'flip', 'Lật đuôi ⇅', 'Đổi hướng đuôi nốt', 'Đổi hướng đuôi nốt (X)', () => this.flip(), true)
+    this.pal(g, 'slur', 'Luyến ⌒', 'Luyến', 'Dấu luyến từ nốt đầu đến nốt cuối của đoạn chọn (S)', () => this.slur(), true)
+    this.pal(g, 'tie2', 'Nối ‿', 'Nối nốt', 'Nối nốt đang chọn với nốt sau, cùng cao độ (T)', () => this.tie(), true)
+
+    const tx = P('Chữ', 'Text'); 
+    const tkind = this.el('select', 'field', tx); tkind.id = 'cmp-textkind'; tkind.setAttribute('aria-label', 'Loại chữ')
+    ;([['lyric', 'Lời hát (Enter: sang nốt kế)'], ['chord', 'Hợp âm (Am7, C/E…)'], ['staffText', 'Chữ trên khuông'], ['expr', 'Chữ biểu cảm (dolce…)']] as const).forEach(([v, l]) => tkind.add(new Option(l, v)))
+    const tin = this.el('input', 'field', tx); tin.id = 'cmp-text'; tin.placeholder = 'Gõ chữ cho nốt đang chọn, Enter'; tin.setAttribute('aria-label', 'Chữ cho nốt đang chọn')
+    tin.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); this.text(tkind.value as TextField, tin.value); tin.value = tkind.value === 'lyric' ? '' : tin.value } e.stopPropagation() }
+    this.cap(tx, 'Chữ gắn vào nốt đang chọn. Bỏ trống rồi Enter để xoá.')
+    const rrow = this.el('div', 'row', tx)
+    const rin = this.el('input', 'field', rrow); rin.id = 'cmp-rehearsal'; rin.placeholder = 'Dấu tập (A, B, 1…)'; rin.setAttribute('aria-label', 'Dấu tập')
+    this.btn(rrow, 'rehearsal', 'Đặt dấu tập', 'Đặt dấu tập trong khung ở ô đang chọn (bỏ trống = xoá)', () => this.rehearsal(rin.value), { html: 'Đặt' })
+
+    const kb = P('Pedal', 'Keyboard'); g = grid(kb)
+    this.pal(g, 'pedal', '\uE650', 'Pedal', 'Pedal đạp: chọn đoạn nốt (Shift+bấm) rồi bấm. Chỉ hiển thị và xuất file', () => this.span('pedal'))
+    this.cap(kb, 'Pedal chỉ hiển thị và xuất MusicXML; không đổi độ dài nốt.')
+
+    const bar = P('Lặp & nhảy', 'Repeats & jumps')
+    g = grid(bar)
+    this.btn(g, 'rs', 'Dấu lặp bắt đầu', 'Dấu lặp bắt đầu', () => this.commit((s) => { const m = s.measures[this.here()]; m.startRepeat = !m.startRepeat }), { html: '|:' })
+    this.btn(g, 're', 'Dấu lặp kết thúc', 'Dấu lặp kết thúc', () => this.commit((s) => { const m = s.measures[this.here()]; m.endRepeat = !m.endRepeat; if (m.endRepeat) m.barline = undefined }), { html: ':|' })
+    this.btn(g, 'rbar', 'Lặp ô trước', 'Chép nội dung ô trước vào ô này', () => this.repeatBar(), { html: 'Chép ô trước' })
     const vsel = this.el('select', 'field', bar); vsel.id = 'cmp-volta'; vsel.title = 'Ô nhịp tạm (1., 2.…) cho các ô đang chọn'; vsel.setAttribute('aria-label', 'Ô nhịp tạm')
     ;[['', 'Ô nhịp tạm…'], ['none', '(bỏ)'], ['1', '1.'], ['2', '2.'], ['3', '3.'], ['1,2', '1., 2.'], ['1,2,3', '1.–3.']].forEach(([v, l]) => vsel.add(new Option(l, v)))
     vsel.onchange = () => { if (vsel.value) this.ending(vsel.value === 'none' ? undefined : vsel.value.split(',').map(Number)); vsel.value = '' }
     this.cap(bar, 'Điều hướng')
-    const ng = this.el('div', 'grid', bar)
-    this.btn(ng, 'segno', 'Segno', 'Dấu Segno ở đầu ô (đích của D.S.)', () => this.mark('segno'))
-    this.btn(ng, 'coda', 'Coda', 'Dấu Coda ở đầu ô (đích của "To Coda")', () => this.mark('coda'))
-    this.btn(ng, 'tocoda', 'To Coda', 'Cuối ô này nhảy sang Coda (sau D.C./D.S. al Coda)', () => this.mark('toCoda'))
-    this.btn(ng, 'fine', 'Fine', 'Cuối ô này kết thúc (sau D.C./D.S. al Fine)', () => this.mark('fine'))
+    g = grid(bar)
+    this.btn(g, 'segno', 'Segno', 'Dấu Segno ở đầu ô (đích của D.S.)', () => this.mark('segno'), { cls: 'sm', html: '<span class="glyph sm" aria-hidden="true">\uE047</span> Segno' })
+    this.btn(g, 'coda', 'Coda', 'Dấu Coda ở đầu ô (đích của "To Coda")', () => this.mark('coda'), { cls: 'sm', html: '<span class="glyph sm" aria-hidden="true">\uE048</span> Coda' })
+    this.btn(g, 'tocoda', 'To Coda', 'Cuối ô này nhảy sang Coda (sau D.C./D.S. al Coda)', () => this.mark('toCoda'))
+    this.btn(g, 'fine', 'Fine', 'Cuối ô này kết thúc (sau D.C./D.S. al Fine)', () => this.mark('fine'))
     const jsel = this.el('select', 'field', bar); jsel.id = 'cmp-jump'; jsel.title = 'Nhảy ở cuối ô đang chọn'; jsel.setAttribute('aria-label', 'Nhảy')
     ;[['', 'Nhảy…'], ['none', '(không nhảy)'], ['dc-end', 'D.C.'], ['dc-fine', 'D.C. al Fine'], ['dc-coda', 'D.C. al Coda'], ['ds-end', 'D.S.'], ['ds-fine', 'D.S. al Fine'], ['ds-coda', 'D.S. al Coda']].forEach(([v, l]) => jsel.add(new Option(l, v)))
     jsel.onchange = () => { if (jsel.value) { const [k, al] = jsel.value.split('-'); this.jump(jsel.value === 'none' ? undefined : { kind: k as 'dc' | 'ds', al: al as 'end' | 'fine' | 'coda' }) } jsel.value = '' }
+
+    const bl = P('Vạch nhịp', 'Barlines'); g = grid(bl)
+    for (const [k, lab, gl] of [['single', 'Vạch đơn', '│'], ['double', 'Vạch đôi', '║'], ['final', 'Vạch kết', '┃┃'], ['dashed', 'Vạch đứt', '¦'], ['dotted', 'Vạch chấm', '⁞'], ['none', 'Ẩn vạch', '∅']] as const)
+      this.pal(g, `bl-${k}`, gl, lab, `${lab} ở cuối ô đang chọn`, () => this.barline(k as BarlineKind), true)
+
+    const lay = P('Bố cục', 'Layout'); g = grid(lay)
+    this.btn(g, 'sysbreak', 'Xuống dòng', 'Bắt đầu hệ khuông mới sau ô đang chọn', () => this.pageBreak('system'), { html: 'Xuống dòng ↵' })
+    this.btn(g, 'pgbreak', 'Sang trang', 'Bắt đầu trang mới sau ô đang chọn (khi xuất PDF)', () => this.pageBreak('page'), { html: 'Sang trang ⎘' })
+    this.btn(g, 'wider', 'Giãn ô', 'Giãn ô đang chọn', () => this.stretch(0.25), { html: 'Giãn ô +' })
+    this.btn(g, 'narrower', 'Hẹp ô', 'Thu hẹp ô đang chọn', () => this.stretch(-0.25), { html: 'Hẹp ô −' })
+    g = grid(lay)
+    this.btn(g, 'addbar', 'Thêm ô nhịp', 'Thêm ô nhịp sau ô đang chọn', () => this.commit((s) => insertMeasure(s, this.here())), { html: `${icon('plus')}Ô nhịp` })
+    this.btn(g, 'delbar', 'Xoá ô nhịp', 'Xoá ô nhịp đang chọn', () => { this.commit((s) => deleteMeasure(s, this.here())); this.cursor.m = Math.min(this.cursor.m, this.score.measures.length - 1); this.refresh() }, { html: `${icon('minus')}Ô nhịp` })
+
+    const tp = P('Bộ ba', 'Tuplets')
+    const tup = this.el('select', 'field', tp); tup.id = 'cmp-tup'; tup.title = 'Loại bộ ba'; tup.setAttribute('aria-label', 'Loại bộ ba')
+    TUPLETS.forEach((t, i) => tup.add(new Option(t.label, String(i))))
+    g = grid(tp)
+    this.btn(g, 'tuplet', 'Tạo bộ ba', 'Tạo bộ ba tại con trỏ với độ dài nốt đang chọn (Ctrl+3)', () => this.tuplet(), { cls: 'sm', html: 'Tạo (Ctrl+3)' })
+    this.btn(g, 'untuplet', 'Gỡ bộ ba', 'Gỡ bộ ba của nốt đang chọn', () => this.unTuplet(), { html: 'Gỡ' })
 
     // ---- status bar
     const sb = this.el('div', 'cmp-statusbar', r)

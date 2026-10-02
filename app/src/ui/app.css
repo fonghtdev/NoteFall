@@ -233,3 +233,16 @@ input[type='range']:active::-webkit-slider-thumb { transform: scale(1.3); box-sh
 .field:focus-visible { box-shadow: 0 0 0 3px var(--accent-soft); }
 #stage.dragging::after { animation: fade 160ms ease-out; }
 #gl { -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 90px); mask-image: linear-gradient(to bottom, transparent 0, #000 90px); } /* notes materialise out of the top edge */
+
+/* ---- composer palettes -------------------------------------------------------------------------------- */
+.cmp-insp summary small { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--text-3); margin-left: 6px; }
+.cmp-insp summary > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.btn.pal { min-width: 36px; height: 36px; padding: 0 6px; }
+.btn.pal .glyph { font-size: 24px; line-height: 1; color: var(--text); }
+.btn.pal .glyph.sm { font-size: 18px; }
+.btn.pal .ptxt { font-size: 12px; font-weight: 600; line-height: 1.1; display: inline-flex; flex-direction: column; align-items: center; color: var(--text); }
+.btn.pal .ptxt small { font-size: 10px; font-weight: 400; color: var(--text-3); }
+.cmp-insp .grid.wide .pal { min-width: 44px; }
+.cmp-insp .row { display: flex; gap: var(--s2); }
+.cmp-tools .btn .ptxt { font-size: 15px; font-weight: 600; }
+.cmp-insp .grid.wide .pal { height: 46px; } .cmp-insp .grid.wide .pal .glyph { font-size: 20px; }

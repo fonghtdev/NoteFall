@@ -91,6 +91,33 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
       c.cursor.m = 2
       ok('bad jump is reported', (c.jump({ kind: 'ds', al: 'coda' }), !!document.querySelector('.cmp-status')?.textContent?.includes('⚠')))
       c.jump(undefined)
+      { // the palette buttons really act on the score
+        const d = await import('./editor/demo')
+        c.setScore(d.fromText([{ rh: 'C5+E5+G5:2 D5:1 E5:1', lh: 'r:4' }, { rh: 'F5:1 G5:1 A5:1 B5:1', lh: 'r:4' }, { rh: 'C6:4', lh: 'r:4' }]))
+        const press = (label: string) => { const b = document.querySelector<HTMLElement>(`.cmp-insp [aria-label="${label}"]`); if (!b) throw new Error('no button ' + label); b.click() }
+        const evs = () => c.score.measures[0].staves[0][0]
+        c.sel = evs()[0].id; c.range = []
+        press('Rải lên'); ok('palette: Rải lên sets an upward arpeggio', evs()[0].arp === 'up')
+        press('Trill'); ok('palette: Trill', evs()[0].orn === 'trill')
+        press('Tremolo 2 vạch'); ok('palette: Tremolo 2 vạch', evs()[0].trem === 2)
+        press('Staccatissimo'); ok('palette: Staccatissimo', !!evs()[0].art?.includes('staccatissimo'))
+        press('Appoggiatura'); ok('palette: grace note appears a step above', evs()[0].graces?.length === 1 && evs()[0].graces![0].step === 'A')
+        press('Sfz'.toLowerCase()); ok('palette: sfz', evs()[0].dyn === 'sfz')
+        const bar1 = c.score.measures[1].staves[0][0]
+        c.sel = bar1[0].id; c.selectRange(bar1[3].id)
+        press('8va (lên 1 quãng tám)'); ok('palette: 8va over the selected notes', bar1[0].ottava?.n === 8 && bar1[0].ottava.end === bar1[3].id)
+        press('Pedal'); ok('palette: pedal over the selected notes', bar1[0].pedal?.end === bar1[3].id)
+        c.cursor = { m: 1, staff: 1, at: 0 }; c.sel = undefined; c.range = []
+        press('Sol 8 dưới'); ok('palette: clef change at the cursor bar, lower staff', c.score.measures[1].clefs?.[1] === 'treble8vb')
+        press('Vạch đôi'); ok('palette: double barline', c.score.measures[1].barline === 'double')
+        press('Xuống dòng'); ok('palette: line break', c.score.measures[1].break === 'system')
+        press('Nhịp 3/4'); ok('palette: 3/4 keeps all the notes (re-barred)', c.score.measures[1].time?.beats === 3 && c.score.measures.flatMap((m) => m.staves[0].flat()).filter((e) => e.pitches.length).length >= 8)
+        const tin = document.getElementById('cmp-text') as HTMLInputElement
+        c.sel = c.score.measures[0].staves[0][0][1].id; tin.value = 'la'; tin.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', cancelable: true, bubbles: true }))
+        ok('text box: Enter sets a lyric and moves on to the next note', c.score.measures[0].staves[0][0][1].lyric === 'la' && c.sel !== c.score.measures[0].staves[0][0][1].id)
+        c.undo(); c.undo()
+        c.setScore(d.minuet())
+      }
       { // preview sound: a second click cancels instead of doubling, and leaving the tab silences it
         const playing = () => !!(c as unknown as { playing?: unknown }).playing || (c as unknown as { starting: boolean }).starting
         void c.togglePlay(); void c.togglePlay()
@@ -104,10 +131,16 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
       }
     }
 
+    const uiq = new URLSearchParams(location.search).get('ui') ?? ''
+    if (uiq.startsWith('palettes')) { // open every palette, then scroll the panel (palettes:900 = 900px down) so a screenshot can show any part
+      document.querySelectorAll<HTMLDetailsElement>('.cmp-insp details').forEach((d) => { d.open = true })
+      await new Promise((r) => setTimeout(r, 400))
+      document.querySelector('.cmp-insp')!.scrollTop = +(uiq.split(':')[1] ?? 0)
+    }
     if (new URLSearchParams(location.search).get('ui') === 'menu') (document.querySelector('[aria-label="Tệp"]') as HTMLElement).click()
     // a little tune for the screenshot
-    const { minuet, showcase, endings } = await import('./editor/demo')
-    c.setScore(location.search.includes('endings') ? endings() : location.search.includes('showcase') ? showcase() : minuet())
+    const { minuet, showcase, endings, palette } = await import('./editor/demo')
+    c.setScore(location.search.includes('endings') ? endings() : location.search.includes('palette') ? palette() : location.search.includes('showcase') ? showcase() : minuet())
     c.setMode('select')
     c.click(c.layout.measures[1].evs.find((e) => e.staff === 0)!.x, c.layout.measures[1].staves[0].top + 5)
     if (location.search.includes('pdf')) { // export a longer score (several pages) as vector PDF
@@ -131,7 +164,7 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
   }
   if (location.search.includes('editor')) { // render a score with the engraver and look at it
     const { renderScore } = await import('./editor/render')
-    const { minuet, showcase, endings } = await import('./editor/demo')
+    const { minuet, showcase, endings, palette } = await import('./editor/demo')
     const host = document.createElement('div')
     host.style.cssText = 'position:fixed;inset:0;background:#fff;z-index:99;overflow:auto'
     document.body.append(host)

@@ -1,4 +1,4 @@
-import { TPQ, emptyScore, makeTuplet, putInTuplet, putNote, setDyn, toggleArt, toggleSpan, type Pitch, type Score, type StepName } from './model'
+import { TPQ, addGrace, emptyScore, makeTuplet, putInTuplet, putNote, setBarline, setBreak, setClef, setDyn, setKey, setRehearsal, setTempoMark, setText, toggleArt, toggleEv, toggleSpan, type Pitch, type Score, type StepName } from './model'
 
 /** "F#4" -> Pitch */
 export const pitch = (s: string): Pitch => {
@@ -78,5 +78,45 @@ export function endings(): Score {
   s.measures[3].volta = [2]
   s.measures[4].fine = true
   s.measures[5].jump = { kind: 'dc', al: 'fine' }
+  return s
+}
+
+
+/** One of everything the palettes can place: used to look at the engraving and to test playback and export. */
+export function palette(): Score {
+  const s = fromText([
+    { rh: 'C5:1 D5:1 E5:1 F5:1', lh: 'C3+E3+G3:2 C3+G3:2' },
+    { rh: 'G5:2 E5:2', lh: 'C3:4' },
+    { rh: 'C6:1 D6:1 E6:1 F6:1', lh: 'G2:2 D3:2' },
+    { rh: 'G5:4', lh: 'G2+D3:4' },
+    { rh: 'D5:2 B4:2', lh: 'G3:2 D3:2' },
+    { rh: 'E5:1 F#5:1 G5:2', lh: 'E3:4' },
+    { rh: 'A5:2 F#5:2', lh: 'D3:4' },
+    { rh: 'G5:4', lh: 'G2+D3+G3:4' },
+  ], { title: 'Bảng ký hiệu', tempo: 100 })
+  const ev = (m: number, k: number, staff = 0) => s.measures[m].staves[staff][0][k]
+  toggleEv(s, ev(0, 0).id, 'orn', 'trill')
+  toggleEv(s, ev(0, 1).id, 'orn', 'turn')
+  toggleEv(s, ev(0, 2).id, 'orn', 'mordent')
+  toggleArt(s, ev(0, 3).id, 'staccatissimo')
+  toggleEv(s, ev(0, 0, 1).id, 'arp', 'up')
+  setText(s, ev(0, 0).id, 'chord', 'C'); setText(s, ev(0, 0).id, 'lyric', 'la'); setText(s, ev(0, 1).id, 'lyric', 'la')
+  setText(s, ev(0, 2).id, 'expr', 'dolce')
+  toggleEv(s, ev(1, 0).id, 'trem', 2)
+  addGrace(s, ev(1, 1).id, 'acc')
+  toggleEv(s, ev(1, 0).id, 'gliss', 'wavy')
+  toggleSpan(s, 'o8', ev(2, 0).id, ev(2, 3).id)
+  toggleSpan(s, 'pedal', ev(2, 0, 1).id, ev(3, 0, 1).id)
+  setText(s, ev(3, 0).id, 'staffText', 'pesante')
+  ev(3, 0).breath = 'caesura'
+  setBarline(s, 3, 'double')
+  setTempoMark(s, 4, 80, 'Andante'); setRehearsal(s, 4, 'B')
+  setClef(s, 4, 1, 'tenor')
+  setKey(s, 4, 1)
+  setDyn(s, ev(4, 0).id, 'sfz'); setDyn(s, ev(5, 0).id, 'fp')
+  toggleEv(s, ev(6, 0).id, 'gliss', 'straight')
+  setBreak(s, 5, 'system')
+  setBarline(s, 6, 'dashed')
+  s.measures[7].barline = 'final'
   return s
 }

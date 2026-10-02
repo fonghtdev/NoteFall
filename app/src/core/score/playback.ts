@@ -59,8 +59,28 @@ export function unroll(score: Score, repeats = true): Timed[] {
   return out.filter((_, k) => !gone.has(k)).map(({ pitch, start, duration, staff, velocity }) => ({ pitch, start, duration, staff, velocity }))
 }
 
-/** `bpm` = quarter notes per minute. */
-export function toNotes(timed: Timed[], bpm: number, velocity = 85): Note[] {
+/** Where the tempo changes, in the order the bars are played: `ratio` is the speed relative to the first bar. Empty when it never changes. */
+export function tempoRatios(score: Score, repeats = true): { at: number; ratio: number }[] {
+  const base = score.measures[0]?.tempo
+  if (!base) return []
+  const out: { at: number; ratio: number }[] = []
+  let at = 0, last = 1
+  for (const mi of playOrder(score.measures, repeats)) {
+    const m = score.measures[mi]
+    const ratio = (m.tempo ?? base) / base
+    if (Math.abs(ratio - last) > 1e-9) { out.push({ at, ratio }); last = ratio }
+    at += m.length
+  }
+  return out
+}
+
+/** `bpm` = quarter notes per minute (at the start; `changes` speed it up or down from there). */
+export function toNotes(timed: Timed[], bpm: number, velocity = 85, changes: { at: number; ratio: number }[] = []): Note[] {
   const k = 60 / bpm
-  return timed.map((n) => ({ pitch: n.pitch, start: n.start * k, duration: n.duration * k, velocity: n.velocity ?? velocity, hand: (n.staff >= 1 ? 1 : 0) as 0 | 1 })) // upper staff = right hand
+  const secs = (q: number) => { // quarter notes -> seconds, walking through the tempo changes
+    let t = 0, from = 0, ratio = 1
+    for (const c of changes) { if (c.at >= q) break; t += (c.at - from) * k / ratio; from = c.at; ratio = c.ratio }
+    return t + (q - from) * k / ratio
+  }
+  return timed.map((n) => ({ pitch: n.pitch, start: secs(n.start), duration: secs(n.start + n.duration) - secs(n.start), velocity: n.velocity ?? velocity, hand: (n.staff >= 1 ? 1 : 0) as 0 | 1 })) // upper staff = right hand
 }

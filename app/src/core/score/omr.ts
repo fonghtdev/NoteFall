@@ -27,6 +27,7 @@ export interface Measure {
   startRepeat: boolean
   endRepeat: boolean
   suspect?: string       // set when the rhythm does not add up to `length`
+  tempo?: number         // quarter notes per minute in force at this bar (composer scores; absent = the score's single tempo)
   written?: { staff: number; voices: Written[][] }[] // notation view of the same bar, for editing
   // navigation (set by the composer / MusicXML, not read from PDFs yet)
   volta?: number[]       // this bar is inside an ending bracket for these passes (1st, 2nd ending…)

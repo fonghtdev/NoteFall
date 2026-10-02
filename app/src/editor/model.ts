@@ -6,8 +6,25 @@ export interface Pitch { step: StepName; alter: number; octave: number } // alte
 
 /** `n` notes in the time of `m` (3:2 = triplet). Members share a group id and sit side by side. */
 export interface Tup { n: number; m: number; group: number }
-export type Dyn = 'ppp' | 'pp' | 'p' | 'mp' | 'mf' | 'f' | 'ff' | 'fff'
-export type Art = 'staccato' | 'accent' | 'tenuto' | 'marcato' | 'fermata'
+export type Dyn = 'pppp' | 'ppp' | 'pp' | 'p' | 'mp' | 'mf' | 'f' | 'ff' | 'fff' | 'ffff' | 'sf' | 'sfz' | 'fp' | 'sfp' | 'rfz'
+export type Art = 'staccato' | 'accent' | 'tenuto' | 'marcato' | 'fermata' | 'staccatissimo' | 'upbow' | 'downbow'
+export type Orn = 'mordent' | 'inverted' | 'trill' | 'turn'
+export type SpanKind = 'slur' | 'cresc' | 'dim' | 'o8' | 'o-8' | 'o15' | 'o-15' | 'pedal'
+
+export type ClefName = 'treble' | 'bass' | 'alto' | 'tenor' | 'treble8vb' | 'treble8va' | 'bass8vb' | 'bass8va'
+/** `vf` and `ann` are what VexFlow draws; `bottom` is the diatonic index (C0 = 0) of the bottom line as written; `shift` is how many octaves higher than it sounds the staff is written. */
+export const CLEFS: Record<ClefName, { label: string; vf: string; ann?: string; bottom: number; shift: number; glyph: string }> = {
+  treble: { label: 'Sol', vf: 'treble', bottom: 30, shift: 0, glyph: '\uE050' },
+  bass: { label: 'Fa', vf: 'bass', bottom: 18, shift: 0, glyph: '\uE062' },
+  alto: { label: 'Do (alto)', vf: 'alto', bottom: 24, shift: 0, glyph: '\uE05C' },
+  tenor: { label: 'Do (tenor)', vf: 'tenor', bottom: 22, shift: 0, glyph: '\uE05C' },
+  treble8vb: { label: 'Sol 8 dưới', vf: 'treble', ann: '8vb', bottom: 30, shift: 1, glyph: '\uE052' },
+  treble8va: { label: 'Sol 8 trên', vf: 'treble', ann: '8va', bottom: 30, shift: -1, glyph: '\uE053' },
+  bass8vb: { label: 'Fa 8 dưới', vf: 'bass', ann: '8vb', bottom: 18, shift: 1, glyph: '\uE064' },
+  bass8va: { label: 'Fa 8 trên', vf: 'bass', ann: '8va', bottom: 18, shift: -1, glyph: '\uE065' },
+}
+
+export type BarlineKind = 'single' | 'double' | 'final' | 'dashed' | 'dotted' | 'none'
 
 /** A note, chord (several pitches) or rest (no pitches). */
 export interface Ev {
@@ -21,17 +38,35 @@ export interface Ev {
   slur?: number     // slur from this event to the event with id `end`
   art?: Art[]       // articulations
   hidden?: boolean  // a rest that keeps the bar full but is not printed (as in printed scores)
-  orn?: 'mordent' | 'inverted'  // ornament sign over the (top) note; played as main / neighbour / main
+  orn?: Orn         // ornament sign over the (top) note; mordents play as main / neighbour / main, trills and turns alternate quickly
   graces?: Pitch[]  // small notes before this one, played quickly just before the main note
+  graceKind?: 'acc' | 'app'  // acciaccatura (slashed) or appoggiatura
+  arp?: 'up' | 'down' | 'plain'  // a chord rolled from the bottom up / top down
+  gliss?: 'straight' | 'wavy'    // a slide from this note to the next one of the voice
+  trem?: 1 | 2 | 3               // tremolo strokes through the stem: repeated notes of 1/8, 1/16, 1/32
+  flip?: boolean                 // stem drawn against the default direction
+  ottava?: { n: 8 | -8 | 15 | -15; end: number } // 8va / 8vb / 15ma / 15mb from this event to the event `end`: written an octave (or two) off, sounds as stored
+  pedal?: { end: number }        // sustain pedal from this event to the event `end` (drawn, and exported; it does not change the notes)
+  breath?: 'breath' | 'caesura'  // mark after the note (drawn, and exported)
+  staffText?: string             // text above the staff at this note
+  expr?: string                  // expression (italic) below the staff
+  chord?: string                 // chord symbol above the staff
+  lyric?: string                 // lyric syllable below the staff
 }
 
-export interface TimeSig { beats: number; unit: number }
+export interface TimeSig { beats: number; unit: number; symbol?: 'common' | 'cut' }
 
 export interface Measure {
   staves: Ev[][][]        // [staff][voice] -> events in order; every voice fills the bar exactly
   time?: TimeSig          // set when it changes here
   key?: number            // fifths (-7..7), set when it changes here
   tempo?: number          // quarter notes per minute, set when it changes here
+  tempoText?: string      // "Allegro", "rit." … printed above the bar (with the tempo, when there is one)
+  rehearsal?: string      // rehearsal mark (A, B, 1…) in a box
+  clefs?: (ClefName | undefined)[] // per staff, set when a clef changes here
+  barline?: BarlineKind   // kind of the line closing this bar (repeat signs have their own flags)
+  break?: 'system' | 'page' // a new line (or page) starts after this bar
+  stretch?: number        // widens (>1) or narrows (<1) this bar
   startRepeat?: boolean
   endRepeat?: boolean
   volta?: number[]        // inside an ending bracket for these passes (1st, 2nd ending…)
@@ -48,7 +83,7 @@ export interface Score {
   tempo: number
   time: TimeSig
   key: number
-  clefs: ('treble' | 'bass')[]  // one per staff
+  clefs: ClefName[]  // one per staff, as at the start
   measures: Measure[]
   nextId: number
 }
@@ -156,6 +191,13 @@ export function contextAt(s: Score, i: number): { time: TimeSig; key: number; te
     if (m.tempo) tempo = m.tempo
   }
   return { time, key, tempo }
+}
+
+/** The clef of `staff` in force at measure `i`. */
+export function clefAt(s: Score, i: number, staff: number): ClefName {
+  let c = s.clefs[staff]
+  for (let k = 0; k <= i; k++) c = s.measures[k]?.clefs?.[staff] ?? c
+  return c
 }
 
 export const clone = <T,>(x: T): T => structuredClone(x)
@@ -333,14 +375,68 @@ export function deleteMeasure(s: Score, i: number) {
   if (s.measures.length > 1) s.measures.splice(i, 1)
 }
 
-/** Change the time signature from measure `i` on: the bars there are re-filled with rests. (ponytail: notes in those bars are cleared) */
-export function setTime(s: Score, i: number, time: TimeSig) {
+/**
+ * Change the time signature from measure `i` until the next change: the music is re-barred like MuseScore does
+ * (notes that now cross a barline become tied pieces, the last bar is padded with rests). If a tuplet would be cut
+ * by a new barline the affected bars are cleared instead. Returns true when the notes were kept.
+ */
+export function setTime(s: Score, i: number, time: TimeSig): boolean {
+  const old = contextAt(s, i).time
+  let e = i + 1
+  while (e < s.measures.length && !s.measures[e].time) e++
+  const oldBar = barTicks(old), newBar = barTicks(time)
+  const total = (e - i) * oldBar
+  const count = Math.max(1, Math.ceil(total / newBar))
+  const keep = s.measures.slice(i, e)
+  const nVoices = (si: number) => Math.max(1, ...keep.map((m) => m.staves[si].length))
+  const fresh: Measure[] = Array.from({ length: count }, (_, k) => {
+    const meta = keep[k] ? { ...keep[k], staves: [] as Ev[][][] } : { staves: [] as Ev[][][] }
+    return meta as Measure
+  })
+  let ok = true
+  s.clefs.forEach((_, si) => {
+    for (let v = 0; v < nVoices(si) && ok; v++) {
+      const flat: Ev[] = keep.flatMap((m) => m.staves[si][v] ?? restsFor(s, 0, oldBar, oldBar))
+      const bars: Ev[][] = Array.from({ length: count }, () => [])
+      let pos = 0
+      for (const ev of flat) {
+        const end = pos + ev.ticks
+        const k = Math.floor(pos / newBar)
+        if (end <= (k + 1) * newBar) { bars[k].push(ev); pos = end; continue }
+        if (ev.tup) { ok = false; break } // a tuplet cannot be cut
+        let at = pos, first = true
+        while (at < end) { // split at every barline, then spell each piece
+          const bk = Math.floor(at / newBar), stop = Math.min(end, (bk + 1) * newBar)
+          const pieces = ev.pitches.length ? splitLength(at - bk * newBar, stop - at) : splitLength(at - bk * newBar, stop - at, { dots: false, bar: newBar })
+          for (const [pi, len] of pieces.entries()) {
+            const lastPiece = stop === end && pi === pieces.length - 1
+            const tie = ev.pitches.length ? (lastPiece ? ev.tie : true) : undefined
+            // the first piece keeps every mark of the note; the tied pieces after it are plain notes
+            bars[bk].push(first ? { ...clone(ev), ticks: len, tie } : { id: newId(s), ticks: len, pitches: clone(ev.pitches), tie })
+            first = false
+          }
+          at = stop
+        }
+        pos = end
+      }
+      if (!ok) break
+      for (let k = 0; k < count; k++) {
+        const used = bars[k].reduce((a, x) => a + x.ticks, 0)
+        if (used < newBar) bars[k].push(...restsFor(s, used, newBar - used, newBar)) // the last bar is padded
+        fresh[k].staves[si] ??= []
+        fresh[k].staves[si][v] = bars[k]
+      }
+    }
+  })
   if (i === 0) s.time = time
   else s.measures[i].time = time
-  for (let k = i; k < s.measures.length; k++) {
-    if (k > i && s.measures[k].time) break
-    s.measures[k].staves = s.clefs.map(() => [restsFor(s, 0, barTicks(time), barTicks(time))])
+  if (!ok) {
+    for (let k = i; k < e; k++) s.measures[k].staves = s.clefs.map(() => [restsFor(s, 0, newBar, newBar)])
+    return false
   }
+  fresh[0].time = i === 0 ? undefined : time
+  s.measures.splice(i, e - i, ...fresh)
+  return true
 }
 
 export function setKey(s: Score, i: number, fifths: number) {
@@ -398,13 +494,44 @@ export function toggleArt(s: Score, id: number, art: Art) {
   const rest = (f.ev.art ?? []).filter((a) => a !== art)
   f.ev.art = has ? (rest.length ? rest : undefined) : [...rest, art]
 }
-/** Slur / hairpin from event `from` to event `to` (same staff and voice, `to` later). A second call on the same pair removes it. */
-export function toggleSpan(s: Score, kind: 'slur' | 'cresc' | 'dim', from: number, to: number): boolean {
+/** Slur / hairpin / ottava / pedal from event `from` to event `to` (same staff and voice, `to` later). A second call on the same pair removes it. */
+export function toggleSpan(s: Score, kind: SpanKind, from: number, to: number): boolean {
   const a = findEv(s, from), b = findEv(s, to)
   if (!a || !b || a.staff !== b.staff || a.voice !== b.voice || (a.m === b.m ? a.at >= b.at : a.m > b.m) || from === to) return false
   if (kind === 'slur') a.ev.slur = a.ev.slur === to ? undefined : to
-  else a.ev.hairpin = a.ev.hairpin?.end === to && a.ev.hairpin.type === kind ? undefined : { type: kind, end: to }
+  else if (kind === 'cresc' || kind === 'dim') a.ev.hairpin = a.ev.hairpin?.end === to && a.ev.hairpin.type === kind ? undefined : { type: kind, end: to }
+  else if (kind === 'pedal') a.ev.pedal = a.ev.pedal?.end === to ? undefined : { end: to }
+  else {
+    const n = Number(kind.slice(1)) as 8 | -8 | 15 | -15
+    a.ev.ottava = a.ev.ottava?.end === to && a.ev.ottava.n === n ? undefined : { n, end: to }
+  }
   return true
+}
+
+/** How many octaves an ottava line moves what is written away from what sounds (8va: written one octave lower). */
+export const octShift = (n: number) => (n > 0 ? -(n === 8 ? 1 : 2) : n === -8 ? 1 : 2)
+
+/** Octave shift (written minus sounding) that ottava lines put on every event of the score. */
+export function ottavaShifts(s: Score): Map<number, number> {
+  const out = new Map<number, number>()
+  const nStaves = s.clefs.length
+  for (let st = 0; st < nStaves; st++) for (let v = 0; v < 8; v++) {
+    const evs = s.measures.flatMap((m) => m.staves[st]?.[v] ?? [])
+    evs.forEach((e, i) => {
+      if (!e.ottava) return
+      const j = evs.findIndex((x) => x.id === e.ottava!.end)
+      if (j < i) return
+      for (let k = i; k <= j; k++) out.set(evs[k].id, octShift(e.ottava.n))
+    })
+  }
+  return out
+}
+/** The same, for the spot where a note would be entered: bar `m`, tick `at`. */
+export function ottavaShiftAt(s: Score, m: number, staff: number, voice: number, at: number): number {
+  const here = s.measures[m]?.staves[staff]?.[voice] ?? []
+  const st = starts(here)
+  const e = here[st.findIndex((x, i) => x <= at && at < x + here[i].ticks)] ?? here[here.length - 1]
+  return e ? ottavaShifts(s).get(e.id) ?? 0 : 0
 }
 
 /** Drop references to events that no longer exist (after deleting or replacing notes). */
@@ -414,6 +541,8 @@ export function pruneRefs(s: Score) {
   s.measures.forEach((m) => m.staves.forEach((vs) => vs.forEach((v) => v.forEach((e) => {
     if (e.slur !== undefined && !ids.has(e.slur)) e.slur = undefined
     if (e.hairpin && !ids.has(e.hairpin.end)) e.hairpin = undefined
+    if (e.ottava && !ids.has(e.ottava.end)) e.ottava = undefined
+    if (e.pedal && !ids.has(e.pedal.end)) e.pedal = undefined
   }))))
 }
 
@@ -466,4 +595,99 @@ export function validate(s: Score): string[] {
     }))
   })
   return bad
+}
+
+// ---- palette operations ----------------------------------------------------------------------------------
+type EvKey = 'arp' | 'gliss' | 'trem' | 'orn' | 'breath'
+/** Set a note mark, or clear it when it is already that value. */
+export function toggleEv<K extends EvKey>(s: Score, id: number, key: K, value: NonNullable<Ev[K]>) {
+  const f = findEv(s, id)
+  if (!f || !f.ev.pitches.length) return
+  f.ev[key] = f.ev[key] === value ? undefined : value
+  if (key === 'arp' && f.ev.pitches.length < 2) f.ev.arp = undefined // nothing to roll
+}
+export function flipStem(s: Score, id: number) {
+  const f = findEv(s, id)
+  if (f && f.ev.pitches.length) f.ev.flip = !f.ev.flip
+}
+
+/** Add a grace note before an event, a step above its top note (change it with graceStep). */
+export function addGrace(s: Score, id: number, kind: 'acc' | 'app') {
+  const f = findEv(s, id)
+  if (!f || !f.ev.pitches.length) return
+  const top = f.ev.pitches[f.ev.pitches.length - 1]
+  const { key } = contextAt(s, f.m)
+  const g = fromDiatonic(diatonic(top) + 1)
+  g.alter = keyAlterFor(key, g.step)
+  f.ev.graces = [...(f.ev.graces ?? []), g].slice(0, 4)
+  f.ev.graceKind = kind
+}
+/** Move the last grace note up or down by a diatonic step. */
+export function graceStep(s: Score, id: number, dir: 1 | -1) {
+  const f = findEv(s, id)
+  if (!f?.ev.graces?.length) return
+  const { key } = contextAt(s, f.m)
+  const g = f.ev.graces[f.ev.graces.length - 1]
+  const n = fromDiatonic(diatonic(g) + dir)
+  n.alter = keyAlterFor(key, n.step)
+  f.ev.graces[f.ev.graces.length - 1] = n
+}
+export function clearGrace(s: Score, id: number) {
+  const f = findEv(s, id)
+  if (f) { f.ev.graces = undefined; f.ev.graceKind = undefined }
+}
+const SHARP_ORDER = ['F', 'C', 'G', 'D', 'A', 'E', 'B'], FLAT_ORDER = ['B', 'E', 'A', 'D', 'G', 'C', 'F']
+export const keyAlterFor = (fifths: number, step: string) =>
+  fifths > 0 ? (SHARP_ORDER.slice(0, fifths).includes(step) ? 1 : 0) : fifths < 0 ? (FLAT_ORDER.slice(0, -fifths).includes(step) ? -1 : 0) : 0
+
+export type TextField = 'staffText' | 'expr' | 'chord' | 'lyric'
+export function setText(s: Score, id: number, field: TextField, text: string) {
+  const f = findEv(s, id)
+  if (f) f.ev[field] = text.trim() ? text.trim() : undefined
+}
+
+/** Clef from measure `i` on, for one staff (the first bar changes the staff itself). */
+export function setClef(s: Score, i: number, staff: number, clef: ClefName) {
+  if (i === 0) { s.clefs[staff] = clef; if (s.measures[0].clefs) s.measures[0].clefs[staff] = undefined; return }
+  const m = s.measures[i]
+  m.clefs = m.clefs ? [...m.clefs] : s.clefs.map(() => undefined)
+  m.clefs[staff] = clefAt(s, i - 1, staff) === clef ? undefined : clef // "change" to what is already there removes the mark
+  if (m.clefs.every((c) => c === undefined)) m.clefs = undefined
+}
+
+export function setTimeSymbol(s: Score, i: number, symbol?: 'common' | 'cut') {
+  const t = i === 0 ? s.time : s.measures[i].time ?? contextAt(s, i).time
+  const next = { beats: t.beats, unit: t.unit, ...(symbol ? { symbol } : {}) }
+  if (i === 0) s.time = next
+  else s.measures[i].time = next
+}
+
+export function setTempoMark(s: Score, i: number, bpm?: number, text?: string) {
+  const m = s.measures[i]
+  if (!m) return
+  if (i === 0 && bpm) s.tempo = bpm
+  else m.tempo = bpm
+  m.tempoText = text || undefined
+}
+export function setRehearsal(s: Score, i: number, text?: string) { const m = s.measures[i]; if (m) m.rehearsal = text?.trim() || undefined }
+export function setBarline(s: Score, i: number, kind?: BarlineKind) {
+  const m = s.measures[i]
+  if (!m) return
+  m.barline = kind && kind !== 'single' ? kind : undefined
+  if (kind) m.endRepeat = false
+}
+export function setBreak(s: Score, i: number, kind?: 'system' | 'page') { const m = s.measures[i]; if (m) m.break = m.break === kind ? undefined : kind }
+export function setStretch(s: Score, i: number, factor: number) { const m = s.measures[i]; if (m) m.stretch = Math.abs(factor - 1) < 0.01 ? undefined : Math.min(3, Math.max(0.5, factor)) }
+
+/** "Repeat bar": copy the previous bar (every staff and voice) into bar `i`, with fresh ids. */
+export function copyPrevious(s: Score, i: number) {
+  if (i < 1) return
+  const src = s.measures[i - 1], dst = s.measures[i]
+  if (barTicks(contextAt(s, i - 1).time) !== barTicks(contextAt(s, i).time)) return
+  const groups = new Map<number, number>()
+  dst.staves = src.staves.map((vs) => vs.map((events) => events.map((e) => {
+    const c: Ev = { ...clone(e), id: newId(s), slur: undefined, hairpin: undefined, ottava: undefined, pedal: undefined, tie: false }
+    if (c.tup) { if (!groups.has(c.tup.group)) groups.set(c.tup.group, newId(s)); c.tup = { ...c.tup, group: groups.get(c.tup.group)! } }
+    return c
+  })))
 }

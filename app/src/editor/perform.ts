@@ -2,7 +2,7 @@ import type { Measure as PerfMeasure, Score as PerfScore } from '../core/score/o
 import { realizeVoice, type WEvent } from '../core/score/realize'
 import { TPQ, barTicks, contextAt, starts, type Dyn, type Score } from './model'
 
-export const DYN_VELOCITY: Record<Dyn, number> = { ppp: 28, pp: 36, p: 49, mp: 64, mf: 80, f: 96, ff: 112, fff: 124 }
+export const DYN_VELOCITY: Record<Dyn, number> = { pppp: 20, ppp: 28, pp: 36, p: 49, mp: 64, mf: 80, f: 96, ff: 112, fff: 124, ffff: 127, sf: 108, sfz: 110, fp: 90, sfp: 102, rfz: 108 }
 const DEFAULT_VEL = 80 // mf, as in MuseScore, until the first marking
 const HAIRPIN_STEP = 22 // how far a wedge goes when no dynamic follows it
 
@@ -51,16 +51,20 @@ export function toPerformance(s: Score): PerfScore {
   const timelines = s.clefs.map((_, staff) => velocityTimeline(s, staff))
   let barStart = 0
   const measures: PerfMeasure[] = s.measures.map((m, i) => {
-    const { time, key } = contextAt(s, i)
+    const { time, key, tempo } = contextAt(s, i)
     const notes: PerfMeasure['notes'] = []
-    m.staves.forEach((voices, staff) => voices.forEach((events) => {
+    m.staves.forEach((voices, staff) => voices.forEach((events, vi) => {
       const st = starts(events)
-      const written: WEvent[] = events.map((e, k) => ({ ticks: e.ticks, pitches: e.pitches, tie: e.tie, orn: e.orn, graces: e.graces, art: e.art, vel: timelines[staff](barStart + st[k]) }))
+      const nextOf = (k: number) => events[k + 1] ?? s.measures[i + 1]?.staves[staff]?.[vi]?.[0] // a slide may run into the next bar
+      const written: WEvent[] = events.map((e, k) => {
+        const nx = e.gliss ? nextOf(k) : undefined
+        return { ticks: e.ticks, pitches: e.pitches, tie: e.tie, orn: e.orn, graces: e.graces, art: e.art, arp: e.arp, trem: e.trem, gliss: nx?.pitches.length ? nx.pitches[0] : undefined, vel: timelines[staff](barStart + st[k]) }
+      })
       notes.push(...realizeVoice(written, key, staff))
     }))
     notes.sort((a, b) => a.start - b.start || a.pitch - b.pitch)
     barStart += barTicks(time)
-    return { index: i + 1, length: barTicks(time) / TPQ, notes, startRepeat: !!m.startRepeat, endRepeat: !!m.endRepeat, volta: m.volta, segno: m.segno, coda: m.coda, toCoda: m.toCoda, fine: m.fine, jump: m.jump }
+    return { index: i + 1, length: barTicks(time) / TPQ, tempo, notes, startRepeat: !!m.startRepeat, endRepeat: !!m.endRepeat, volta: m.volta, segno: m.segno, coda: m.coda, toCoda: m.toCoda, fine: m.fine, jump: m.jump }
   })
   return { measures, beatsPerBar: s.time.beats, beatUnit: s.time.unit, warnings: [] }
 }

@@ -9,7 +9,8 @@ export function scoreFromOmr(o: Omr, title: string): { score: Score; warnings: s
   const bar = Math.round(((o.beatsPerBar * 4) / o.beatUnit) * TPQ)
   const s = emptyScore(0, { beats: o.beatsPerBar, unit: o.beatUnit }, o.keyFifths ?? 0)
   s.title = o.title || title
-  s.clefs = [o.clefs?.[0] ?? 'treble', o.clefs?.[1] ?? 'bass']
+  const cl = o.clefs ?? []   // with more than two staves the composer still has two: the right hand takes the treble-like ones, the left hand the bass-like ones
+  s.clefs = cl.length > 2 ? [cl.find((c) => c !== 'bass') ?? 'treble', cl.find((c) => c === 'bass') ?? 'bass'] : [cl[0] ?? 'treble', cl[1] ?? 'bass']
   const rests = (n: number): Ev[] => splitLength(0, n, { dots: false, bar }).map((t) => ({ id: newId(s), ticks: t, pitches: [] }))
   let trimmed = 0
   const lastVel: (number | undefined)[] = [undefined, undefined]  // loudness per staff, so a dynamic marking appears where it changes
@@ -19,8 +20,8 @@ export function scoreFromOmr(o: Omr, title: string): { score: Score; warnings: s
   s.measures = o.measures.map((m, mi) => {
     const me: Measure = { staves: [] }
     for (let si = 0; si < 2; si++) {
-      const w = m.written?.find((x) => x.staff === si)
-      const voices: Ev[][] = (w?.voices ?? []).slice(0, 4).map((v) => {
+      const mine = (m.written ?? []).filter((x) => (x.hand ?? x.staff) === si)  // every staff of this hand: their voices become voices of one staff
+      const voices: Ev[][] = mine.flatMap((x) => x.voices).slice(0, 4).map((v) => {
         const groups = new Map<number, number>()
         const evs: Ev[] = v.map((e) => {
           const ev: Ev = {

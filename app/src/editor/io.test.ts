@@ -175,3 +175,16 @@ describe('MusicXML: palette marks', () => {
     expect(m.header.tempos.map((t) => Math.round(t.bpm))).toEqual([60, 120])
   })
 })
+
+describe('MusicXML with more than two staves', () => {
+  const note = (staff: number, step: string, oct: number) => `<note><pitch><step>${step}</step><octave>${oct}</octave></pitch><duration>4</duration><voice>${staff}</voice><type>whole</type><staff>${staff}</staff></note>`
+  const xml = (clefs: string[]) => `<?xml version="1.0"?><score-partwise version="3.1"><part-list><score-part id="P1"><part-name>x</part-name></score-part></part-list><part id="P1"><measure number="1"><attributes><divisions>4</divisions><key><fifths>0</fifths></key><time><beats>4</beats><beat-type>4</beat-type></time><staves>${clefs.length}</staves>${clefs.map((c, i) => `<clef number="${i + 1}">${c}</clef>`).join('')}</attributes>${clefs.map((_, i) => note(i + 1, 'CDEFGAB'[i], i === 2 ? 3 : 5)).join('<backup><duration>4</duration></backup>')}</measure></part></score-partwise>`
+  it('keeps every staff: the bass staves go down, the others become voices of the upper staff', () => {
+    const { score, warnings } = scoreFromMusicXml(xml(['<sign>G</sign><line>2</line>', '<sign>G</sign><line>2</line>', '<sign>F</sign><line>4</line>']))
+    expect(validate(score)).toEqual([])
+    expect(score.measures[0].staves[0].map((v) => v[0].pitches[0].step)).toEqual(['C', 'D'])   // two treble staves -> two voices
+    expect(score.measures[0].staves[1].map((v) => v[0].pitches[0].step)).toEqual(['E'])
+    expect(score.clefs).toEqual(['treble', 'bass'])
+    expect(warnings.some((w) => w.includes('3 khuông'))).toBe(true)
+  })
+})

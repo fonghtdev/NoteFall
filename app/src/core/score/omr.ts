@@ -34,7 +34,7 @@ export interface Measure {
   endRepeat: boolean
   suspect?: string       // set when the rhythm does not add up to `length`
   tempo?: number         // quarter notes per minute in force at this bar (composer scores; absent = the score's single tempo)
-  written?: { staff: number; voices: Written[][] }[] // notation view of the same bar, for editing
+  written?: { staff: number; hand?: number; voices: Written[][] }[] // notation view of the same bar, for editing
   // navigation (set by the composer / MusicXML, not read from PDFs yet)
   volta?: number[]       // this bar is inside an ending bracket for these passes (1st, 2nd ending…)
   segno?: boolean        // the bar where a D.S. jumps to
@@ -110,6 +110,7 @@ export function readScore(rawPages: PagePrims[]): Score {
   let keyFifths: number | undefined
   let firstClefs: ('treble' | 'bass')[] | undefined
   let timeSigSeen = false
+  let beats0 = 4, unit0 = 4
   let pendingStartRepeat = false
   let tupletId = 0
   let level: number | undefined // loudness in force (from the last dynamic marking), carried from system to system
@@ -288,35 +289,67 @@ export function readScore(rawPages: PagePrims[]): Score {
       const bars = barXs(sys)
       if (bars.length < 2) { warnings.push(`p${pi + 1}: system without barlines skipped`); continue }
 
-      // key signature per staff: accidentals before the first head that are not attached to one
-      const keyAlter = new Map<number, Map<number, number>>() // staff -> diatonic letter -> alteration
-      for (const si of sys) {
-        const first = Math.min(...heads.filter((h) => h.staff === si).map((h) => h.g.x), Infinity)
-        const m = new Map<number, number>()
-        for (const a of accs) {
-          if (attachedAcc.has(a) || staffOf(staves, a.y) !== si || a.x >= first || a.x < staves[si].x0) continue
+      const mod7k = (d: number) => ((d % 7) + 7) % 7
+      /** x of the first note or rest of one staff inside [xa, xb): where the bar's own music starts. */
+      const firstEventX = (si: number, xa: number, xb: number) => {
+        let m = Infinity
+        for (const h of heads) if (h.staff === si && h.g.x >= xa && h.g.x < xb) m = Math.min(m, h.g.x)
+        for (const r of rests) if (r.staff === si && r.g.x >= xa && r.g.x < xb) m = Math.min(m, r.g.x)
+        return m === Infinity ? xb : m
+      }
+      /**
+       * The key signature standing in front of a bar: accidentals that belong to no note, between the barline and the bar's first note.
+       * At the start of a line it is the whole signature; in the middle of a line it changes the one before (naturals cancel).
+       */
+      const readKey = (si: number, xa: number, xb: number, base: Map<number, number> | undefined) => {
+        const fresh = accs.filter((a) => !attachedAcc.has(a) && staffOf(staves, a.y) === si && a.x >= xa && a.x < xb).sort((p, q) => p.x - q.x)
+        if (!fresh.length) return base ?? new Map<number, number>()
+        if (base && fresh[0].x - xa > 3.5 * staves[si].sp) return base // not hugging the barline: an accidental of a chord, not a new key signature
+        // a real key signature is a run of one kind of sign in the standard order (F C G D A E B for sharps, B E A D G C F for flats)
+        const ORDER = { sharp: [3, 0, 4, 1, 5, 2, 6], flat: [6, 2, 5, 1, 4, 0, 3] } // letter indices (C=0 … B=6) in order; letters computed below
+        const letters = fresh.map((a) => { const c = clefAt(si, a.x); return c ? mod7k(c.base + Math.round((a.y - staves[si].bottom) / (staves[si].sp / 2))) : -1 })
+        const kinds = new Set(fresh.map((a) => Math.sign(ACC[a.code])))
+        const prefix = (ord: number[]) => letters.every((l, i) => l === ord[i])
+        const looksLikeKey = kinds.size === 1 && (kinds.has(1) ? prefix(ORDER.sharp) : kinds.has(-1) ? prefix(ORDER.flat) : prefix(ORDER.sharp) || prefix(ORDER.flat) || (base !== undefined && letters.every((l) => base.has(l))))
+        if (base && !looksLikeKey) return base
+        const out = new Map(base ?? [])
+        for (const a of fresh) {
           const clef = clefAt(si, a.x)
           if (!clef) continue
-          const d = clef.base + Math.round((a.y - staves[si].bottom) / (staves[si].sp / 2))
-          m.set(((d % 7) + 7) % 7, ACC[a.code])
+          const letter = mod7k(clef.base + Math.round((a.y - staves[si].bottom) / (staves[si].sp / 2)))
+          if (!base) out.set(letter, ACC[a.code])
+          else if (ACC[a.code] === 0) out.delete(letter)
+          else out.set(letter, ACC[a.code])
         }
-        keyAlter.set(si, m)
+        return out
       }
+      /** A time signature in front of a bar: digits inside the staff (a multi-measure-rest count sits above it), or the C / cut-time sign. */
+      const readTime = (xa: number, xb: number): { beats: number; unit: number } | undefined => {
+        const st = staves[sys[0]], mid = (st.top + st.bottom) / 2
+        const inside = music.filter((g) => g.x >= xa && g.x < xb && g.y >= st.bottom - 0.5 * st.sp && g.y <= st.top + 0.5 * st.sp)
+        const sym = inside.find((g) => g.code === 0xf190 || g.code === 0xf191)
+        if (sym) return sym.code === 0xf190 ? { beats: 4, unit: 4 } : { beats: 2, unit: 2 }
+        const digits = inside.filter((g) => g.code >= 0xf030 && g.code <= 0xf039)
+        const num = (arr: Glyph[]) => +arr.sort((p, q) => p.x - q.x).map((g) => g.code - 0xf030).join('')
+        const top = digits.filter((g) => g.y > mid), bot = digits.filter((g) => g.y <= mid)
+        return top.length && bot.length ? { beats: num(top), unit: num(bot) } : undefined
+      }
+
+      // key signature per staff, from the first bar of the line (changes inside the line are read bar by bar below)
+      const keyAlter = new Map<number, Map<number, number>>() // staff -> diatonic letter -> alteration
+      for (const si of sys) keyAlter.set(si, readKey(si, staves[si].x0, firstEventX(si, bars[0].hi, bars[1].lo), undefined))
       if (keyFifths === undefined) {
         const top = keyAlter.get(sys[0])!
         keyFifths = [...top.values()].reduce((a, v) => a + Math.sign(v), 0)
         firstClefs = sys.map((si) => { const c = clefAt(si, 1e9); return c && (c.g.code === BASS || c.g.code === 0xf104 || c.g.code === 0xf105) ? 'bass' : 'treble' })
       }
 
-      // time signature digits (before the first head of the system)
-      const tsGlyphs = music.filter((g) => g.code >= 0xf030 && g.code <= 0xf039 && sys.includes(staffOf(staves, g.y)))
-      if (tsGlyphs.length) {
-        const st = staves[sys[0]], mid = (st.top + st.bottom) / 2
-        const num = (arr: Glyph[]) => +arr.sort((a, b) => a.x - b.x).map((g) => g.code - 0xf030).join('')
-        const top = tsGlyphs.filter((g) => staffOf(staves, g.y) === sys[0] && g.y > mid), bot = tsGlyphs.filter((g) => staffOf(staves, g.y) === sys[0] && g.y <= mid)
-        if (top.length && bot.length) { beats = num(top); unit = num(bot); timeSigSeen = true }
-      }
-      const barLen = (beats * 4) / unit
+      // time signature at the start of the line (a change inside the line is read bar by bar below)
+      const ts0 = readTime(staves[sys[0]].x0, Math.min(...sys.map((si) => firstEventX(si, bars[0].hi, bars[1].lo))))
+      if (ts0) { beats = ts0.beats; unit = ts0.unit; if (!timeSigSeen) { beats0 = beats; unit0 = unit } timeSigSeen = true }
+      let barLen = (beats * 4) / unit
+      // with more than two staves each one still plays as a "hand": bass-like clefs (bass, tenor, 8vb) are the left hand
+      const handOf = (si: number) => (sys.length <= 2 ? sys.indexOf(si) : (clefAt(si, 1e9)?.base ?? 30) <= 22 ? 1 : 0)
       // dynamic markings of this system: letters p m f r s z lying on one line, close together, make one marking
       const dynMarks: { x: number; vel: number }[] = []
       {
@@ -349,6 +382,11 @@ export function readScore(rawPages: PagePrims[]): Score {
       for (let bi = 0; bi + 1 < bars.length; bi++) {
         const left = bars[bi], right = bars[bi + 1]
         const x0 = left.hi, x1 = right.lo
+        if (bi > 0) { // a key or time signature that changes in the middle of the line stands right after the barline
+          for (const si of sys) keyAlter.set(si, readKey(si, x0, firstEventX(si, x0, x1), keyAlter.get(si)))
+          const tn = readTime(x0, Math.min(...sys.map((si) => firstEventX(si, x0, x1))))
+          if (tn && (tn.beats !== beats || tn.unit !== unit)) { beats = tn.beats; unit = tn.unit; barLen = (beats * 4) / unit }
+        }
         // repeat dots: a vertical pair of dots (spaces 2 and 3) right next to a barline cluster
         const repeatDots = (cx: number, side: 'l' | 'r') => dots.some((d) => {
           const st = staves[sys[0]], dxs = side === 'l' ? cx - d.x : d.x - cx
@@ -370,7 +408,7 @@ export function readScore(rawPages: PagePrims[]): Score {
           // a "repeat the previous bar" sign: this staff plays what the bar before it played
           if (!hs.length && measures.length && music.some((g) => g.code === 0xf170 && inM(g.x) && staffOf(staves, g.y) === si)) {
             const prev = measures[measures.length - 1].written?.find((w) => w.staff === si - sys[0])
-            if (prev) { writtenOut.push({ staff: si - sys[0], voices: structuredClone(prev.voices) }); hasContent = true; continue }
+            if (prev) { writtenOut.push({ staff: si - sys[0], hand: handOf(si), voices: structuredClone(prev.voices) }); hasContent = true; continue }
           }
           if (!hs.length && !rs.length) continue
           hasContent = true
@@ -515,7 +553,7 @@ export function readScore(rawPages: PagePrims[]): Score {
               const sum = w.reduce((a, x) => a + x.ticks, 0), need = Math.round(barLen * 960) - sum
               if (need > 0) w.push({ ticks: need, pitches: [], hidden: true }) // printed scores leave these rests out
             }
-            writtenOut.push({ staff: si - sys[0], voices: voicesOut })
+            writtenOut.push({ staff: si - sys[0], hand: handOf(si), voices: voicesOut })
           }
           const filled = sums.filter((x) => x > 0)
           const ok = filled.length > 1
@@ -524,11 +562,23 @@ export function readScore(rawPages: PagePrims[]): Score {
           if (!ok) suspect = (suspect ? suspect + '; ' : '') + `staff ${si + 1}: rhythm adds up to ${filled.map((x) => +x.toFixed(3)).join('+')} of ${barLen} beats`
         }
         if (!hasContent) {
+          // a multi-measure rest: a thick bar with the number of bars above the staff
+          const st0 = staves[sys[0]]
+          if (music.some((g) => g.code === 0xf180 && g.x > x0 && g.x < x1 && sys.includes(staffOf(staves, g.y)))) {
+            const digits = p.glyphs.filter((g) => ((g.code >= 0xf030 && g.code <= 0xf039) || (g.code >= 0x30 && g.code <= 0x39)) && g.x > x0 && g.x < x1 && g.y > st0.top + 0.8 * st0.sp && g.y < st0.top + 8 * st0.sp).sort((a, b) => a.x - b.x)
+            const n = Math.min(500, Math.max(1, digits.length ? +digits.map((g) => (g.code >= 0xf030 ? g.code - 0xf030 : g.code - 0x30)).join('') : 1))
+            for (let k = 0; k < n; k++) {
+              navEntry.geoms.push({ x0, x1, top: staves[sys[0]].top, bottom: staves[sys[sys.length - 1]].bottom, sp: staves[sys[0]].sp })
+              measures.push({ index: measures.length + 1, length: barLen, notes: [], startRepeat: k === 0 && (startRepeat || pendingStartRepeat), endRepeat: k === n - 1 && endRepeat, written: [] })
+            }
+            pendingStartRepeat = false
+            continue
+          }
           if (startRepeat) pendingStartRepeat = true
           continue
         }
         const fifthsOf = (si: number) => [...(keyAlter.get(si)?.values() ?? [])].reduce((a, v) => a + Math.sign(v), 0)
-        const measureNotes: ScoreNote[] = writtenOut.flatMap((w) => w.voices.flatMap((vv) => realizeVoice(vv, fifthsOf(sys[w.staff]), w.staff)))
+        const measureNotes: ScoreNote[] = writtenOut.flatMap((w) => w.voices.flatMap((vv) => realizeVoice(vv, fifthsOf(sys[w.staff]), w.hand ?? w.staff)))
         navEntry.geoms.push({ x0, x1, top: staves[sys[0]].top, bottom: staves[sys[sys.length - 1]].bottom, sp: staves[sys[0]].sp })
         measures.push({ index: measures.length + 1, length: barLen, notes: measureNotes.sort((a, b) => a.start - b.start || a.pitch - b.pitch), startRepeat: startRepeat || pendingStartRepeat, endRepeat, suspect, written: writtenOut })
         pendingStartRepeat = false
@@ -561,7 +611,7 @@ export function readScore(rawPages: PagePrims[]): Score {
   }
   if (!timeSigSeen) warnings.push('no time signature found: assuming 4/4')
   for (const [code, n] of unknown) warnings.push(`unrecognised music symbol U+${code.toString(16).toUpperCase()} (${n}×): ignored`)
-  return { measures, beatsPerBar: beats, beatUnit: unit, warnings, keyFifths, clefs: firstClefs, tempo: readTempo(rawPages[0]) }
+  return { measures, beatsPerBar: beats0, beatUnit: unit0, warnings, keyFifths, clefs: firstClefs, tempo: readTempo(rawPages[0]) }
 }
 
 /** "♩ = 93" at the top of the first page (SMuFL metronome note, then digits on the same line). Only quarter-note marks are trusted. */

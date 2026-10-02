@@ -213,7 +213,6 @@ export function scoreFromMusicXml(xml: string): { score: Score; warnings: string
   const warnings: string[] = []
   const parts = [...root.querySelectorAll(':scope > part')]
   if (!parts.length) throw new Error('không có phần nhạc nào')
-  if (parts.length > 1) warnings.push(`file có ${parts.length} phần nhạc, chỉ lấy khuông của các phần đầu (tối đa 2 khuông)`)
 
   // (part, staff) pairs become our staves
   const lanes: { part: Element; staffNo: number }[] = []
@@ -221,16 +220,17 @@ export function scoreFromMusicXml(xml: string): { score: Score; warnings: string
     const n = Math.max(1, ...[...part.querySelectorAll('attributes > staves')].map((e) => Number(e.textContent)))
     for (let k = 1; k <= n; k++) lanes.push({ part, staffNo: k })
   })
-  if (lanes.length > 2) warnings.push(`có ${lanes.length} khuông, chỉ lấy 2 khuông đầu`)
-  const used = lanes.slice(0, 2)
+  if (lanes.length > 8) warnings.push(`có ${lanes.length} khuông, chỉ lấy 8 khuông đầu`)
+  const used = lanes.slice(0, 8)
+  if (used.length > 2) warnings.push(`có ${used.length} khuông: khuông khoá Fa/bass vào khuông dưới, các khuông còn lại vào khuông trên (mỗi khuông thành một giọng)`)
 
   const s = emptyScore(0)
   s.title = root.querySelector('work > work-title, movement-title')?.textContent?.trim() || 'Không tên'
   s.composer = root.querySelector('creator[type="composer"]')?.textContent?.trim() ?? ''
-  s.clefs = used.length === 1 ? ['treble', 'bass'] : used.map(() => 'treble' as const)
+  s.clefs = ['treble', 'bass']
   s.measures = []
   let divisions = 1
-  const clefOf: ClefName[] = ['treble', 'bass'], curClef: ClefName[] = ['treble', 'bass']
+  const clefOf: ClefName[] = used.map((_, i) => (i === 1 && used.length === 2 ? 'bass' : 'treble')), curClef: ClefName[] = [...clefOf]
   let time = { beats: 4, unit: 4 }, key = 0, tempo: number | undefined
   let tied: Record<string, boolean> = {}
   let unsupported = 0
@@ -418,7 +418,14 @@ export function scoreFromMusicXml(xml: string): { score: Score; warnings: string
     if (endingOpen) { m.volta = endingOpen; if (endingClose) { endingOpen = undefined; endingClose = false } }
     s.measures.push(m)
   }
-  s.clefs = [clefOf[0], used.length > 1 ? clefOf[1] : 'bass'] as ClefName[]
+  if (used.length > 2) { // more than two staves: gather them into the composer's two (bass-like clefs = lower staff)
+    const low = (c: ClefName) => c === 'bass' || c === 'bass8vb' || c === 'bass8va' || c === 'tenor'
+    const lower = used.map((_, i) => i).filter((i) => low(clefOf[i])), upper = used.map((_, i) => i).filter((i) => !low(clefOf[i]))
+    if (!upper.length) upper.push(0)
+    s.measures.forEach((m) => { const lanes_ = m.staves; m.staves = [upper.flatMap((i) => lanes_[i] ?? []).slice(0, 4), lower.flatMap((i) => lanes_[i] ?? []).slice(0, 4)] })
+    s.clefs = [clefOf[upper[0]], lower.length ? clefOf[lower[0]] : 'bass']
+    if (!lower.length) s.measures.forEach((m) => { m.staves[1] = blankMeasure(s, contextAt(s, s.measures.indexOf(m)).time).staves[1] })
+  } else s.clefs = [clefOf[0], used.length > 1 ? clefOf[1] : 'bass'] as ClefName[]
   if (used.length === 1) fillSecondStaff(s)
   if (tempo === undefined) s.tempo = 100
   if (unsupported) warnings.push(`${unsupported} nốt có độ dài chưa hỗ trợ hiển thị (bộ ba…): nhịp vẫn đúng nhưng hình có thể sai`)

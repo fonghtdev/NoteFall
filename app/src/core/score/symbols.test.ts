@@ -6,7 +6,7 @@ import { tempoRatios, toNotes, unroll } from './playback'
 // A one-staff page drawn the way MuseScore 4 (Leland, SMuFL) draws it: glyph origins on the note's line, stems as strokes, flags as glyphs.
 const SP = 5, BOTTOM = 700, SIZE = 4 * SP, HEAD_W = 1.18 * SP
 const yOf = (step: number) => BOTTOM + (step * SP) / 2                     // step 0 = bottom line, 1 = first space …
-type N = { step: number; dur: 'w' | 'h' | 'q' | 'e'; acc?: number; art?: number; dyn?: number[]; tup?: number; rest?: boolean; x?: number; orn?: number; trem?: number; arp?: boolean; chord?: number[]; pct?: boolean }
+type N = { step: number; dur: 'w' | 'h' | 'q' | 'e'; acc?: number; art?: number; dyn?: number[]; tup?: number; rest?: boolean; x?: number; orn?: number; trem?: number; arp?: boolean; chord?: number[]; pct?: boolean; accDx?: number; pre?: { key?: [number, number][]; time?: [number, number] }; multi?: number }
 interface Opts { clef?: number; clefLine?: number; time?: [number, number]; marks?: { bar: number; bpm: number }[]; ottava?: { code: number; from: number; to: number; below?: boolean } }
 
 function page(bars: N[][], o: Opts = {}): PagePrims {
@@ -22,12 +22,24 @@ function page(bars: N[][], o: Opts = {}): PagePrims {
   bars.forEach((notes, bi) => {
     let x = bx[bi] + (bi === 0 ? 50 : 14)
     const first = x
+    const pre = notes[0]?.pre
+    if (notes[0]?.multi) { // a multi-measure rest: thick bar in the middle of the staff, the count above the staff
+      g(0xe4ee, bx[bi] + 30, yOf(4), 60)
+      String(notes[0].multi).split('').forEach((d, i) => g(0xe080 + +d, bx[bi] + 55 + i * 8, BOTTOM + 7 * SP, 8))
+      return
+    }
+    if (pre) { // key signature and / or time signature right after the barline
+      ;(pre.key ?? []).forEach(([code, step], k) => g(code, bx[bi] + 6 + k * 6, yOf(step), 6))
+      const kx = bx[bi] + 6 + (pre.key?.length ?? 0) * 6 + 6
+      if (pre.time) { g(0xe080 + pre.time[0], kx, BOTTOM + 3 * SP, 8); g(0xe080 + pre.time[1], kx, BOTTOM + 1 * SP, 8) }
+      x = kx + (pre.time ? 14 : 0) + 8
+    }
     notes.forEach((n, k) => {
       const nx = n.x ?? x
       if (n.pct) { g(0xe500, nx, yOf(4), 8); x += 28; return }
       if (n.rest) { g(0xe4e5, nx, yOf(4)); x += 28; return }
       const y = yOf(n.step)
-      if (n.acc) g(n.acc, nx - 8, y, 7)
+      if (n.acc) g(n.acc, nx - (n.accDx ?? 8), y, 7)
       g(n.dur === 'w' ? 0xe0a2 : n.dur === 'h' ? 0xe0a3 : 0xe0a4, nx, y)
       for (const st of n.chord ?? []) g(0xe0a4, nx, yOf(st))
       if (n.orn) g(n.orn, nx + HEAD_W / 2 - 3, BOTTOM + 7 * SP, 6)
@@ -162,5 +174,67 @@ describe('what the composer gets from such a PDF', () => {
     expect(evs.filter((e) => e.tup).map((e) => `${e.tup!.n}:${e.tup!.m}`)).toEqual(['3:2', '3:2', '3:2'])
     expect(new Set(evs.filter((e) => e.tup).map((e) => e.tup!.group)).size).toBe(1)
     expect(score.tempo).toBe(72); expect(score.measures[1].tempo).toBe(90); expect(score.measures[0].tempo).toBeUndefined()
+  })
+})
+
+describe('line and file structure', () => {
+  const fourQ = () => [Q(0), Q(2), Q(4), Q(6)]
+  it('a multi-measure rest stands for as many bars as its number says', () => {
+    const { s, notes } = play(page([fourQ(), [{ step: 0, dur: 'w', multi: 3 }], fourQ()]))
+    expect(s.measures).toHaveLength(5)
+    expect(s.measures.every((m) => !m.suspect)).toBe(true)
+    expect(notes[4].start).toBeCloseTo(16, 5)                  // the bars after the rest start four bars in
+  })
+
+  it('a key signature that changes in the middle of the line applies from that bar on (naturals cancel)', () => {
+    const f4 = () => [Q(1), Q(1), Q(1), Q(1)]                  // F4 four times: natural in C major, sharp in G major
+    const g = [[0xe262, 8]] as [number, number][]              // one sharp on the top line (F5)
+    const bars = [f4(), f4(), f4(), f4()]
+    bars[1][0].pre = { key: g }
+    bars[3][0].pre = { key: [[0xe261, 8]] }                    // a natural cancels it again
+    const { notes } = play(page(bars))
+    expect(notes.filter((_, i) => i % 4 === 0).map((n) => n.pitch)).toEqual([65, 66, 66, 65])
+  })
+
+  it('an accidental of the first note, drawn far from it, is not mistaken for a key change', () => {
+    const bar = [Q(2, { acc: 0xe262, accDx: 16 }), Q(1), Q(1), Q(1)]       // G# with its sign two spaces away: unattached, right after the barline
+    const { notes } = play(page([fourQ(), bar]))
+    expect(notes.slice(5).map((n) => n.pitch)).toEqual([65, 65, 65])       // the F's stay natural: one lone sharp is no key signature
+  })
+
+  it('a time signature that changes in the middle of the line sets the length of the bars after it', () => {
+    const three = [Q(0), Q(2), Q(4)]
+    three[0].pre = { time: [3, 4] }
+    const { s, notes } = play(page([fourQ(), three, three.map((n) => ({ ...n, pre: undefined }))]))
+    expect(s.measures.map((m) => m.length)).toEqual([4, 3, 3])
+    expect(s.measures.every((m) => !m.suspect)).toBe(true)
+    expect(s.beatsPerBar).toBe(4)                               // the piece starts in 4/4
+    expect(notes[4].start).toBeCloseTo(4, 5); expect(notes[7].start).toBeCloseTo(7, 5)
+  })
+
+  it('three staves in a system: bass-like staves are the left hand, the others the right', () => {
+    const shift = (p: PagePrims, dy: number): PagePrims => ({ ...p, glyphs: p.glyphs.map((g) => ({ ...g, y: g.y + dy })), segs: p.segs.map((q) => ({ ...q, y1: q.y1 + dy, y2: q.y2 + dy })) })
+    const a = page([fourQ()]), b = shift(page([fourQ()]), -70), c = shift(page([fourQ()], { clef: 0xe062, clefLine: 3 }), -140)
+    const join: Seg[] = [] // the barlines of the three staves are one line through all of them
+    for (const q of a.segs.filter((q) => Math.abs(q.x1 - q.x2) < 0.01 && q.w > 0.7)) join.push({ x1: q.x1, x2: q.x1, y1: BOTTOM + 4 * SP, y2: BOTTOM - 140, w: q.w })
+    const p: PagePrims = { ...a, glyphs: [...a.glyphs, ...b.glyphs, ...c.glyphs], segs: [...a.segs, ...b.segs, ...c.segs, ...join] }
+    const { s, notes } = play(p)
+    expect(s.measures).toHaveLength(1)
+    expect(s.measures[0].suspect).toBeUndefined()
+    expect(s.measures[0].written!.map((w) => w.hand)).toEqual([0, 0, 1])
+    expect(notes.filter((n) => n.hand === 1).length).toBe(4); expect(notes.filter((n) => n.hand === 0).length).toBe(8)
+  })
+
+  it('the composer takes all staves: each hand gets the voices of its staves', async () => {
+    const { scoreFromOmr } = await import('../../editor/importScore')
+    const { validate } = await import('../../editor/model')
+    const shift = (p: PagePrims, dy: number): PagePrims => ({ ...p, glyphs: p.glyphs.map((g) => ({ ...g, y: g.y + dy })), segs: p.segs.map((q) => ({ ...q, y1: q.y1 + dy, y2: q.y2 + dy })) })
+    const a = page([fourQ()]), b = shift(page([fourQ()]), -70), c = shift(page([fourQ()], { clef: 0xe062, clefLine: 3 }), -140)
+    const join: Seg[] = a.segs.filter((q) => Math.abs(q.x1 - q.x2) < 0.01 && q.w > 0.7).map((q) => ({ x1: q.x1, x2: q.x1, y1: BOTTOM + 4 * SP, y2: BOTTOM - 140, w: q.w }))
+    const { score } = scoreFromOmr(readScore([{ ...a, glyphs: [...a.glyphs, ...b.glyphs, ...c.glyphs], segs: [...a.segs, ...b.segs, ...c.segs, ...join] }]), 'x')
+    expect(validate(score)).toEqual([])
+    expect(score.measures[0].staves[0]).toHaveLength(2)         // two treble staves = two voices of the right hand
+    expect(score.measures[0].staves[1]).toHaveLength(1)
+    expect(score.clefs).toEqual(['treble', 'bass'])
   })
 })

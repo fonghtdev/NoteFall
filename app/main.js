@@ -15,6 +15,12 @@ if (process.env.NOTEFALL_FRESH) app.setPath('userData', require('os').tmpdir() +
 // Print the window that asked: it already has the music font loaded, a separate window would not.
 ipcMain.handle('print-pdf', (e) => e.sender.printToPDF({ pageSize: 'A4', printBackground: true, preferCSSPageSize: true }))
 
+const MIME = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json', '.wasm': 'application/wasm', '.woff2': 'font/woff2', '.woff': 'font/woff', '.svg': 'image/svg+xml',
+  '.png': 'image/png', '.bin': 'application/octet-stream',
+}
+
 app.whenReady().then(() => {
   if (process.env.NOTEFALL_DL) { // self-test: save downloads to a known folder instead of asking
     session.defaultSession.on('will-download', (_e, item) => item.setSavePath(path.join(process.env.NOTEFALL_DL, item.getFilename())))
@@ -24,7 +30,13 @@ app.whenReady().then(() => {
     // test hook: lets the headless self-test feed a real file to the renderer
     if (pathname === '/__file' && process.env.NOTEFALL_FILE) return net.fetch(pathToFileURL(process.env.NOTEFALL_FILE).toString())
     const p = path.join(__dirname, 'dist', pathname)
-    return net.fetch(pathToFileURL(p).toString())
+    // Say the type ourselves: on Windows net.fetch(file://) asks the registry, which often calls .js/.mjs "text/plain" and the page's scripts and PDF worker then refuse to load
+    return net.fetch(pathToFileURL(p).toString()).then((r) => {
+      const type = MIME[path.extname(p).toLowerCase()]
+      if (!type) return r
+      const h = new Headers(r.headers); h.set('content-type', type)
+      return new Response(r.body, { status: r.status, headers: h })
+    })
   })
   const selftest = !!process.env.NOTEFALL_SELFTEST
   const win = new BrowserWindow({

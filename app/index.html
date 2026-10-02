@@ -41,8 +41,10 @@
       <progress id="progress" max="1" hidden aria-label="Tiến độ xử lý"></progress>
       <button id="play" class="btn primary icon" data-state="paused" aria-label="Phát" title="Phát / tạm dừng (Space)" disabled><span data-icon="play" data-i="play"></span><span data-icon="pause" data-i="pause"></span></button>
       <span id="time" aria-live="off">0:00 / 0:00</span>
-      <input id="seek" type="range" min="0" max="0" step="0.01" value="0" aria-label="Vị trí phát" />
-      <span id="status" role="status">Chưa mở bài nào</span>
+      <div id="track">
+        <input id="seek" type="range" min="0" max="0" step="0.01" value="0" aria-label="Vị trí phát" />
+        <span id="status" role="status">Chưa mở bài nào</span>
+      </div>
 
       <div class="pop-anchor">
         <button id="btn-settings" class="btn" aria-label="Cài đặt hiển thị và nhịp"><span data-icon="sliders"></span>Cài đặt</button>

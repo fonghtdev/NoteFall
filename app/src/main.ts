@@ -11,7 +11,7 @@ import { end, type Note } from './core/models'
 import { estimateGrid, quantize, scaleTempo, shiftOffset, type BeatGrid } from './core/beats'
 import * as cache from './core/cache'
 import { readPdfScore } from './core/score/pdf'
-import { toNotes, unroll } from './core/score/playback'
+import { tempoRatios, toNotes, unroll } from './core/score/playback'
 import { setGraceBeats } from './core/score/realize'
 import type { Score } from './core/score/omr'
 import { THEMES } from './ui/theme'
@@ -103,11 +103,13 @@ export function show(notes: Note[], audio?: AudioBuffer, g?: BeatGrid, k?: strin
 async function showScore() {
   if (!score) return
   const bpm = Math.min(300, Math.max(30, +$<HTMLInputElement>('tempo').value || 120))
-  const notes = toNotes(unroll(score, $<HTMLInputElement>('repeats').checked), bpm)
+  const repeats = $<HTMLInputElement>('repeats').checked, ratios = tempoRatios(score, repeats)
+  const notes = toNotes(unroll(score, repeats), bpm, 85, ratios)
   say('Đang tổng hợp tiếng piano…')
   const audio = await renderNotes(notes)
   document.body.classList.add('score'); $('scorectl').hidden = false
   show(notes, audio, { bpm, offset: 0, barStart: 0, beatsPerBar: score.beatsPerBar })
+  if (ratios.length) { grid = undefined; refresh() } // the tempo changes along the way: one fixed beat grid would drift, so the beat lines are left out
   const bad = score.measures.filter((m) => m.suspect)
   say(`${notes.length} nốt · ${score.measures.length} ô nhịp ${score.beatsPerBar}/${score.beatUnit}` + (bad.length || score.warnings.length ? ` · ⚠ ${bad.length + score.warnings.length} chỗ cần kiểm tra` : ' · mọi ô nhịp đều đủ phách'))
   const notes_ = [...bad.map((m) => `Ô ${m.index}: ${m.suspect}`), ...score.warnings]

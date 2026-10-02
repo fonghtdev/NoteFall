@@ -3,24 +3,29 @@
 // Glyph codes follow the Sonata/Maestro layout; codes marked "unverified" are absent from the sample PDF and rely on the bar-length check.
 import type { Glyph, PagePrims, Poly, Seg } from './primitives'
 import { readNavigation, type BarGeom } from './navigation'
+import { DYN_BY_TEXT, L_P, L_Z, dynText } from './dynamics'
 import { fromSmufl, isSmufl } from './smufl'
 import { realizeVoice } from './realize'
 
 // ---- glyph vocabulary -------------------------------------------------------------------------------------
 const TREBLE = 0xf026, BASS = 0xf03f
 const NOTE_FILLED = 0xf0cf, NOTE_HOLLOW = 0xf0fa, SLUR = 0xf0d1
-const ACC: Record<number, number> = { 0xf023: 1, 0xf06e: 0, 0xf062: -1 } // sharp, natural, flat
+const ACC: Record<number, number> = { 0xf023: 1, 0xf06e: 0, 0xf062: -1, 0xf100: 2, 0xf101: -2 } // sharp, natural, flat, double sharp, double flat
 const DOT = 0xf0aa
 const REST: Record<number, number> = { 0xf0ce: 1, 0xf0ee: 2, 0xf0b7: 4, 0xf0e4: 0.5, 0xf0c5: 0.25 } // quarter (verified); half/whole/8th/16th unverified
 const FLAG: Record<number, number> = { 0xf06a: 1 }
-const ORNAMENT: Record<number, 'mordent' | 'inverted'> = { 0xf04d: 'mordent', 0xf06d: 'inverted' } // zigzag with / without a vertical stroke
+const ORNAMENT: Record<number, 'mordent' | 'inverted' | 'trill' | 'turn'> = { 0xf04d: 'mordent', 0xf06d: 'inverted', 0xf140: 'trill', 0xf141: 'turn' } // zigzag with / without a vertical stroke
 const IGNORED = new Set([0xf055, 0xf075]) // fermatas: shown, not played
-const CLEF_BASE: Record<number, number> = { [TREBLE]: 4 * 7 + 2, [BASS]: 2 * 7 + 4 } // diatonic index of the bottom line: E4, G2
+const C_CLEF = 0xf106 // alto or tenor: told apart by which line the clef sits on
+const CLEF_BASE: Record<number, number> = { [TREBLE]: 4 * 7 + 2, [BASS]: 2 * 7 + 4, 0xf102: 3 * 7 + 2, 0xf103: 5 * 7 + 2, 0xf104: 1 * 7 + 4, 0xf105: 3 * 7 + 4 } // diatonic index of the bottom line: E4, G2, (8vb / 8va variants)
+const ARTIC: Record<number, string> = { 0xf120: 'staccato', 0xf121: 'accent', 0xf122: 'tenuto', 0xf123: 'marcato', 0xf124: 'staccatissimo' }
+const TUPLET_DIGIT = (c: number) => (c >= 0xf112 && c <= 0xf119 ? c - 0xf110 : 0)
+const TUPLET_OF: Record<number, number> = { 2: 3, 3: 2, 4: 3, 5: 4, 6: 4, 7: 4, 9: 8 } // n notes in the time of m
 const SEMI = [0, 2, 4, 5, 7, 9, 11] // C D E F G A B
 
 export interface ScoreNote { pitch: number; start: number; duration: number; staff: number; tieNext?: boolean; velocity?: number } // start/duration in quarter notes, relative to the measure; staff 0 = upper
 /** One written event, as the editor wants it (no ornament expansion, rests kept). */
-export interface Written { hidden?: boolean; ticks: number; pitches: { step: string; alter: number; octave: number }[]; tie?: boolean; orn?: 'mordent' | 'inverted'; graces?: { step: string; alter: number; octave: number }[] }
+export interface Written { hidden?: boolean; art?: string[]; vel?: number; tup?: { n: number; m: number; group: number }; ticks: number; pitches: { step: string; alter: number; octave: number }[]; tie?: boolean; orn?: 'mordent' | 'inverted' | 'trill' | 'turn'; arp?: 'up' | 'down' | 'plain'; trem?: 1 | 2 | 3; graces?: { step: string; alter: number; octave: number }[] }
 export interface Measure {
   index: number          // 1-based, in reading order
   length: number        // quarter notes the time signature promises
@@ -44,11 +49,11 @@ type VSeg = Seg & { lo: number; hi: number }
 interface Staff { bottom: number; sp: number; top: number; x0: number; x1: number }
 interface Head {
   g: Glyph; staff: number; step: number; hollow: boolean; grace: boolean
-  stem?: VSeg; dir?: 'up' | 'down'; dots: number; acc?: number; pitch?: number; tie?: boolean; d?: number; orn?: 'mordent' | 'inverted'
+  stem?: VSeg; dir?: 'up' | 'down'; dots: number; acc?: number; pitch?: number; tie?: boolean; d?: number; orn?: 'mordent' | 'inverted' | 'trill' | 'turn'; art?: string[]; trem?: 1 | 2 | 3
 }
-interface Event { x: number; heads: Head[]; rest?: Glyph; dur: number; dir?: 'up' | 'down'; grace: boolean; y: number }
+interface Event { x: number; heads: Head[]; rest?: Glyph; dur: number; dir?: 'up' | 'down'; grace: boolean; y: number; scaled?: boolean; tup?: { n: number; m: number; group: number } }
 
-const isMusic = (g: Glyph) => g.code >= 0xf000 && g.code <= 0xf0ff
+const isMusic = (g: Glyph) => g.code >= 0xf000 && g.code <= 0xf1ff
 
 // ---- staves --------------------------------------------------------------------------------------------------
 function findStaves(p: PagePrims): Staff[] {
@@ -106,6 +111,8 @@ export function readScore(rawPages: PagePrims[]): Score {
   let firstClefs: ('treble' | 'bass')[] | undefined
   let timeSigSeen = false
   let pendingStartRepeat = false
+  let tupletId = 0
+  let level: number | undefined // loudness in force (from the last dynamic marking), carried from system to system
 
   for (const [pi, p] of pages.entries()) {
     const staves = findStaves(p)
@@ -125,11 +132,11 @@ export function readScore(rawPages: PagePrims[]): Score {
     const music = p.glyphs.filter(isMusic)
     for (const g of music) {
       const known = g.code in ACC || g.code in CLEF_BASE || g.code in REST || g.code in FLAG || g.code in ORNAMENT || IGNORED.has(g.code) ||
-        [NOTE_FILLED, NOTE_HOLLOW, SLUR, DOT].includes(g.code) || (g.code >= 0xf030 && g.code <= 0xf039)
+        [NOTE_FILLED, NOTE_HOLLOW, SLUR, DOT, C_CLEF].includes(g.code) || (g.code >= 0xf030 && g.code <= 0xf039) || g.code in ARTIC || (g.code >= 0xf110 && g.code <= 0xf119) || (g.code >= L_P && g.code <= L_Z) || (g.code >= 0xf150 && g.code <= 0xf152) || (g.code >= 0xf160 && g.code <= 0xf162) || g.code === 0xf170
       if (!known) unknown.set(g.code, (unknown.get(g.code) ?? 0) + 1)
     }
     const heads: Head[] = []
-    const clefs: { g: Glyph; staff: number }[] = []
+    const clefs: { g: Glyph; staff: number; base: number }[] = []
     const rests: { g: Glyph; staff: number; dur: number }[] = []
     for (const g of music) {
       const si = staffOf(staves, g.y)
@@ -139,7 +146,8 @@ export function readScore(rawPages: PagePrims[]): Score {
         const grace = g.size < 0.8 * 4 * st.sp // cue-size notehead
         heads.push({ g, staff: si, step: Math.round(raw), hollow: g.code === NOTE_HOLLOW, grace, dots: 0 })
         if (!grace && Math.abs(raw - Math.round(raw)) > 0.2) warnings.push(`p${pi + 1}: notehead off the staff grid at x=${g.x.toFixed(0)}`)
-      } else if (g.code in CLEF_BASE) clefs.push({ g, staff: si })
+      } else if (g.code in CLEF_BASE) clefs.push({ g, staff: si, base: CLEF_BASE[g.code] })
+      else if (g.code === C_CLEF) clefs.push({ g, staff: si, base: 28 - 2 * Math.round((g.y - staves[si].bottom) / staves[si].sp) }) // C4 sits on the line the clef marks: bottom line = C4 minus two steps per line
       else if (g.code in REST) rests.push({ g, staff: si, dur: REST[g.code] })
     }
     // a rest displaced by a second voice can sit almost equally far from two staves: then the nearest note in its column decides
@@ -216,6 +224,30 @@ export function readScore(rawPages: PagePrims[]): Score {
       }
       if (best) { h.dots = 1; attachedDot.add(best) }
     }
+    // articulation marks (staccato, accent, tenuto, marcato) belong to the note whose column and height they sit by
+    for (const a of music) {
+      const kind = ARTIC[a.code]
+      if (!kind) continue
+      let best: Head | undefined, bd = Infinity
+      for (const h of heads) {
+        const sp = staves[h.staff].sp, cx = h.g.x + h.g.w / 2, ax = a.x + a.w / 2
+        if (Math.abs(cx - ax) > 0.9 * h.g.w) continue
+        const dy = Math.abs(a.y - h.g.y)
+        if (dy > 4.5 * sp || dy >= bd) continue
+        best = h; bd = dy
+      }
+      if (best) best.art = [...new Set([...(best.art ?? []), kind])]
+    }
+    // tremolo strokes cross the stem of a note: one, two or three of them
+    for (const t of music) {
+      if (t.code < 0xf150 || t.code > 0xf152) continue
+      let best: Head | undefined, bd = Infinity
+      for (const h of heads) {
+        const sp = staves[h.staff].sp, dx = Math.abs(t.x + t.w / 2 - (h.stem ? h.stem.x1 : h.g.x + h.g.w / 2)), dy = Math.abs(t.y - h.g.y)
+        if (dx < 1.2 * h.g.w && dy < 6 * sp && dy < bd) { best = h; bd = dy }
+      }
+      if (best) best.trem = (t.code - 0xf150 + 1) as 1 | 2 | 3
+    }
     // second dot (double-dotted): another dot just right of an attached one
     for (const h of heads) {
       if (!h.dots) continue
@@ -265,7 +297,7 @@ export function readScore(rawPages: PagePrims[]): Score {
           if (attachedAcc.has(a) || staffOf(staves, a.y) !== si || a.x >= first || a.x < staves[si].x0) continue
           const clef = clefAt(si, a.x)
           if (!clef) continue
-          const d = CLEF_BASE[clef.g.code] + Math.round((a.y - staves[si].bottom) / (staves[si].sp / 2))
+          const d = clef.base + Math.round((a.y - staves[si].bottom) / (staves[si].sp / 2))
           m.set(((d % 7) + 7) % 7, ACC[a.code])
         }
         keyAlter.set(si, m)
@@ -273,7 +305,7 @@ export function readScore(rawPages: PagePrims[]): Score {
       if (keyFifths === undefined) {
         const top = keyAlter.get(sys[0])!
         keyFifths = [...top.values()].reduce((a, v) => a + Math.sign(v), 0)
-        firstClefs = sys.map((si) => (clefAt(si, 1e9)?.g.code === BASS ? 'bass' : 'treble'))
+        firstClefs = sys.map((si) => { const c = clefAt(si, 1e9); return c && (c.g.code === BASS || c.g.code === 0xf104 || c.g.code === 0xf105) ? 'bass' : 'treble' })
       }
 
       // time signature digits (before the first head of the system)
@@ -285,6 +317,34 @@ export function readScore(rawPages: PagePrims[]): Score {
         if (top.length && bot.length) { beats = num(top); unit = num(bot); timeSigSeen = true }
       }
       const barLen = (beats * 4) / unit
+      // dynamic markings of this system: letters p m f r s z lying on one line, close together, make one marking
+      const dynMarks: { x: number; vel: number }[] = []
+      {
+        const top = staves[sys[0]].top, bottom = staves[sys[sys.length - 1]].bottom, sp0 = staves[sys[0]].sp
+        const letters = music.filter((g) => g.code >= L_P && g.code <= L_Z && g.y < top + 4 * sp0 && g.y > bottom - 8 * sp0 && g.x >= staves[sys[0]].x0 && g.x <= staves[sys[0]].x1).sort((a, b) => a.x - b.x)
+        const used = new Set<Glyph>()
+        for (const l0 of letters) {
+          if (used.has(l0)) continue
+          const run = [l0]; used.add(l0)
+          for (const g of letters) { const last = run[run.length - 1]; if (!used.has(g) && Math.abs(g.y - l0.y) < 0.6 && g.x - (last.x + last.w) > -1 && g.x - (last.x + last.w) < 0.6 * sp0) { run.push(g); used.add(g) } }
+          const vel = DYN_BY_TEXT[dynText(run.map((g) => g.code))]
+          if (vel) dynMarks.push({ x: l0.x, vel })
+        }
+      }
+      const velAt = (x: number, from: number | undefined) => { let v = from; for (const d of dynMarks) if (d.x <= x + 0.7 * staves[sys[0]].sp) v = d.vel; return v }
+      const levelBefore = level
+      // ottava: a label ("8va", "8vb", "15ma", "15mb") with a dashed line after it; the notes under the line are written one or two octaves off
+      const ottavas: { si: number; x0: number; x1: number; shift: number }[] = []
+      for (const lab of p.glyphs.filter((g) => g.code >= 0xe510 && g.code <= 0xe51b)) {
+        const si = sys.find((i) => lab.y > staves[i].top + 0.5 * staves[i].sp ? lab.y < staves[i].top + 9 * staves[i].sp : lab.y < staves[i].bottom - 0.5 * staves[i].sp && lab.y > staves[i].bottom - 9 * staves[i].sp) // above the staff, or below it
+        if (si === undefined) continue
+        const sp = staves[si].sp, above = lab.y > (staves[si].top + staves[si].bottom) / 2
+        const rowSegs = p.segs.filter((q) => Math.abs(q.y1 - q.y2) < 0.5 && Math.abs(q.y1 - lab.y) < 2.5 * sp && Math.min(q.x1, q.x2) >= lab.x - 1).sort((a, b) => Math.min(a.x1, a.x2) - Math.min(b.x1, b.x2))
+        let end = lab.x + lab.w
+        for (const q of rowSegs) { if (Math.min(q.x1, q.x2) - end > 2.5 * sp) break; end = Math.max(end, q.x1, q.x2) }
+        if (end > lab.x + lab.w) ottavas.push({ si, x0: lab.x, x1: end + 0.5 * sp, shift: (lab.code >= 0xe514 ? 14 : 7) * (above ? 1 : -1) }) // above: sounds higher than written
+      }
+      const ottavaAt = (si: number, x: number) => ottavas.find((o) => o.si === si && x >= o.x0 && x <= o.x1)?.shift ?? 0
 
       for (let bi = 0; bi + 1 < bars.length; bi++) {
         const left = bars[bi], right = bars[bi + 1]
@@ -307,6 +367,11 @@ export function readScore(rawPages: PagePrims[]): Score {
           const inM = (x: number) => x > x0 + 0.5 && x < x1 - 0.5
           const hs = heads.filter((h) => h.staff === si && inM(h.g.x))
           const rs = rests.filter((r) => r.staff === si && inM(r.g.x))
+          // a "repeat the previous bar" sign: this staff plays what the bar before it played
+          if (!hs.length && measures.length && music.some((g) => g.code === 0xf170 && inM(g.x) && staffOf(staves, g.y) === si)) {
+            const prev = measures[measures.length - 1].written?.find((w) => w.staff === si - sys[0])
+            if (prev) { writtenOut.push({ staff: si - sys[0], voices: structuredClone(prev.voices) }); hasContent = true; continue }
+          }
           if (!hs.length && !rs.length) continue
           hasContent = true
           const st = staves[si], sp = st.sp
@@ -341,6 +406,25 @@ export function readScore(rawPages: PagePrims[]): Score {
           // a whole rest standing alone in a bar means "the whole bar", whatever the time signature (3/8, 6/8, 2/4 …)
           for (const r of rs) events.push({ x: r.g.x, heads: [], rest: r.g, dur: r.dur === 4 && rs.length === 1 && !hs.length ? barLen : r.dur, grace: false, y: r.g.y })
           events.sort((a, b) => a.x - b.x)
+          // tuplets: a digit (3, 5, 6 …) over / under a group of notes: n notes in the time of m, so each lasts m/n of what its beams say
+          for (const dg of music) {
+            const n = TUPLET_DIGIT(dg.code), m = TUPLET_OF[n]
+            if (!m || dg.x < x0 || dg.x > x1 || Math.abs(dg.y - (st.top + st.bottom) / 2) > 9 * sp) continue
+            if (sys.some((o) => o !== si && Math.abs(dg.y - (staves[o].top + staves[o].bottom) / 2) < Math.abs(dg.y - (st.top + st.bottom) / 2))) continue // belongs to the other staff
+            const cands = events.filter((e) => !e.grace && !e.scaled)
+            if (cands.length < n) continue
+            const near = cands.reduce((a, b) => (Math.abs(b.x - dg.x) < Math.abs(a.x - dg.x) ? b : a))
+            const singleVoice = cands.every((e, i) => i === 0 || e.x - cands[i - 1].x > 0.8 * (st.sp * 1.18)) // no two events share a column
+            const same = singleVoice ? cands : cands.filter((e) => e.dir === near.dir || !e.heads.length) // with two voices, follow the stem direction of the nearest note
+            let best = -1, bd = Infinity
+            for (let k = 0; k + n <= same.length; k++) {
+              const w = same.slice(k, k + n), c = (w[0].x + w[n - 1].x) / 2
+              if (Math.abs(c - dg.x) < bd) { bd = Math.abs(c - dg.x); best = k }
+            }
+            if (best < 0 || bd > 3 * sp) continue
+            const group = ++tupletId
+            for (const e of same.slice(best, best + n)) { e.dur = (e.dur * m) / n; e.scaled = true; e.tup = { n, m, group } }
+          }
 
           // voices: one unless two different events share an x column (e.g. a rest above a half note).
           // Then: a note goes by stem direction, a rest takes the other voice, and a lone event continues the voice that is free first.
@@ -373,8 +457,15 @@ export function readScore(rawPages: PagePrims[]): Score {
           }
           const voiceOf = (e: Event) => voiceAt.get(e) ?? 0
           const cursor = [0, 0]
+          const arpOf = (e: Event, sp: number): 'up' | 'down' | 'plain' | undefined => { // a wiggle just left of a chord, spanning it (arrow tells the direction)
+            if (e.heads.length < 2) return undefined
+            const lo = Math.min(...e.heads.map((h) => h.g.y)), hi = Math.max(...e.heads.map((h) => h.g.y)), left = Math.min(...e.heads.map((h) => h.g.x))
+            const near = (g: Glyph) => g.x < left + 0.5 * sp && g.x > left - 3.5 * sp && g.y > lo - 1.5 * sp && g.y < hi + 2.5 * sp
+            if (!music.some((g) => g.code === 0xf160 && near(g))) return undefined
+            return music.some((g) => g.code === 0xf162 && near(g)) ? 'down' : music.some((g) => g.code === 0xf161 && near(g)) ? 'up' : 'plain'
+          }
           const clef = clefAt(si, x0 + 2) ?? clefAt(si, 1e9)
-          const base = clef ? CLEF_BASE[clef.g.code] : CLEF_BASE[TREBLE]
+          const base = clef ? clef.base : CLEF_BASE[TREBLE]
           const measureAcc = new Map<number, number>() // diatonic index -> alteration, until the barline
           const mod7 = (d: number) => ((d % 7) + 7) % 7
           let graceStack: Event[] = []
@@ -387,7 +478,7 @@ export function readScore(rawPages: PagePrims[]): Score {
             // pitches (accidentals earlier in the bar carry on)
             for (const h of e.heads) {
               const cl = clefAt(si, h.g.x) ?? clef
-              h.d = (cl ? CLEF_BASE[cl.g.code] : base) + h.step
+              h.d = (cl ? cl.base : base) + h.step + ottavaAt(si, h.g.x)
               if (h.acc !== undefined) measureAcc.set(h.d, h.acc)
             }
             const spell = (h: Head) => ({ step: 'CDEFGAB'[mod7(h.d!)], alter: alterAt(h.d!), octave: Math.floor(h.d! / 7) })
@@ -396,7 +487,7 @@ export function readScore(rawPages: PagePrims[]): Score {
             for (const ge of graceStack) {
               for (const h of ge.heads) {
                 const cl = clefAt(si, h.g.x) ?? clef
-                h.d = (cl ? CLEF_BASE[cl.g.code] : base) + h.step
+                h.d = (cl ? cl.base : base) + h.step + ottavaAt(si, h.g.x)
                 if (h.acc !== undefined) measureAcc.set(h.d, h.acc)
                 graces.push(spell(h))
               }
@@ -408,7 +499,12 @@ export function readScore(rawPages: PagePrims[]): Score {
               pitches: e.heads.map(spell).sort((p, q) => rank(p) - rank(q)),
               tie: e.heads.some((h) => h.tie) || undefined,
               orn: e.heads.find((h) => h.orn)?.orn,
+              trem: e.heads.find((h) => h.trem)?.trem,
+              arp: arpOf(e, st.sp),
               graces: graces.length ? graces : undefined,
+              art: [...new Set(e.heads.flatMap((h) => h.art ?? []))].length ? [...new Set(e.heads.flatMap((h) => h.art ?? []))] : undefined,
+              vel: velAt(e.x, levelBefore),
+              tup: e.tup,
             })
             cursor[v] += e.dur
             sums[v] += e.dur
@@ -437,6 +533,7 @@ export function readScore(rawPages: PagePrims[]): Score {
         measures.push({ index: measures.length + 1, length: barLen, notes: measureNotes.sort((a, b) => a.start - b.start || a.pitch - b.pitch), startRepeat: startRepeat || pendingStartRepeat, endRepeat, suspect, written: writtenOut })
         pendingStartRepeat = false
       }
+      if (dynMarks.length) level = dynMarks[dynMarks.length - 1].vel
     }
   }
 
@@ -448,6 +545,19 @@ export function readScore(rawPages: PagePrims[]): Score {
       if (m && n.toCoda) m.toCoda = true
       if (m && n.jump) m.jump = n.jump
     })
+  }
+  // tempo markings (♩ = 93, also a dotted quarter): each one holds from its bar on, until the next
+  const marks: { bar: number; bpm: number }[] = []
+  for (const { p, geoms, start } of navPages) {
+    for (const t of tempoMarks(p)) {
+      const k = geoms.findIndex((g) => t.x >= g.x0 - 2 && t.x < g.x1 && t.y >= g.top - 1 && t.y <= g.top + 14 * g.sp)
+      if (k >= 0 && measures[start + k]) marks.push({ bar: start + k, bpm: t.bpm })
+    }
+  }
+  if (marks.length) {
+    marks.sort((a, b) => a.bar - b.bar)
+    let cur = marks[0].bpm
+    measures.forEach((m, i) => { const mk = marks.find((q) => q.bar === i); if (mk) cur = mk.bpm; m.tempo = i === 0 && !mk ? marks[0].bpm : cur })
   }
   if (!timeSigSeen) warnings.push('no time signature found: assuming 4/4')
   for (const [code, n] of unknown) warnings.push(`unrecognised music symbol U+${code.toString(16).toUpperCase()} (${n}×): ignored`)
@@ -462,4 +572,16 @@ function readTempo(p?: PagePrims): number | undefined {
   const digits = p.glyphs.filter((g) => g.code >= 0x30 && g.code <= 0x39 && Math.abs(g.y - note.y) < 4 && g.x > note.x && g.x < note.x + 90).sort((a, b) => a.x - b.x)
   const v = digits.length ? Number(digits.map((g) => String.fromCharCode(g.code)).join('')) : NaN
   return v >= 20 && v <= 400 ? v : undefined
+}
+
+/** Every "♩ = 93" / "♩. = 60" marking of a page, in quarter notes per minute. */
+function tempoMarks(p: PagePrims): { x: number; y: number; bpm: number }[] {
+  const out: { x: number; y: number; bpm: number }[] = []
+  for (const note of p.glyphs.filter((g) => g.code === 0xeca5 || g.code === 0xe1d5)) {
+    const dotted = p.glyphs.some((g) => g.code === 0xf0aa && Math.abs(g.x - (note.x + note.w)) < 0.6 * note.size && Math.abs(g.y - note.y) < 1.5 * note.size)
+    const digits = p.glyphs.filter((g) => g.code >= 0x30 && g.code <= 0x39 && Math.abs(g.y - note.y) < 4 && g.x > note.x && g.x < note.x + 90).sort((a, b) => a.x - b.x)
+    const v = digits.length ? Number(digits.map((g) => String.fromCharCode(g.code)).join('')) : NaN
+    if (v >= 20 && v <= 400) out.push({ x: note.x, y: note.y, bpm: dotted ? v * 1.5 : v })
+  }
+  return out
 }

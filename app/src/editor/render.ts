@@ -21,6 +21,31 @@ const MARGIN = 20, STAFF_GAP = 105, SYSTEM_GAP = 60, STAFF_H = 80, TOP_SPACE = 4
 const pitchKey = (p: { step: string; alter: number; octave: number }, shift = 0) =>
   `${p.step.toLowerCase()}${p.alter > 0 ? '#'.repeat(p.alter) : p.alter < 0 ? 'b'.repeat(-p.alter) : ''}/${p.octave + shift}`
 
+/** Where a tick of a bar stands on the page (between the columns of notes, as far along as the time has gone). */
+export function xAtTick(dm: DrawnMeasure, at: number): number {
+  const cols = columnsOf(dm)
+  if (at <= cols[0].at) return cols[0].x
+  for (let i = 1; i < cols.length; i++) if (at <= cols[i].at) { const a = cols[i - 1], b = cols[i]; return a.x + ((b.x - a.x) * (at - a.at)) / (b.at - a.at || 1) }
+  return cols[cols.length - 1].x
+}
+/** The other way round: which tick of a bar is at page position x (snapped to an eighth of a beat, or to a note when one is near). */
+export function tickAtX(dm: DrawnMeasure, x: number, barTicks: number): number {
+  const cols = columnsOf(dm)
+  let at = 0
+  if (x >= cols[cols.length - 1].x) at = cols[cols.length - 1].at
+  else for (let i = 1; i < cols.length; i++) if (x <= cols[i].x) { const a = cols[i - 1], b = cols[i]; at = a.at + ((b.at - a.at) * (x - a.x)) / (b.x - a.x || 1); break }
+  const near = cols.find((c) => Math.abs(c.x - x) < 7)
+  if (near) return near.at
+  return Math.max(0, Math.min(barTicks - 1, Math.round(at / 120) * 120))
+}
+function columnsOf(dm: DrawnMeasure): { at: number; x: number }[] {
+  const seen = new Map<number, number>()
+  for (const e of dm.evs) if (!seen.has(e.at)) seen.set(e.at, e.x)
+  const cols = [...seen.entries()].map(([at, x]) => ({ at, x })).sort((a, b) => a.at - b.at)
+  if (!cols.length) cols.push({ at: 0, x: dm.x + 20 })
+  return cols
+}
+
 /** How far a note reaches to the right (head, displaced head, dots) and to the left (accidentals) of its own position. */
 function reach(note: StaveNote | GhostNote): { left: number; right: number } {
   if (!(note instanceof StaveNote)) return { left: 0, right: 0 }
@@ -402,7 +427,7 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions, extra: 
       t.setAttribute('x', String(a.note.getAbsoluteX() - 4)); t.setAttribute('y', String(st.bottom + 38))
       t.setAttribute('font-family', 'Bravura, serif'); t.setAttribute('font-size', '30')
       const dm_: MarkRef = { kind: 'ev', field: 'dyn', id: ev.id }
-      t.setAttribute('data-mark', JSON.stringify(dm_)); t.setAttribute('style', 'cursor:grab'); t.setAttribute('stroke', 'transparent'); t.setAttribute('stroke-width', '8')
+      t.setAttribute('data-mark', JSON.stringify(dm_)); t.setAttribute('style', 'cursor:grab'); t.setAttribute('pointer-events', 'all'); t.setAttribute('stroke', 'transparent'); t.setAttribute('stroke-width', '8')
       if (isSel(dm_)) t.setAttribute('fill', '#1d6fff')
       svg.appendChild(t)
     }
@@ -441,7 +466,7 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions, extra: 
     if (o.italic) e.setAttribute('font-style', 'italic')
     if (o.bold) e.setAttribute('font-weight', 'bold')
     if (o.mark) { // a mark you can pick up: click to select, drag to another note or bar
-      e.setAttribute('data-mark', JSON.stringify(o.mark)); e.setAttribute('style', 'cursor:grab'); e.setAttribute('stroke', 'transparent'); e.setAttribute('stroke-width', '8')
+      e.setAttribute('data-mark', JSON.stringify(o.mark)); e.setAttribute('style', 'cursor:grab'); e.setAttribute('pointer-events', 'all'); e.setAttribute('stroke', 'transparent'); e.setAttribute('stroke-width', '8') // 'all': a click on the text's box counts even though nothing visible is painted there
       if (isSel(o.mark)) e.setAttribute('fill', '#1d6fff')
     }
     svg.appendChild(e)
@@ -452,9 +477,8 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions, extra: 
     const x0 = (dm.evs[0]?.x ?? dm.x + 30) - 10
     if (dm.m === 0 || m.tempo || m.tempoText) {
       const bpm = dm.m === 0 && !m.tempoAt ? score.tempo : m.tempo
-      const col = m.tempoAt ? dm.evs.filter((q) => q.staff === 0).find((q) => q.at >= m.tempoAt!) : undefined // a mark in the middle of the bar stands over the first note at or after its position
-      const tx = col ? col.x - 10 : x0
-      put(`${m.tempoText ? m.tempoText + (bpm ? '  ' : '') : ''}${bpm ? `♩ = ${bpm}` : ''}`, tx, top - 60, { size: 14, bold: true, mark: dm.m === 0 && !m.tempoAt ? undefined : { kind: 'tempo', bar: dm.m } })
+      const tx = (m.tempoAt ? xAtTick(dm, m.tempoAt) - 10 : x0) + (m.tempoDx ?? 0) // a mark in the middle of the bar stands at its tick, between the notes if need be
+      put(`${m.tempoText ? m.tempoText + (bpm ? '  ' : '') : ''}${bpm ? `♩ = ${bpm}` : ''}`, tx, top - 60 + (m.tempoDy ?? 0), { size: 14, bold: true, mark: { kind: 'tempo', bar: dm.m } })
       if (dm.m === 0 && m.tempoAt) put(`♩ = ${score.tempo}`, x0, top - 60, { size: 14, bold: true })
     }
     if (m.rehearsal) {

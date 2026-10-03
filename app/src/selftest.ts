@@ -247,6 +247,12 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
         })
         ok('dense chord bars get room: no two columns of notes touch', slack.every((v) => v >= 0))
         c.setMode('select')
+        // marks must be hit by a real pointer: ask the page which element is under the centre of each kind of mark
+        c.setScore(d.fromText([{ rh: 'C5:1 D5:1 E5:1 F5:1', lh: 'C3:4' }, { rh: 'G5:4', lh: 'r:4' }], { tempo: 60 }))
+        { const q = c.score.measures[0].staves[0][0]; q[0].dyn = 'p'; q[1].lyric = 'la'; q[2].chord = 'Am'; q[3].staffText = 'dolce'; c.sel = q[1].id; c.tempoMark(90, 'Allegro'); c.rehearsal('A') }
+        await new Promise((r) => setTimeout(r, 80))
+        { const kinds: string[] = []; for (const el of document.querySelectorAll<SVGElement>('.cmp-sheet svg [data-mark]')) { const b = el.getBoundingClientRect(); const top = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); if (top !== el) kinds.push(el.getAttribute('data-mark')!) } 
+          ok('every mark can be grabbed with a real pointer (the element under its centre is the mark)', kinds.length === 0 && document.querySelectorAll('.cmp-sheet svg [data-mark]').length >= 6) ; if (kinds.length) console.log('  not grabbable: ' + kinds.join(' ')) }
         c.setScore(d.minuet())
       }
       { // zoom: fit follows the window, steps, pointer-anchored wheel zoom, clicks still land on the right note

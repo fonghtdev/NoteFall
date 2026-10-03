@@ -6,10 +6,10 @@ import { hitTest, keyAlter, type Hit } from './hit'
 import {
   CLEFS, STEPS, TPQ, addGrace, barTicks, clearGrace, contextAt, copyPrevious, deleteEv, deleteMeasure, diatonic, emptyScore, findEv, flipStem, fromDiatonic, graceStep, insertMeasure, ottavaShiftAt, putNote, putRest,
   TUPLETS, makeTuplet, navigationProblems, pruneRefs, setBarline, setBreak, setClef, setJump, setRehearsal, setTempoMark, setText, setTimeSymbol, setVolta, toggleEv, toggleMark, type BarlineKind, type ClefName, type Mark, type Orn, type SpanKind, type TextField,
-  putInTuplet, removeTuplet, setDyn, setKey, setLength, setTime, starts, toggleArt, toggleSpan, toggleTie, transpose, validate, allEventIds, clearMark, copyEvents, moveEv, moveMark, moveTempo, pasteClip, type Clip, type Art, type Dyn, type Ev, type Pitch, type Score,
+  putInTuplet, removeTuplet, setDyn, setKey, setLength, setTime, starts, toggleArt, toggleSpan, toggleTie, transpose, validate, allEventIds, clearMark, copyEvents, moveEv, moveMark, moveTempo, setTempoOffset, pasteClip, type Clip, type Art, type Dyn, type Ev, type Pitch, type Score,
 } from './model'
 import { toPerformance } from './perform'
-import { DYN_GLYPH, keyName, renderScore, type DrawnEv, type Layout, type MarkRef } from './render'
+import { DYN_GLYPH, keyName, renderScore, tickAtX, type DrawnEv, type Layout, type MarkRef } from './render'
 import { exportMidi, exportMusicXml, exportPdf, importFileFull, saveJson } from './io'
 
 export interface ComposerHooks { toFalling(score: Score): void | Promise<void> }
@@ -49,7 +49,7 @@ export class Composer {
   private btns = new Map<string, HTMLButtonElement>()
   selMark?: MarkRef                  // a text / dynamic / tempo / rehearsal mark picked up (click it; drag it; Delete removes it)
   sysRange?: [number, number]        // a whole line (system) picked by clicking beside its bars: add / remove bar act on it
-  private drag?: { kind: 'note'; ev: DrawnEv; sx: number; sy: number; moved: boolean } | { kind: 'mark'; mark: MarkRef; sx: number; sy: number; moved: boolean } | { kind: 'marquee'; sx: number; sy: number; moved: boolean; x0: number; y0: number }
+  private drag?: { kind: 'note'; ev: DrawnEv; sx: number; sy: number; moved: boolean } | { kind: 'mark'; mark: MarkRef; sx: number; sy: number; moved: boolean; el: SVGGraphicsElement; lx: number; ly: number; clone?: SVGElement } | { kind: 'marquee'; sx: number; sy: number; moved: boolean; x0: number; y0: number }
   private suppressClick = false
   private clip?: Clip
   private zoom: number | 'fit' = 'fit'   // the page is drawn LOGICAL_WIDTH wide; 'fit' = as wide as the window allows, a number = that many times LOGICAL_WIDTH px
@@ -255,7 +255,7 @@ export class Composer {
   private mouseDown(e: MouseEvent) {
     if (e.button !== 0) return
     const el = (e.target as Element).closest?.('[data-mark]')
-    if (el) { this.drag = { kind: 'mark', mark: JSON.parse(el.getAttribute('data-mark')!) as MarkRef, sx: e.clientX, sy: e.clientY, moved: false }; this.suppressClick = true; return }
+    if (el) { const [lx, ly] = this.toLogical(e); this.drag = { kind: 'mark', mark: JSON.parse(el.getAttribute('data-mark')!) as MarkRef, sx: e.clientX, sy: e.clientY, moved: false, el: el as SVGGraphicsElement, lx, ly }; this.suppressClick = true; e.preventDefault(); return }
     const [x, y] = this.toLogical(e)
     const ev = this.pickNote(x, y)
     if (ev) { this.drag = { kind: 'note', ev, sx: e.clientX, sy: e.clientY, moved: false }; e.preventDefault() } // (no text selection while dragging)
@@ -280,7 +280,12 @@ export class Composer {
       this.marquee.setAttribute('width', String(Math.abs(x - d.x0))); this.marquee.setAttribute('height', String(Math.abs(y - d.y0)))
       return
     }
-    this.moveGhost(x, y, d.kind === 'note' ? (e.shiftKey ? this.voice : d.ev.voice) : 0, d.kind === 'mark')
+    if (d.kind === 'mark') { // a copy of the mark follows the pointer, the original stays faint where it was
+      if (!d.clone) { d.clone = d.el.cloneNode(true) as SVGElement; d.clone.removeAttribute('data-mark'); d.clone.setAttribute('pointer-events', 'none'); d.clone.setAttribute('opacity', '0.75'); d.el.setAttribute('opacity', '0.25'); this.svg().appendChild(d.clone) }
+      d.clone.setAttribute('transform', `translate(${x - d.lx} ${y - d.ly})`)
+      return
+    }
+    this.moveGhost(x, y, d.kind === 'note' ? (e.shiftKey ? this.voice : d.ev.voice) : 0, false)
   }
   private mouseUp(e: MouseEvent) {
     const d = this.drag
@@ -308,7 +313,7 @@ export class Composer {
     }
     const [x, y] = this.toLogical(e)
     if (d.kind === 'note') this.dropNote(d.ev, d.sy, x, y, e.shiftKey)
-    else this.dropMark(d.mark, x, y)
+    else { d.clone?.remove(); this.dropMark(d.mark, x, y, d.el, d.lx, d.ly) }
     setTimeout(() => { this.suppressClick = false }, 0)
   }
   private markHint(m: MarkRef) { return m.kind === 'ev' ? 'Đã chọn dấu: kéo sang nốt khác để chuyển, Delete để xoá' : m.kind === 'tempo' ? 'Đã chọn dấu tốc độ: kéo tới ô / vị trí khác, Delete để xoá' : 'Đã chọn dấu tập: kéo sang ô khác, Delete để xoá' }
@@ -338,11 +343,18 @@ export class Composer {
 
   /** The bar under a point, also above the first staff of a line (where tempo and rehearsal marks stand). */
   private barAt(x: number, y: number) {
-    const sys = this.layout.systems.findIndex((q) => y >= q.y0 - 110 && y <= q.y1)
+    // the line whose staves, or whose strip above the staves (tempo, rehearsal marks), is nearest the point
+    const bands = this.layout.systems.map((_, i) => {
+      const dms = this.layout.measures.filter((dm) => dm.system === i)
+      if (!dms.length) return { i, a: Infinity, b: -Infinity }
+      return { i, a: dms[0].staves[0].top - 95, b: dms[0].staves[dms[0].staves.length - 1].bottom + 25 }
+    })
+    const dist = (q: { a: number; b: number }) => (y < q.a ? q.a - y : y > q.b ? y - q.b : 0)
+    const sys = bands.length ? bands.reduce((best, q) => (dist(q) < dist(best) ? q : best)).i : -1
     return this.layout.measures.find((dm) => (sys < 0 || dm.system === sys) && x >= dm.x && x <= dm.x + dm.w)
   }
 
-  private dropMark(mark: MarkRef, x: number, y: number) {
+  private dropMark(mark: MarkRef, x: number, y: number, el?: SVGGraphicsElement, lx = x, ly = y) {
     if (mark.kind === 'ev') {
       const src = findEv(this.score, mark.id)
       const hit = hitTest(this.layout, x, y, 0)
@@ -356,13 +368,22 @@ export class Composer {
       const dm = this.barAt(x, y)
       if (!dm) { this.say('Thả dấu lên một ô nhịp'); return }
       if (mark.kind === 'tempo') {
-        const col = dm.evs.filter((q) => q.staff === 0).reduce<DrawnEv | undefined>((a, q) => (!a || Math.abs(q.x - x) < Math.abs(a.x - x) ? q : a), undefined)
-        const at = col && col.at > 0 ? col.at : 0
-        let ok = false
-        this.commit((s) => { ok = moveTempo(s, mark.bar, dm.m, at) })
-        if (!ok) { this.say('Không chuyển được dấu tốc độ này (dấu đầu bài giữ nguyên ở đầu)'); return }
+        // the mark's left edge moves by the distance the pointer travelled; that is where it will stand (a tick of a bar, between notes if need be)
+        const bb = el?.getBBox?.(), left = (bb?.x ?? x) + (x - lx)
+        const srcTop = this.layout.measures[mark.bar].staves[0].top, dstTop = this.layout.measures[dm.m].staves[0].top
+        const dy = y - ly + srcTop - dstTop                                      // (the usual place of the mark sits a fixed way above its own line's staff)
+        const from = this.score.measures[mark.bar], bar = barTicks(contextAt(this.score, dm.m).time)
+        const at = tickAtX(this.layout.measures[dm.m], left + 10, bar)
+        const initial = mark.bar === 0 && !from?.tempoAt                        // the tempo at the very start of the piece stays at the start: it only slides about in the picture
+        let ok = true
+        if (initial) this.commit((s) => setTempoOffset(s, 0, (s.measures[0].tempoDx ?? 0) + (x - lx), (s.measures[0].tempoDy ?? 0) + dy))
+        else {
+          const keepDy = (from?.tempoDy ?? 0) + dy
+          this.commit((s) => { ok = moveTempo(s, mark.bar, dm.m, at); if (ok) setTempoOffset(s, dm.m, 0, keepDy) })
+        }
+        if (!ok) { this.say('Không chuyển được dấu tốc độ này'); return }
         this.selMark = { kind: 'tempo', bar: dm.m }
-        this.say(`Dấu tốc độ ở ô ${dm.m + 1}${at ? `, phách ${+(at / TPQ + 1).toFixed(2)}` : ''}`)
+        this.say(initial ? 'Dấu tốc độ đầu bài giữ ở đầu bài; bạn chỉ dời được vị trí vẽ của nó' : `Dấu tốc độ ở ô ${dm.m + 1}${at ? `, phách ${+(at / TPQ + 1).toFixed(2)}` : ' (đầu ô)'}`)
       } else {
         this.commit((s) => { const a = s.measures[mark.bar], b = s.measures[dm.m]; if (a?.rehearsal && b) { b.rehearsal = a.rehearsal; if (a !== b) a.rehearsal = undefined } })
         this.selMark = { kind: 'rehearsal', bar: dm.m }

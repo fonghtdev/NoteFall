@@ -61,6 +61,8 @@ export interface Measure {
   time?: TimeSig          // set when it changes here
   key?: number            // fifths (-7..7), set when it changes here
   tempo?: number          // quarter notes per minute, set when it changes here
+  tempoDx?: number        // picture only: how far the (start-of-piece) tempo mark was dragged sideways / up-down from its usual place
+  tempoDy?: number
   tempoAt?: number        // where in the bar the tempo mark stands, in ticks from the barline (absent = at the barline)
   tempoText?: string      // "Allegro", "rit." … printed above the bar (with the tempo, when there is one)
   rehearsal?: string      // rehearsal mark (A, B, 1…) in a box
@@ -680,10 +682,18 @@ export function moveTempo(s: Score, from: number, to: number, at = 0): boolean {
   const bar = barTicks(contextAt(s, to).time)
   const pos = Math.max(0, Math.min(bar - 1, at))
   if (to === 0 && !pos) return false // the start of the piece keeps its own tempo
-  const { tempo, tempoText } = a
-  a.tempo = undefined; a.tempoText = undefined; a.tempoAt = undefined
-  b.tempo = tempo; b.tempoText = tempoText; b.tempoAt = pos > 0 ? pos : undefined
+  const { tempo, tempoText, tempoDy } = a
+  a.tempo = undefined; a.tempoText = undefined; a.tempoAt = undefined; a.tempoDy = undefined; a.tempoDx = undefined
+  b.tempo = tempo; b.tempoText = tempoText; b.tempoAt = pos > 0 ? pos : undefined; b.tempoDy = tempoDy; b.tempoDx = undefined
   return true
+}
+
+/** Nudge a tempo mark in the picture (it keeps its meaning): `dy` up / down for any mark, `dx` sideways for the one at the very start. */
+export function setTempoOffset(s: Score, bar: number, dx: number, dy: number) {
+  const m = s.measures[bar]
+  if (!m) return
+  m.tempoDy = Math.abs(dy) < 1 ? undefined : Math.max(-30, Math.min(160, Math.round(dy)))
+  m.tempoDx = Math.abs(dx) < 1 ? undefined : Math.max(0, Math.min(700, Math.round(dx)))
 }
 export function setRehearsal(s: Score, i: number, text?: string) { const m = s.measures[i]; if (m) m.rehearsal = text?.trim() || undefined }
 export function setBarline(s: Score, i: number, kind?: BarlineKind) {

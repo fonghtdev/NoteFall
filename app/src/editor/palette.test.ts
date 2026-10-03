@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { palette, fromText, pitch } from './demo'
-import { TPQ, absOf, copyEvents, makeTuplet, pasteClip, whereAbs, addGrace, clearMark, clefAt, contextAt, moveEv, moveMark, moveTempo, copyPrevious, flipStem, graceStep, octShift, ottavaShiftAt, ottavaShifts, setBarline, setBreak, setClef, setStretch, setTempoMark, setText, toggleEv, toggleSpan, validate } from './model'
+import { tickAtX, xAtTick, type DrawnMeasure } from './render'
+import { setTempoOffset, TPQ, absOf, copyEvents, makeTuplet, pasteClip, whereAbs, addGrace, clearMark, clefAt, contextAt, moveEv, moveMark, moveTempo, copyPrevious, flipStem, graceStep, octShift, ottavaShiftAt, ottavaShifts, setBarline, setBreak, setClef, setStretch, setTempoMark, setText, toggleEv, toggleSpan, validate } from './model'
 import { toPerformance } from './perform'
 import { tempoRatios, toNotes, unroll } from '../core/score/playback'
 
@@ -262,5 +263,31 @@ describe('copy and paste', () => {
     s.measures[1].staves = s.measures[1].staves.map((v) => v.map((e) => [{ ...e[0], ticks: 3 * TPQ }]))
     s.measures[2].staves = s.measures[2].staves.map((v) => v.map((e) => [{ ...e[0], ticks: 3 * TPQ }]))
     for (const [m, at] of [[0, 0], [0, 960], [1, 0], [1, 2000], [2, 5]] as const) expect(whereAbs(s, absOf(s, m, at))).toEqual({ m, at })
+  })
+})
+
+describe('free placement of a tempo mark', () => {
+  const dm = (cols: [number, number][]): DrawnMeasure => ({ m: 0, x: 100, w: 400, system: 0, staves: [], evs: cols.map(([at, x]) => ({ id: at, m: 0, staff: 0, voice: 0, at, ticks: 960, x, rest: false, ys: [0], left: 0, right: 11 })) })
+  const bar = dm([[0, 120], [960, 220], [1920, 360], [2880, 420]])
+  it('xAtTick and tickAtX are inverses between the notes', () => {
+    expect(xAtTick(bar, 0)).toBe(120)
+    expect(xAtTick(bar, 480)).toBeCloseTo(170, 5)                      // halfway between beat 1 and 2
+    expect(tickAtX(bar, 170, 3840)).toBe(480)                          // and back
+    expect(tickAtX(bar, 290, 3840)).toBe(1440)                         // halfway between beat 2 and 3, snapped to an eighth of a beat
+  })
+  it('snaps to a note when close to it, clamps inside the bar', () => {
+    expect(tickAtX(bar, 224, 3840)).toBe(960)                          // within a few pixels of the second note
+    expect(tickAtX(bar, 90, 3840)).toBe(0)
+    expect(tickAtX(bar, 900, 3840)).toBeLessThan(3840)
+  })
+  it('the mark keeps its up-down offset when it moves, and the start-of-piece mark only slides in the picture', () => {
+    const s = fromText([{ rh: 'C5:4', lh: 'r:4' }, { rh: 'D5:4', lh: 'r:4' }, { rh: 'E5:4', lh: 'r:4' }], { tempo: 60 })
+    setTempoMark(s, 1, 120, 'Allegro'); setTempoOffset(s, 1, 0, -20)
+    expect(moveTempo(s, 1, 2, 1440)).toBe(true)
+    expect(s.measures[2].tempoAt).toBe(1440); expect(s.measures[2].tempoDy).toBe(-20); expect(s.measures[1].tempoDy).toBeUndefined()
+    setTempoOffset(s, 0, 40, 500)
+    expect(s.measures[0].tempoDx).toBe(40); expect(s.measures[0].tempoDy).toBe(160)   // clamped
+    expect(s.tempo).toBe(60)                                                          // the meaning did not change
+    setTempoOffset(s, 0, 0, 0); expect(s.measures[0].tempoDx).toBeUndefined()
   })
 })

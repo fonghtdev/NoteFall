@@ -6,3 +6,10 @@ release/
 __pycache__/
 .DS_Store
 app/shot.png
+
+app/ios/App/App/public/
+app/ios/App/Pods/
+app/ios/App/build/
+app/ios/App/App/capacitor.config.json
+app/ios/DerivedData/
+xcuserdata/

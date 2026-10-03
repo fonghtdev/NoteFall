@@ -221,6 +221,7 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
       }
       { // stacking: clicking another pitch on a note's column makes a chord (also with a dotted / beamed run), clicking it again takes it out
         const d = await import('./editor/demo'), { validate } = await import('./editor/model')
+        await new Promise((r) => setTimeout(r, 20)) // let a click-suppression timer of the drag tests above run out
         c.setScore(d.fromText([{ rh: 'C5:1 D5:1 E5:1 F5:1', lh: 'C3:4' }]))
         c.setMode('input')
         const dm = () => c.layout.measures[0], st = () => dm().staves[0]

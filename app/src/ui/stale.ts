@@ -11,3 +11,6 @@ export function handleStaleChunk(o: { say: (t: string) => void; reload: () => vo
   o.reload()
   return true
 }
+
+/** Only a file that could not be fetched means "the app changed under this window"; any other error that passes through a lazily loaded module is just an error. */
+export const isMissingChunk = (message: string) => /Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module|Unable to preload CSS|Load failed/i.test(message)

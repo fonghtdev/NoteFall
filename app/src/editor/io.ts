@@ -1,18 +1,13 @@
 import { Midi } from '@tonejs/midi'
 import { unzipSync, strFromU8 } from 'fflate'
+import { saveFile } from '../ui/save'
 import { parseMidi } from '../core/midi'
 import type { Note } from '../core/models'
 import { tempoRatios, toNotes, unroll } from '../core/score/playback'
 import { CLEFS, TPQ, barTicks, blankMeasure, clefAt, type BarlineKind, type ClefName, type Orn, contextAt, emptyScore, midiOf, newId, nominalTicks, notationOf, putNote, spell, splitLength, starts, validate, type Art, type Dyn, type Ev, type Measure, type Pitch, type Score, type StepName } from './model'
 import { toPerformance } from './perform'
 
-const download = (name: string, data: BlobPart, type: string) => {
-  const a = document.createElement('a')
-  a.href = URL.createObjectURL(new Blob([data], { type }))
-  a.download = name
-  a.click()
-  setTimeout(() => URL.revokeObjectURL(a.href), 60000)
-}
+const download = saveFile
 const fileName = (s: Score, ext: string) => `${(s.title || 'bản nhạc').replace(/[\\/:*?"<>|]+/g, '-')}.${ext}`
 
 // ---- JSON (the app's own format) ------------------------------------------------------------------------
@@ -557,12 +552,17 @@ const PRINT_CSS = `#print-root{display:none}
 
 export async function exportPdf(s: Score, svg: SVGElement, layout: PageLayout) {
   const api = (window as unknown as { notefall?: { printPdf(): Promise<Uint8Array> } }).notefall
-  if (!api) throw new Error('xuất PDF chỉ chạy được trong ứng dụng')
   const style = document.createElement('style'); style.textContent = PRINT_CSS
   const root = document.createElement('div'); root.id = 'print-root'; root.innerHTML = pdfPages(svg, layout)
   document.head.append(style); document.body.append(root)
   try {
-    const bytes = await api.printPdf()
-    download(fileName(s, 'pdf'), bytes.slice().buffer as ArrayBuffer, 'application/pdf')
+    if (api) {
+      const bytes = await api.printPdf()
+      download(fileName(s, 'pdf'), bytes.slice().buffer as ArrayBuffer, 'application/pdf')
+    } else { // no desktop app around (iPad): the system print sheet, which can "Save to Files" as PDF
+      const done = new Promise<void>((r) => window.addEventListener('afterprint', () => r(), { once: true }))
+      window.print()
+      await Promise.race([done, new Promise<void>((r) => setTimeout(r, 120000))])
+    }
   } finally { root.remove(); style.remove() }
 }

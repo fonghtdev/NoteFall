@@ -69,10 +69,23 @@ app.whenReady().then(() => {
   win.loadURL('app://notefall/index.html' + (selftest ? '?selftest' + (process.env.NOTEFALL_FILE ? '&file&name=' + encodeURIComponent(path.basename(process.env.NOTEFALL_FILE)) : '') + (process.env.NOTEFALL_VF ? '&vf' : '') + (process.env.NOTEFALL_EDIT ? '&edit' : '') + (process.env.NOTEFALL_SEEK ? '&seek=' + process.env.NOTEFALL_SEEK : '') + (process.env.NOTEFALL_UI ? '&ui=' + process.env.NOTEFALL_UI : '') + (process.env.NOTEFALL_PERSIST ? '&persist' : '') + (process.env.NOTEFALL_SHELL ? '&shell' : '') + (process.env.NOTEFALL_COMPOSE ? '&compose' + (process.env.NOTEFALL_COMPOSE === 'falling' ? '&falling' : process.env.NOTEFALL_COMPOSE === 'pdf' ? '&pdf' : process.env.NOTEFALL_COMPOSE === 'showcase' ? '&showcase' : process.env.NOTEFALL_COMPOSE === 'palette' ? '&palette' : process.env.NOTEFALL_COMPOSE === 'voices' ? '&voices' : '') : '') + (process.env.NOTEFALL_EDITOR ? '&editor' + (process.env.NOTEFALL_EDITOR === 'showcase' ? '&showcase' : process.env.NOTEFALL_EDITOR === 'endings' ? '&endings' : '') : '') + (process.env.NOTEFALL_LEAD ? '&lead' : '') + (process.env.NOTEFALL_TX ? '&tx' : '') + (process.env.NOTEFALL_SYNTH ? '&synth' : '') + (process.env.NOTEFALL_EXPORT ? '&export' : '') + (process.env.NOTEFALL_THEME ? '&theme=' + process.env.NOTEFALL_THEME : '') : ''))
   if (process.env.NOTEFALL_JS) { // developer hook: run a script file in the page once it has loaded and print what it returns
     win.webContents.once('did-finish-load', () => setTimeout(async () => { try {
+      if (process.env.NOTEFALL_TOUCH) { // behave like a touch screen from the start (the layout changes: coarse pointer, touch-only buttons)
+        win.webContents.debugger.attach('1.3')
+        await win.webContents.debugger.sendCommand('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 })
+        await new Promise((res) => setTimeout(res, 500))
+      }
       const r = await win.webContents.executeJavaScript(fs.readFileSync(process.env.NOTEFALL_JS, 'utf8'))
       console.log('JS_RESULT ' + JSON.stringify(r))
       // real mouse input (the whole path: hit-testing, default actions, event order): the script may return { input: [{type, x, y, button?, modifiers?}] }
       const input = typeof r === 'string' ? (() => { try { return JSON.parse(r).input } catch { return undefined } })() : r?.input
+      const touch = typeof r === 'string' ? (() => { try { return JSON.parse(r).touch } catch { return undefined } })() : r?.touch
+      if (Array.isArray(touch)) { // a finger: Chrome DevTools protocol touch events ({type:'touchStart'|'touchMove'|'touchEnd', points:[{x,y}]})
+        const dbg = win.webContents.debugger
+        if (!dbg.isAttached()) { dbg.attach('1.3'); await dbg.sendCommand('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 }) }
+        for (const ev of touch) { await dbg.sendCommand('Input.dispatchTouchEvent', { type: ev.type, touchPoints: (ev.points ?? []).map((p, i) => ({ x: p.x, y: p.y, id: i })) }); await new Promise((res) => setTimeout(res, ev.wait ?? 25)) }
+        await new Promise((res) => setTimeout(res, 300))
+        if (process.env.NOTEFALL_JS2) console.log('JS2_RESULT ' + JSON.stringify(await win.webContents.executeJavaScript(fs.readFileSync(process.env.NOTEFALL_JS2, 'utf8'))))
+      }
       if (Array.isArray(input)) {
         for (const ev of input) { win.webContents.sendInputEvent({ button: 'left', clickCount: 1, ...ev }); await new Promise((res) => setTimeout(res, ev.wait ?? 25)) }
         await new Promise((res) => setTimeout(res, 300))

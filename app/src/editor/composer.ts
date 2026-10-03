@@ -12,6 +12,9 @@ import { toPerformance } from './perform'
 import { DYN_GLYPH, keyName, renderScore, tickAtX, type DrawnEv, type Layout, type MarkRef } from './render'
 import { exportMidi, exportMusicXml, exportPdf, importFileFull, saveJson } from './io'
 
+/** What the mouse code needs of an event, so a touch can stand in for it. */
+interface Pt { clientX: number; clientY: number; button?: number; shiftKey?: boolean; target: EventTarget | null; preventDefault(): void }
+
 export interface ComposerHooks { toFalling(score: Score): void | Promise<void> }
 
 const MIN_ZOOM = 0.35, MAX_ZOOM = 3.5
@@ -192,7 +195,7 @@ export class Composer {
   }
 
   // ---- input from the mouse ----------------------------------------------------------------------------
-  private toLogical(e: MouseEvent): [number, number] {
+  private toLogical(e: { clientX: number; clientY: number }): [number, number] {
     const r = this.svg().getBoundingClientRect()
     return [((e.clientX - r.left) * this.layout.width) / r.width, ((e.clientY - r.top) * this.layout.width) / r.width]
   }
@@ -252,8 +255,8 @@ export class Composer {
     return best?.ev
   }
 
-  private mouseDown(e: MouseEvent) {
-    if (e.button !== 0) return
+  private mouseDown(e: Pt) {
+    if (e.button !== undefined && e.button !== 0) return
     const el = (e.target as Element).closest?.('[data-mark]')
     if (el) { const [lx, ly] = this.toLogical(e); this.drag = { kind: 'mark', mark: JSON.parse(el.getAttribute('data-mark')!) as MarkRef, sx: e.clientX, sy: e.clientY, moved: false, el: el as SVGGraphicsElement, lx, ly }; this.suppressClick = true; e.preventDefault(); return }
     const [x, y] = this.toLogical(e)
@@ -261,7 +264,7 @@ export class Composer {
     if (ev) { this.drag = { kind: 'note', ev, sx: e.clientX, sy: e.clientY, moved: false }; e.preventDefault() } // (no text selection while dragging)
     else if (this.mode === 'select') this.drag = { kind: 'marquee', sx: e.clientX, sy: e.clientY, moved: false, x0: x, y0: y } // empty space: a drag draws a box and selects what is inside
   }
-  private mouseMove(e: MouseEvent) {
+  private mouseMove(e: Pt) {
     const d = this.drag
     if (!d) return
     if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 5) return
@@ -287,7 +290,7 @@ export class Composer {
     }
     this.moveGhost(x, y, d.kind === 'note' ? (e.shiftKey ? this.voice : d.ev.voice) : 0, false)
   }
-  private mouseUp(e: MouseEvent) {
+  private mouseUp(e: Pt) {
     const d = this.drag
     this.drag = undefined
     document.body.style.cursor = ''
@@ -312,7 +315,7 @@ export class Composer {
       return
     }
     const [x, y] = this.toLogical(e)
-    if (d.kind === 'note') this.dropNote(d.ev, d.sy, x, y, e.shiftKey)
+    if (d.kind === 'note') this.dropNote(d.ev, d.sy, x, y, !!e.shiftKey)
     else { d.clone?.remove(); this.dropMark(d.mark, x, y, d.el, d.lx, d.ly) }
     setTimeout(() => { this.suppressClick = false }, 0)
   }
@@ -390,6 +393,42 @@ export class Composer {
       }
     }
     this.refresh()
+  }
+
+  // ---- touch (iPad): one finger on a note or mark drags it, on empty space it scrolls, two fingers pinch to zoom -----------------
+  private pinch?: { d0: number; z0: number }
+  private asPt = (t: Touch, e: TouchEvent): Pt => ({ clientX: t.clientX, clientY: t.clientY, button: 0, shiftKey: false, target: t.target ?? e.target, preventDefault: () => {} })
+  private touchStart(e: TouchEvent) {
+    if (e.touches.length >= 2) { // pinch
+      this.drag = undefined; this.ghost?.remove(); this.ghost = undefined; this.marquee?.remove(); this.marquee = undefined
+      const [a, b] = [e.touches[0], e.touches[1]]
+      this.pinch = { d0: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) || 1, z0: this.zoomPercent() / 100 }
+      e.preventDefault()
+      return
+    }
+    this.mouseDown(this.asPt(e.touches[0], e))
+    if (this.drag?.kind === 'marquee') this.drag = undefined // (empty space: let the finger scroll)
+    if (this.drag) e.preventDefault() // a note or a mark is picked up: the page must not scroll with it
+  }
+  private touchMove(e: TouchEvent) {
+    if (this.pinch && e.touches.length >= 2) {
+      const [a, b] = [e.touches[0], e.touches[1]]
+      this.setZoom(this.pinch.z0 * (Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) / this.pinch.d0), { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 })
+      e.preventDefault()
+      return
+    }
+    if (!this.drag || !e.touches.length) return
+    this.mouseMove(this.asPt(e.touches[0], e))
+    if (this.drag?.moved) e.preventDefault()
+  }
+  private touchEnd(e: TouchEvent) {
+    if (this.pinch) { if (e.touches.length < 2) this.pinch = undefined; return }
+    const d = this.drag
+    if (!d || !e.changedTouches.length) return
+    const t = e.changedTouches[0]
+    const tapOnNote = d.kind === 'note' && !d.moved
+    this.mouseUp(this.asPt(t, e))
+    if (tapOnNote) { const [x, y] = this.toLogical(t); this.click(x, y, {}) } // (the browser sends no click after a touchstart that was cancelled)
   }
 
   // ---- zoom --------------------------------------------------------------------------------------------
@@ -778,6 +817,8 @@ export class Composer {
   }
 
   /** ↑/↓: semitone (Shift: octave); with Alt: switch staff instead. */
+  /** Move the selected notes a semitone (Shift: an octave) up or down: the arrow keys, for a screen without a keyboard. */
+  nudge(dir: 1 | -1, octave = false) { this.vertical(dir, octave ? 12 : 1, false) }
   private vertical(dir: number, amount: number, alt: boolean) {
     if (alt) { this.cursor.staff = Math.max(0, Math.min(this.score.clefs.length - 1, this.cursor.staff - dir)); this.refresh(); return }
     if (this.sel === undefined) return
@@ -951,6 +992,10 @@ export class Composer {
     this.btn(edit, 'redo', 'Làm lại', 'Làm lại (Ctrl+Shift+Z)', () => this.redo(), { cls: 'ghost icon', html: icon('redo') })
     this.btn(edit, 'cut', 'Cắt', 'Cắt nốt đang chọn (Ctrl+X)', () => this.cut(), { cls: 'ghost icon', html: icon('cut') })
     this.btn(edit, 'copy', 'Sao chép', 'Sao chép nốt hoặc ô nhịp đang chọn (Ctrl+C)', () => void this.copy(), { cls: 'ghost icon', html: icon('copy') })
+    const keys = this.group(top, 'group touch-only'); keys.setAttribute('role', 'group'); keys.setAttribute('aria-label', 'Phím cho màn hình cảm ứng')
+    this.btn(keys, 'k-up', 'Nâng nửa cung', 'Nâng nốt đang chọn nửa cung', () => this.nudge(1), { cls: 'ghost icon', html: icon('arrowup') })
+    this.btn(keys, 'k-down', 'Hạ nửa cung', 'Hạ nốt đang chọn nửa cung', () => this.nudge(-1), { cls: 'ghost icon', html: icon('arrowdown') })
+    this.btn(keys, 'k-del', 'Xoá', 'Xoá nốt hoặc dấu đang chọn', () => { if (!this.delMark()) this.del() }, { cls: 'ghost icon', html: icon('trash') })
     this.btn(edit, 'paste', 'Dán', 'Dán tại nốt hoặc ô đang chọn (Ctrl+V)', () => this.paste(), { cls: 'ghost icon', html: icon('paste') })
     this.el('span', 'divider', top)
 
@@ -1013,12 +1058,16 @@ export class Composer {
     this.applyZoom()
     new ResizeObserver(() => this.updateZoomLabel()).observe(this.host)
     this.host.addEventListener('mousedown', (e) => this.mouseDown(e))
+    this.host.addEventListener('touchstart', (e) => this.touchStart(e), { passive: false })
+    window.addEventListener('touchmove', (e) => this.touchMove(e), { passive: false })
+    window.addEventListener('touchend', (e) => this.touchEnd(e))
+    window.addEventListener('touchcancel', () => { this.pinch = undefined; this.drag = undefined; this.ghost?.remove(); this.ghost = undefined; this.marquee?.remove(); this.marquee = undefined })
     window.addEventListener('mousemove', (e) => this.mouseMove(e))
     window.addEventListener('mouseup', (e) => this.mouseUp(e))
     this.host.addEventListener('mouseleave', () => { this.ghost?.remove(); this.ghost = undefined })
 
     const insp = this.el('aside', 'cmp-insp', body); insp.setAttribute('aria-label', 'Bảng ký hiệu')
-    try { insp.hidden = localStorage.getItem('notefall.insp') === '0' } catch { /* ignore */ }
+    try { const v = localStorage.getItem('notefall.insp'); insp.hidden = v === '0' || (v === null && window.innerWidth < 1000) } catch { /* ignore */ } // on a narrow screen the palette starts closed: it would cover the page
     queueMicrotask(() => this.btns.get('panel')?.setAttribute('aria-pressed', String(!insp.hidden)))
 
     const sc = this.section(insp, 'Bản nhạc')

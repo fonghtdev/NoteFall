@@ -259,3 +259,35 @@ input[type='range']:active::-webkit-slider-thumb { transform: scale(1.3); box-sh
 .cmp-sheet.fit { width: 100%; max-width: 1900px; }
 .cmp-sheet:not(.fit) { max-width: none; }
 .btn.zoomlabel { min-width: 104px; font-variant-numeric: tabular-nums; font-size: 12px; }
+
+/* ---- touch screens (iPad) ----------------------------------------------------------------------------- */
+.touch-only { display: none !important; }
+html, body { -webkit-text-size-adjust: 100%; -webkit-tap-highlight-color: transparent; }
+body { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+@media (pointer: coarse) {
+  .touch-only { display: inline-flex !important; }
+  button, [role='button'], summary, select, input[type='range'] { touch-action: manipulation; }
+  .btn { height: 40px; min-width: 40px; }
+  .btn.sm { height: 38px; }
+  .btn.pal { min-width: 46px; height: 46px; }
+  .btn.icon { width: 40px; }
+  .seg > button { height: 36px; padding: 0 14px; }
+  .field, select.field, input.field { height: 40px; font-size: 15px; }
+  input[type='range'] { height: 28px; }
+  input[type='range']::-webkit-slider-thumb { width: 22px; height: 22px; margin-top: -9px; }
+  .switch input { width: 40px; height: 24px; }
+  .switch input::after { width: 18px; height: 18px; top: 2px; }
+  .switch input:checked::after { transform: translateX(16px); }
+  .cmp-insp summary { height: 46px; }
+  .cmp-page { -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+  .cmp-sheet { cursor: default; }
+  .popover { max-height: 70vh; overflow-y: auto; }
+}
+/* narrower screens (an iPad upright is 820 px): the dock wraps instead of overflowing, the palette floats over the page */
+@media (max-width: 900px) {
+  #dock { flex-wrap: wrap; row-gap: var(--s2); }
+  #track { order: 9; flex-basis: 100%; }
+  .cmp-top { gap: var(--s2); }
+  .btn.zoomlabel { min-width: 84px; }
+}
+#share-offer { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 100; display: flex; gap: var(--s2); align-items: center; padding: var(--s2); background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--shadow-pop); animation: pop-in var(--t-in) var(--out); }

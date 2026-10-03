@@ -13,6 +13,16 @@ export interface ExportOptions {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+/** Wait until an encoder's queue is short; give up when it stops moving (a device that accepts the settings but never encodes would otherwise hang the export). */
+async function drain(enc: VideoEncoder | AudioEncoder, max: number) {
+  let last = enc.encodeQueueSize, since = performance.now()
+  while (enc.encodeQueueSize > max) {
+    await sleep(1)
+    if (enc.encodeQueueSize < last) { last = enc.encodeQueueSize; since = performance.now() }
+    else if (performance.now() - since > 20000) throw new Error('Bộ mã hoá của thiết bị không phản hồi (xuất video có thể chưa chạy được trên máy này)')
+  }
+}
+const flushWithin = (enc: VideoEncoder | AudioEncoder, ms: number) => Promise.race([enc.flush(), sleep(ms).then(() => { throw new Error('Bộ mã hoá của thiết bị không phản hồi khi hoàn tất video') })])
 
 /** Renders frame by frame (so it is smooth at any speed) and encodes H.264 + AAC with the browser's WebCodecs. */
 export async function exportVideo(o: ExportOptions): Promise<Blob | undefined> {
@@ -33,8 +43,10 @@ export async function exportVideo(o: ExportOptions): Promise<Blob | undefined> {
   let failure: Error | undefined
   const fail = (e: Error) => { failure = e }
 
+  const vcfg = { codec: H === 1080 ? 'avc1.640028' : 'avc1.64001f', width: W, height: H, bitrate: H === 1080 ? 10e6 : 6e6, framerate: fps }
+  if (!(await VideoEncoder.isConfigSupported(vcfg).catch(() => ({ supported: false }))).supported) throw new Error('Thiết bị này không mã hoá được video H.264 ở độ phân giải đã chọn: thử 720p')
   const venc = new VideoEncoder({ output: (c, m) => muxer.addVideoChunk(c, m), error: fail })
-  venc.configure({ codec: H === 1080 ? 'avc1.640028' : 'avc1.64001f', width: W, height: H, bitrate: H === 1080 ? 10e6 : 6e6, framerate: fps })
+  venc.configure(vcfg)
 
   const frames = Math.ceil((duration + lead) * fps)
   for (let i = 0; i < frames; i++) {
@@ -47,15 +59,17 @@ export async function exportVideo(o: ExportOptions): Promise<Blob | undefined> {
     const vf = new VideoFrame(out, { timestamp: Math.round((i * 1e6) / fps) })
     venc.encode(vf, { keyFrame: i % (fps * 2) === 0 })
     vf.close()
-    while (venc.encodeQueueSize > 8) await sleep(1) // don't let raw frames pile up in memory
+    await drain(venc, 8) // don't let raw frames pile up in memory
     if (i % 5 === 0) { o.onProgress(i / frames); await sleep(0) } // let the UI breathe
   }
-  await venc.flush()
+  await flushWithin(venc, 120000)
   venc.close()
 
   if (audio) {
+    const acfg = { codec: 'mp4a.40.2', sampleRate: audio.sampleRate, numberOfChannels: channels, bitrate: 192000 }
+    if (!(await AudioEncoder.isConfigSupported(acfg).catch(() => ({ supported: false }))).supported) throw new Error('Thiết bị này không mã hoá được âm thanh AAC')
     const aenc = new AudioEncoder({ output: (c, m) => muxer.addAudioChunk(c, m), error: fail })
-    aenc.configure({ codec: 'mp4a.40.2', sampleRate: audio.sampleRate, numberOfChannels: channels, bitrate: 192000 })
+    aenc.configure(acfg)
     const total = Math.min(audio.length, Math.ceil(duration * audio.sampleRate)), step = 4800
     for (let at = 0; at < total; at += step) {
       if (o.cancelled()) { aenc.close(); return undefined }
@@ -65,9 +79,9 @@ export async function exportVideo(o: ExportOptions): Promise<Blob | undefined> {
       const ad = new AudioData({ format: 'f32-planar', sampleRate: audio.sampleRate, numberOfFrames: n, numberOfChannels: channels, timestamp: Math.round(((at / audio.sampleRate) + lead) * 1e6), data })
       aenc.encode(ad)
       ad.close()
-      while (aenc.encodeQueueSize > 8) await sleep(1)
+      await drain(aenc, 8)
     }
-    await aenc.flush()
+    await flushWithin(aenc, 120000)
     aenc.close()
   }
   if (failure) throw failure

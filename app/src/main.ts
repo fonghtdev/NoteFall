@@ -1,5 +1,6 @@
 import './ui/app.css'
-import { handleStaleChunk } from './ui/stale'
+import { handleStaleChunk, isMissingChunk } from './ui/stale'
+import { isTouchDevice, saveFile } from './ui/save'
 import { paintIcons } from './ui/icons'
 import { popover } from './ui/popover'
 import { PianoView } from './ui/pianoView'
@@ -29,8 +30,12 @@ const view = new PianoView($('view') as HTMLCanvasElement, $('gl') as HTMLCanvas
 const transport = new Transport()
 const playBtn = $<HTMLButtonElement>('play'), seek = $<HTMLInputElement>('seek')
 const exportBtn = $<HTMLButtonElement>('export'), exportOpen = $<HTMLButtonElement>('btn-export'), editBtn = $<HTMLButtonElement>('editbtn')
+const noWebCodecs = typeof VideoEncoder === 'undefined' || typeof AudioEncoder === 'undefined'
 const status = $('status'), progress = $<HTMLProgressElement>('progress')
 paintIcons()
+if (isTouchDevice()) { // there is nothing to drag a file from on a tablet: say what to tap
+  const h = document.getElementById('empty-title'); if (h) h.textContent = 'Chạm “Mở file…” để chọn một bài nhạc'
+}
 popover($('btn-settings'), $('pop-settings'))
 popover($('btn-export'), $('pop-export'))
 popover($('btn-met'), $('pop-met'))
@@ -47,6 +52,7 @@ const fmt = (t: number) => `${Math.floor(Math.max(0, t) / 60)}:${String(Math.flo
 const fill = (el: HTMLInputElement) => el.style.setProperty('--fill', `${((+el.value - +el.min) / (+el.max - +el.min || 1)) * 100}%`)
 
 window.addEventListener('vite:preloadError', (e) => { // (preventDefault would make the failed import resolve to undefined, so only when the page is about to reload anyway)
+  if (!isMissingChunk(String((e as Event & { payload?: { message?: string } }).payload?.message ?? ''))) return // some other error that came through a lazy module: not ours to handle
   if (handleStaleChunk({ say: (t) => say(t, 'error'), reload: () => location.reload(), storage: sessionStorage, now: Date.now() })) e.preventDefault()
 })
 
@@ -104,7 +110,9 @@ export function show(notes: Note[], audio?: AudioBuffer, g?: BeatGrid, k?: strin
   seek.min = String(-transport.lead)
   seek.max = String(duration)
   seek.value = String(-transport.lead)
-  playBtn.disabled = exportBtn.disabled = exportOpen.disabled = editBtn.disabled = notes.length === 0
+  playBtn.disabled = editBtn.disabled = notes.length === 0
+  exportBtn.disabled = exportOpen.disabled = notes.length === 0 || noWebCodecs
+  if (noWebCodecs) exportOpen.title = 'Xuất video cần WebCodecs (iPad / trình duyệt này chưa có)'
   setPlayState()
   say(`${notes.length} nốt` + (audio ? '' : ' · MIDI (tiếng piano tổng hợp)'))
   $('empty').hidden = notes.length > 0
@@ -438,10 +446,8 @@ exportBtn.onclick = async () => {
       cancelled: () => cancelExport,
     })
     if (blob) {
-      const a = document.createElement('a')
-      a.href = URL.createObjectURL(blob); a.download = `${songName}.mp4`; a.click()
-      setTimeout(() => URL.revokeObjectURL(a.href), 60000)
-      say('Đã xuất xong')
+      saveFile(`${songName}.mp4`, blob, 'video/mp4')
+      say(isTouchDevice() ? 'Đã xuất xong: bấm nút “Lưu” ở dưới để chọn nơi lưu' : 'Đã xuất xong')
     } else say('Đã huỷ xuất video')
   } catch (e) {
     say(`Lỗi xuất video: ${e instanceof Error ? e.message : e}`, 'error')

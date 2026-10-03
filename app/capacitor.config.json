@@ -1,0 +1,11 @@
+{
+  "appId": "dev.notefall.app",
+  "appName": "NoteFall",
+  "webDir": "dist",
+  "ios": {
+    "contentInset": "never",
+    "allowsLinkPreview": false,
+    "scrollEnabled": false,
+    "backgroundColor": "#0b0d13"
+  }
+}

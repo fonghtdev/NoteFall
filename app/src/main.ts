@@ -24,6 +24,7 @@ import { minuet } from './editor/demo'
 import { toPerformance } from './editor/perform'
 import { scoreFromOmr } from './editor/importScore'
 import { scoreFromNotes } from './editor/io'
+import { keyName } from './editor/render'
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 const view = new PianoView($('view') as HTMLCanvasElement, $('gl') as HTMLCanvasElement)
@@ -158,28 +159,40 @@ function openTab(which: 'falling' | 'composer') {
   }
   $('open').hidden = which !== 'falling' // the composer has its own file menu
   if (which === 'falling') { composer.stop(); transportPauseForTab() } // one thing sounds at a time
-  else if (transport.playing) { transport.pause(); setPlayState() }
+  else { fillComposerFromSong(false); if (transport.playing) { transport.pause(); setPlayState() } }
 }
 const transportPauseForTab = () => { if (transport.ctx.state === 'suspended') void transport.ctx.resume() }
 $('tab-falling').onclick = () => openTab('falling')
 $('tab-composer').onclick = () => openTab('composer')
 
-/** Composer -> falling notes: the score becomes a performance at its own tempo, with an exact beat grid. */
-$('editbtn').onclick = () => {
+/** Falling notes -> composer: whatever is open (sheet music, MIDI, a recording) written as a score the composer can edit. */
+function songAsScore(): { score: import('./editor/model').Score; say: string } | undefined {
   if (score) { // sheet music: keep rests, voices, ornaments, repeats
     const r = scoreFromOmr(score, songName)
-    composer.setScore(r.score)
-    composer.say(r.warnings.length ? `Đã mở PDF để sửa · ${r.warnings.join(' · ')}` : 'Đã mở PDF để sửa')
-  } else { // audio or MIDI: quantise the notes onto the detected beat
-    const g = grid
-    const shift = g ? Math.max(0, g.offset + (g.barStart * 60) / g.bpm) : 0
-    const sc = scoreFromNotes(raw.map((n) => ({ ...n, start: Math.max(0, n.start - shift) })), g?.bpm ?? 100)
-    sc.title = songName
-    composer.setScore(sc)
-    composer.say('Đã chuyển các nốt đã nhận được sang bản nhạc: nốt được làm tròn về 1/16, bạn có thể sửa từng nốt')
+    return { score: r.score, say: r.warnings.length ? `Đã mở PDF để sửa · ${r.warnings.join(' · ')}` : 'Đã mở PDF để sửa' }
   }
-  openTab('composer')
+  if (!raw.length) return undefined
+  // audio or MIDI: quantise the notes onto the detected beat
+  const g = grid
+  const shift = g ? Math.max(0, g.offset + (g.barStart * 60) / g.bpm) : 0
+  const sc = scoreFromNotes(raw.map((n) => ({ ...n, start: Math.max(0, n.start - shift) })), g?.bpm ?? 100, { beats: g?.beatsPerBar ?? 4, unit: 4 })
+  sc.title = songName
+  return { score: sc, say: `Đã tạo bản nhạc từ bài đang mở: giọng ${keyName(sc.key)}, nốt làm tròn về 1/16, mỗi tay một khuông. Bạn có thể sửa từng nốt` }
 }
+/** The song the composer was last filled from, and how many edits it had then: a score the user has touched is never replaced behind their back. */
+let filledFrom: { id: string; edits: number } | undefined
+function fillComposerFromSong(force: boolean) {
+  const r = songAsScore()
+  if (!r) return
+  const id = `${songName}|${score ? 'pdf' : raw.length}`
+  const untouched = !composer.hasMusic() || (!!filledFrom && composer.editCount === filledFrom.edits)
+  if (!force && (!untouched || filledFrom?.id === id)) return
+  composer.setScore(r.score)
+  composer.say(r.say)
+  filledFrom = { id, edits: composer.editCount }
+}
+/** The button forces it (it replaces what is there); opening the tab does it only for an empty or untouched composer. */
+$('editbtn').onclick = () => { fillComposerFromSong(true); openTab('composer') }
 
 /** Show a composed score in the falling view. */
 async function playComposed(sc: import('./editor/model').Score) {

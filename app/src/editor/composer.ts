@@ -44,6 +44,7 @@ export class Composer {
   dur = TPQ
   dotted = false
   voice = 0
+  private edits = 0
   /** The page being dragged along with the hand (right or middle button held), and where the drag started. */
   private pan?: { page: HTMLElement; x: number; y: number; left: number; top: number }
   cursor = { m: 0, staff: 0, at: 0 }
@@ -127,8 +128,14 @@ export class Composer {
     this.undoStack.push(before)
     if (this.undoStack.length > 200) this.undoStack.shift()
     this.redoStack = []
+    this.edits++
     this.refresh()
   }
+
+  /** How many changes the user has made to the score (undo and redo count): lets the page tell an untouched score from one somebody worked on. */
+  get editCount() { return this.edits }
+  /** True when any bar has a note in it. */
+  hasMusic() { return this.score.measures.some((m) => m.staves.some((st) => st.some((v) => v.some((e) => e.pitches.length)))) }
   undo() { this.step(this.undoStack, this.redoStack) }
   redo() { this.step(this.redoStack, this.undoStack) }
   private step(from: string[], to: string[]) {
@@ -136,6 +143,7 @@ export class Composer {
     if (!prev) return
     to.push(JSON.stringify(this.score))
     this.score = JSON.parse(prev) as Score
+    this.edits++
     if (this.sel !== undefined && !findEv(this.score, this.sel)) this.sel = undefined
     this.refresh()
   }

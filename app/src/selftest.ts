@@ -620,6 +620,20 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
       await new Promise((r) => setTimeout(r, 400))
       return console.log('SELFTEST_DONE')
     }
+    if (location.search.includes('autofill')) { // opening the composer tab alone fills it from the open song
+      const c = (window as unknown as { __composer: import('./editor/composer').Composer }).__composer
+      const before = c.hasMusic()
+      ;(document.getElementById('tab-composer') as HTMLButtonElement).click()
+      await new Promise((r) => setTimeout(r, 600))
+      const pitched = c.score.measures.flatMap((m) => m.staves.flat(2)).filter((e) => e.pitches.length).length
+      console.log(`AUTOFILL composer had music before: ${before}; now ${c.score.measures.length} bars, ${pitched} notes/chords, key ${c.score.key}, status: ${document.querySelector('.cmp-status')?.textContent}`)
+      console.log(pitched > 0 && !before ? 'PASS the composer tab fills itself from the open song' : 'FAIL the composer tab fills itself from the open song')
+      c.sel = undefined; c.key('ArrowDown') // (nothing selected: no edit)
+      c.setScore(c.score) // the user's own score now
+      ;(document.getElementById('tab-falling') as HTMLButtonElement).click(); (document.getElementById('tab-composer') as HTMLButtonElement).click()
+      await new Promise((r) => setTimeout(r, 300))
+      return console.log('SELFTEST_DONE')
+    }
     if (location.search.includes('edit')) { // open what was just imported in the composer
       ;(document.getElementById('editbtn') as HTMLButtonElement).click()
       await new Promise((r) => setTimeout(r, 600))

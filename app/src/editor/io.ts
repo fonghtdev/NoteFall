@@ -449,48 +449,9 @@ async function unzipMxl(buf: ArrayBuffer): Promise<string> {
   return strFromU8(files[path])
 }
 
-// ---- MIDI import: quantise notes into bars --------------------------------------------------------------
-/** Turn performed notes into an editable score: 16th-note grid, hands split at middle C, chords for simultaneous onsets. */
-export function scoreFromNotes(notes: Note[], bpm = 100, time = { beats: 4, unit: 4 }, key = 0): Score {
-  const grid = 0.25 // quarter notes per 16th
-  const spb = 60 / bpm
-  const q = notes
-    .map((n) => ({ pitch: n.pitch, s: Math.round(n.start / spb / grid), e: Math.max(Math.round(n.start / spb / grid) + 1, Math.round((n.start + n.duration) / spb / grid)) }))
-    .sort((a, b) => a.s - b.s || a.pitch - b.pitch)
-  const unitsPerBar = (barTicks(time) / TPQ) / grid
-  const lastEnd = Math.max(0, ...q.map((n) => n.e))
-  const s = emptyScore(Math.max(1, Math.ceil(lastEnd / unitsPerBar)), time, key)
-  s.tempo = Math.round(bpm)
-  s.title = 'Từ MIDI'
-  const staffOf = (p: number) => (p >= 60 ? 0 : 1)
-  for (let staff = 0; staff < 2; staff++) {
-    const mine = q.filter((n) => staffOf(n.pitch) === staff)
-    const onsets = [...new Set(mine.map((n) => n.s))].sort((a, b) => a - b)
-    onsets.forEach((t, i) => {
-      const group = mine.filter((n) => n.s === t)
-      const next = onsets[i + 1] ?? Infinity
-      const end = Math.min(next, Math.max(...group.map((n) => n.e)))
-      let from = t
-      while (from < end) { // never cross a barline: split into tied pieces
-        const m = Math.floor(from / unitsPerBar), barEnd = (m + 1) * unitsPerBar
-        const to = Math.min(end, barEnd)
-        const at = (from - m * unitsPerBar) * grid * TPQ
-        const len = (to - from) * grid * TPQ
-        const tiePieces = splitLength(at, len)
-        let pos = at
-        tiePieces.forEach((piece, pi) => {
-          group.forEach((n, gi) => putNote(s, { m, staff, voice: 0 }, pos, piece, spell(n.pitch, key), gi > 0))
-          const ev = s.measures[m].staves[staff][0].find((e, k) => starts(s.measures[m].staves[staff][0])[k] === pos)
-          const lastOfRun = pi === tiePieces.length - 1 && to === end
-          if (ev && !lastOfRun) ev.tie = true
-          pos += piece
-        })
-        from = to
-      }
-    })
-  }
-  return s
-}
+// ---- MIDI import: quantise notes into bars (the work is in fromNotes.ts) ----------------------------------
+export { detectKey, scoreFromNotes } from './fromNotes'
+import { scoreFromNotes } from './fromNotes'
 
 /** Open any file the composer understands, with the things a reader had doubts about. A sheet-music PDF is read the same way the falling view reads it. */
 export async function importFileFull(f: File): Promise<{ score: Score; warnings: string[] }> {

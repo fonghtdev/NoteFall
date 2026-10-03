@@ -27,7 +27,7 @@ const GLASS = `#version 300 es
 precision highp float;
 uniform sampler2D u_bg; uniform vec2 u_res;
 uniform vec2 u_center, u_half; uniform float u_radius;
-uniform vec3 u_color; uniform float u_hot, u_dpr;
+uniform vec3 u_color; uniform float u_hot, u_dpr; uniform int u_taps;
 out vec4 o;
 
 float sd(vec2 p) {
@@ -62,11 +62,12 @@ void main() {
   float r = 3. * u;
   vec3 base = vec3(0.);
   for (int i = 0; i < 8; i++) {
+    if (i >= u_taps) break;                                  // fewer samples on a slow machine
     float a = float(i) * 2.39996;
-    vec2 j = vec2(cos(a), sin(a)) * sqrt((float(i) + 0.5) / 8.) * r;
+    vec2 j = vec2(cos(a), sin(a)) * sqrt((float(i) + 0.5) / float(u_taps)) * r;
     base += vec3(bg(px + bend * 1.045 + j).r, bg(px + bend + j).g, bg(px + bend * 0.955 + j).b);
   }
-  base /= 8.;
+  base /= float(u_taps);
   float luma = dot(base, vec3(0.299, 0.587, 0.114));
   base = mix(vec3(luma), base, 1.1) * 1.05 + 0.012;         // glass lifts and enriches what is behind it
 
@@ -150,7 +151,7 @@ export class GlassRenderer {
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA) // premultiplied alpha
   }
 
-  render(backdrop: HTMLCanvasElement, notes: GlassNote[], dpr: number) {
+  render(backdrop: HTMLCanvasElement, notes: GlassNote[], dpr: number, taps = 8) {
     const { gl, canvas } = this
     const W = canvas.width, H = canvas.height
     gl.viewport(0, 0, W, H)
@@ -172,6 +173,7 @@ export class GlassRenderer {
     const p = this.glass
     use(p)
     gl.uniform1f(u(p, 'u_dpr'), dpr)
+    gl.uniform1i(u(p, 'u_taps'), taps)
     const margin = 36 * dpr // room for the outer glow
     for (const n of notes) {
       const x = n.x * dpr, y = n.y * dpr, w = n.w * dpr, h = n.h * dpr

@@ -280,6 +280,7 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
       for (let k = 0; k < 4; k++) big.measures.push(...JSON.parse(JSON.stringify(big.measures.slice(0, 8))).map((m: import('./editor/model').Measure) => { m.staves.forEach((vs) => vs.forEach((v) => v.forEach((e) => { e.id = newId(big) }))); return m }))
       c.setScore(big)
       console.log(`pdf score: ${big.measures.length} bars, ${c.layout.systems.length} systems`)
+      { const t0 = performance.now(); c.refresh(); const ms = performance.now() - t0; console.log(`${ms < 250 ? 'PASS' : 'FAIL'} redrawing a ${big.measures.length}-bar score after an edit takes ${Math.round(ms)} ms (limit 250)`) }
       await c.pdf()
       await new Promise((r) => setTimeout(r, 1500))
       console.log('pdf status: ' + document.querySelector('.cmp-status')?.textContent)

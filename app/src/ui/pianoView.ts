@@ -16,6 +16,14 @@ const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647)
 const STARS = Array.from({ length: 140 }, () => ({ x: rnd(), y: rnd(), r: 0.6 + rnd() * 1.1, sp: 4 + rnd() * 14, ph: rnd() * 6.28 }))
 
 /** Draws only: give it time t and notes. Knows nothing about audio. */
+/** What each quality level costs: resolution of the glass layer and of the backdrop it refracts, blur samples. */
+const QUALITY = [
+  { gl: 1, bd: 0.5, taps: 8, flat: false },
+  { gl: 0.75, bd: 0.33, taps: 5, flat: false },
+  { gl: 0.5, bd: 0.25, taps: 3, flat: false },
+  { gl: 0.5, bd: 0.25, taps: 3, flat: true },
+]
+
 export class PianoView {
   keys = new KeyState([])
   lookahead = 4 // seconds visible above the hit line
@@ -28,6 +36,8 @@ export class PianoView {
   bgBlur = 6    // px of blur
   private bgCache?: { key: string; canvas: HTMLCanvasElement }
   private gl?: GlassRenderer
+  /** 0 best … 2 lightest glass, 3 = plain notes (no WebGL). Lowered automatically when the machine cannot keep up. */
+  quality = 0
   private backdrop = document.createElement('canvas')
   private particles = new Particles()
   private lastT = 0
@@ -63,17 +73,18 @@ export class PianoView {
     const kbH = Math.max(80, h * 0.16)
     const hitY = h - kbH
     const pressed = this.keys.at(t)
-    const glass = this.glass && this.gl && this.glCanvas
+    const q = o ? QUALITY[0] : QUALITY[Math.min(this.quality, QUALITY.length - 1)] // a video export is always made at full quality
+    const glass = this.glass && this.gl && this.glCanvas && !q.flat
     this.glassActive = !!glass
     if (glass) {
       // backdrop at half resolution: it only feeds the refraction, and halves the upload cost
-      size(this.glCanvas!); size(this.backdrop, 0.5)
+      size(this.glCanvas!, q.gl); size(this.backdrop, q.bd)
       this.glCanvas!.style.visibility = 'visible'
       g.clearRect(0, 0, w, h)
       const bg = this.backdrop.getContext('2d')!
-      bg.setTransform(dpr / 2, 0, 0, dpr / 2, 0, 0)
+      bg.setTransform(dpr * q.bd, 0, 0, dpr * q.bd, 0, 0)
       this.drawBackdrop(bg, t, hitY, w, true)
-      this.gl!.render(this.backdrop, this.noteRects(t, hitY, w), dpr)
+      this.gl!.render(this.backdrop, this.noteRects(t, hitY, w), dpr * q.gl, q.taps)
     } else {
       if (this.glCanvas) this.glCanvas.style.visibility = 'hidden'
       this.drawBackdrop(g, t, hitY, w, false)

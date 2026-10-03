@@ -298,6 +298,8 @@ runBtn.onclick = () => {
 $('met-song').onclick = () => { const bpm = +$<HTMLInputElement>('tempo').value || grid?.bpm; if (bpm) { met.bpm = bpm; applyMet() } }
 drawDots(); applyMet()
 ;(window as unknown as { __metronome: unknown }).__metronome = { playClick, SOUNDS, met }
+import('./editor/render').then((m) => { ;(window as unknown as { __renderStats: unknown }).__renderStats = m.renderStats }).catch(() => {})
+;(window as unknown as { __view: unknown }).__view = view
 ;(window as unknown as { __synth: unknown }).__synth = { renderNotes, PIANO, partials, partialAmps, decayOf }
 let lastFrameT = 0
 const syncMetronome = (t: number) => { // called every frame
@@ -399,7 +401,7 @@ $('double').onclick = () => grid && setGrid(scaleTempo(grid, 2))
 export function makeExportView(): PianoView {
   const v = new PianoView(document.createElement('canvas'), document.createElement('canvas'))
   v.setNotes(shown)
-  Object.assign(v, { beats: view.beats, theme: view.theme, lookahead: view.lookahead, sparks: view.sparks, glass: view.glass, bgImage: view.bgImage, bgDim: view.bgDim, bgBlur: view.bgBlur })
+  Object.assign(v, { quality: 0, beats: view.beats, theme: view.theme, lookahead: view.lookahead, sparks: view.sparks, glass: view.glass, bgImage: view.bgImage, bgDim: view.bgDim, bgBlur: view.bgBlur })
   return v
 }
 
@@ -440,10 +442,30 @@ $('offm').onclick = () => grid && setGrid(shiftOffset(grid, -0.01))
 $('offp').onclick = () => grid && setGrid(shiftOffset(grid, 0.01))
 ctl.show.onchange = ctl.quant.onchange = () => { refresh(); applySettings() }
 
+// effect quality: automatic (drops a step when frames take too long while playing) or chosen by hand
+const qualitySel = $<HTMLSelectElement>('quality')
+let qualityMode = 'auto', slowAvg = 16.7, slowFrames = 0, lastRaf = 0
+try { qualityMode = localStorage.getItem('notefall.quality') ?? 'auto' } catch { /* default */ }
+qualitySel.value = qualityMode
+const applyQuality = () => { view.quality = qualityMode === 'auto' ? view.quality : +qualityMode; slowAvg = 16.7; slowFrames = 0 }
+qualitySel.onchange = () => { qualityMode = qualitySel.value; try { localStorage.setItem('notefall.quality', qualityMode) } catch { /* best effort */ } if (qualityMode === 'auto') view.quality = 0; applyQuality() }
+applyQuality()
+const watchSpeed = () => {
+  const now = performance.now(), dt = now - lastRaf
+  lastRaf = now
+  if (qualityMode !== 'auto' || !transport.playing || document.visibilityState !== 'visible' || dt > 250 || view.quality >= 3) { slowFrames = 0; return }
+  slowAvg = slowAvg * 0.94 + dt * 0.06
+  if (++slowFrames >= 90 && slowAvg > 29) { // under ~35 frames a second for a while: step down
+    view.quality++; slowFrames = 0; slowAvg = 16.7
+    say(`Máy chưa theo kịp nên đã giảm hiệu ứng (mức ${['cao', 'vừa', 'nhẹ', 'đơn giản'][view.quality]}). Đổi ở Cài đặt → Hiệu ứng`)
+  }
+}
+
 function frame() {
   if ($('falling').hidden) { requestAnimationFrame(frame); return } // composer tab: nothing to draw (and a 0×0 canvas makes WebGL complain)
   const t = transport.now()
   if (transport.playing && t >= transport.duration) { transport.pause(); setPlayState() }
+  watchSpeed()
   view.draw(t)
   syncMetronome(t)
   if (document.activeElement !== seek) { seek.value = String(t); fill(seek) }

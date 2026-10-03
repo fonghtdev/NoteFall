@@ -27,7 +27,7 @@ function reach(note: StaveNote | GhostNote): { left: number; right: number } {
   const mods = note.getModifiers()
   const accs = mods.filter((m) => m instanceof Accidental).length, dots = mods.filter((m) => m instanceof Dot).length
   const displaced = note.noteHeads.some((h) => h.isDisplaced())
-  return { left: accs * 9, right: 12 + (displaced ? 11 : 0) + (dots ? 5 + 5 * dots : 0) }
+  return { left: accs * 9, right: 11 + (displaced ? 11 : 0) + (dots ? 5 + 5 * dots : 0) }
 }
 
 /** The only thing in the bar for its voice and no other voice has music: a whole-bar rest stays centred. */
@@ -153,6 +153,22 @@ const modifierStave = (score: Score, mi: number, first: boolean, x: number, y: n
 
 /** Width a bar needs: formatted content plus whatever clef/key/time it carries. */
 function minWidth(score: Score, mi: number, first: boolean): number {
+  const t0 = performance.now()
+  try { return minWidth0(score, mi, first) } finally { renderStats.widthMs += performance.now() - t0 }
+}
+const widthCache = new Map<string, number>()
+function minWidth0(score: Score, mi: number, first: boolean): number {
+  // the same bar in the same surroundings always needs the same room: remember it (editing one bar then costs one bar, not sixty)
+  const ctx = contextAt(score, mi)
+  const key = JSON.stringify([score.measures[mi], score.clefs.map((_, si) => clefAt(score, mi, si)), ctx.key, ctx.time, first])
+  const hit = widthCache.get(key)
+  if (hit !== undefined) return hit
+  const w = minWidth1(score, mi, first)
+  if (widthCache.size > 3000) widthCache.clear()
+  widthCache.set(key, w)
+  return w
+}
+function minWidth1(score: Score, mi: number, first: boolean): number {
   const staves = score.clefs.map((_, si) => modifierStave(score, mi, first, 0, 0, 400, si))
   const b = build(score, mi, staves, new Set())
   const f = new Formatter()
@@ -168,16 +184,23 @@ export type MarkRef = { kind: 'ev'; field: 'dyn' | 'staffText' | 'expr' | 'chord
 export interface RenderOptions { width: number; selected?: Set<number>; selectedMark?: MarkRef }
 
 /** Draw the whole score into `host` (an SVG) and return where things ended up. */
+/** How long the last render took, for tuning. */
+export const renderStats = { totalMs: 0, passes: 0, widthMs: 0, drawMs: 0 }
+
 export function renderScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout {
+  const t0 = performance.now(); renderStats.widthMs = 0; renderStats.drawMs = 0; renderStats.passes = 1
   // Draw; if notes of a bar still touch each other (many chords, seconds, accidentals), give that bar more room and draw again.
   const extra = score.measures.map(() => 1)
   let layout = drawScore(host, score, opts, extra)
-  for (let pass = 0; pass < 6; pass++) {
+  let before = Infinity
+  for (let pass = 0; pass < 4; pass++) {
     const tight = crowded(layout)
-    if (!tight.length) break
-    for (const m of tight) extra[m] = Math.min(3, extra[m] * 1.16 + 0.04)
-    layout = drawScore(host, score, opts, extra)
+    if (!tight.length || tight.length >= before) break // fine, or widening did not help (the line is full): stop instead of redrawing for nothing
+    before = tight.length
+    for (const m of tight) extra[m] = Math.min(3, extra[m] * 1.2 + 0.05)
+    layout = drawScore(host, score, opts, extra); renderStats.passes++
   }
+  renderStats.totalMs = performance.now() - t0
   return layout
 }
 
@@ -195,7 +218,7 @@ function crowded(layout: Layout): number[] {
         cols.set(key, c)
       }
       const xs = [...cols.values()].sort((a, b) => a.x - b.x)
-      for (let i = 1; i < xs.length; i++) if (xs[i].x - xs[i - 1].x < xs[i - 1].right + xs[i].left + 3) bad.add(dm.m)
+      for (let i = 1; i < xs.length; i++) if (xs[i].x - xs[i - 1].x < xs[i - 1].right + xs[i].left + 1) bad.add(dm.m) // closer than the heads themselves (plus 1px)
     }
   }
   return [...bad]

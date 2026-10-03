@@ -167,7 +167,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 body.score .grid-only { display: none !important; }
 #bpm { font-weight: 600; font-variant-numeric: tabular-nums; }
 .pop-anchor { position: relative; }
-#pop-settings, #pop-export { bottom: calc(100% + 10px); right: 0; width: 320px; }
+#pop-settings, #pop-export, #pop-met { bottom: calc(100% + 10px); right: 0; width: 320px; }
 
 /* ---- composer ---------------------------------------------------------------------------------------- */
 #composer { display: flex; flex-direction: column; background: var(--bg); }
@@ -246,3 +246,11 @@ input[type='range']:active::-webkit-slider-thumb { transform: scale(1.3); box-sh
 .cmp-insp .row { display: flex; gap: var(--s2); }
 .cmp-tools .btn .ptxt { font-size: 15px; font-weight: 600; }
 .cmp-insp .grid.wide .pal { height: 46px; } .cmp-insp .grid.wide .pal .glyph { font-size: 20px; }
+
+/* ---- metronome ---------------------------------------------------------------------------------------- */
+.dots { display: flex; gap: 8px; min-height: 14px; align-items: center; }
+.dots span { width: 12px; height: 12px; border-radius: 50%; background: var(--surface-3); box-shadow: 0 0 0 1px var(--line-strong) inset; transition: background 90ms, transform 90ms; }
+.dots span.on { background: var(--accent); transform: scale(1.25); }
+.dots span.acc.on { background: var(--gold); }
+#btn-met[aria-pressed='true'] { background: var(--accent-soft); border-color: var(--accent); color: var(--on-accent); }
+#pop-met input[type='number'] { font-variant-numeric: tabular-nums; }

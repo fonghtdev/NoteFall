@@ -1,0 +1,110 @@
+// A metronome that is pleasant to practise with: a short, soft, rounded tick (no beep), the first beat of the bar a fifth higher,
+// quiet by default. Sounds are synthesised, so there is nothing to download and every click starts exactly when asked.
+
+export type ClickSound = 'wood' | 'soft' | 'rim'
+export interface ClickSettings { sound: ClickSound; volume: number; accent: boolean } // volume 0..1
+export const SOUNDS: Record<ClickSound, string> = { wood: 'Gỗ êm', soft: 'Chuông nhẹ', rim: 'Trống khẽ' }
+export const DEFAULT_CLICK: ClickSettings = { sound: 'wood', volume: 0.45, accent: true }
+
+const noise = new WeakMap<AudioContext, AudioBuffer>()
+const noiseOf = (ctx: AudioContext) => {
+  let b = noise.get(ctx)
+  if (!b) { b = ctx.createBuffer(1, Math.round(ctx.sampleRate * 0.06), ctx.sampleRate); const d = b.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; noise.set(ctx, b) }
+  return b
+}
+
+/** One click at audio-clock time `when`. The accent is the same sound a perfect fifth up and a little louder. */
+export function playClick(ctx: AudioContext, when: number, accent: boolean, st: ClickSettings, out: AudioNode = ctx.destination) {
+  const peak = 0.55 * Math.pow(Math.max(0, Math.min(1, st.volume)), 1.7) * (accent && st.accent ? 1 : 0.72)
+  if (peak <= 0.0005) return
+  const hi = accent && st.accent
+  const master = ctx.createGain(), tone = ctx.createBiquadFilter()
+  tone.type = 'lowpass'; tone.frequency.value = st.sound === 'rim' ? 6500 : 4800; tone.Q.value = 0.5 // takes the edge off
+  master.gain.value = 1
+  tone.connect(master); master.connect(out)
+  const partial = (type: OscillatorType, freq: number, level: number, attack: number, decay: number) => {
+    const o = ctx.createOscillator(), g = ctx.createGain()
+    o.type = type; o.frequency.value = freq
+    g.gain.setValueAtTime(0.0001, when)
+    g.gain.linearRampToValueAtTime(peak * level, when + attack)
+    g.gain.exponentialRampToValueAtTime(0.0001, when + attack + decay)
+    o.connect(g); g.connect(tone)
+    o.start(when); o.stop(when + attack + decay + 0.02)
+  }
+  const burst = (centre: number, q: number, level: number, length: number) => {
+    const n = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain()
+    n.buffer = noiseOf(ctx); f.type = 'bandpass'; f.frequency.value = centre; f.Q.value = q
+    g.gain.setValueAtTime(peak * level, when); g.gain.exponentialRampToValueAtTime(0.0001, when + length)
+    n.connect(f); f.connect(g); g.connect(tone)
+    n.start(when, 0, length + 0.01)
+  }
+  if (st.sound === 'wood') { // a wood block: a rounded body, a quick overtone, a hint of knock
+    const f = hi ? 1500 : 1000
+    partial('triangle', f, 1, 0.0015, 0.05)
+    partial('sine', f * 2.4, 0.28, 0.001, 0.02)
+    burst(3200, 1.5, 0.12, 0.008)
+  } else if (st.sound === 'soft') { // a small soft bell: gentle attack, longer ring, no hard edge at all
+    const f = hi ? 990 : 660
+    partial('sine', f, 0.9, 0.004, 0.11)
+    partial('sine', f * 2, 0.18, 0.004, 0.07)
+  } else { // a muffled rim tap: short filtered noise on a low thump
+    partial('sine', hi ? 330 : 220, 0.9, 0.002, 0.055)
+    burst(hi ? 2400 : 1800, 1.1, 0.55, 0.03)
+  }
+}
+
+export type ClickSource = (from: number, to: number) => { t: number; accent: boolean }[]
+
+/** Clicks along the song: while the song plays, sound every beat the source reports, in step with the playback clock. */
+export class Follower {
+  private timer?: ReturnType<typeof setInterval>
+  private last = 0
+  constructor(private ctx: AudioContext, private now: () => number, private source: () => ClickSource | undefined, private settings: () => ClickSettings, private out?: AudioNode, private play = playClick) {}
+  get running() { return this.timer !== undefined }
+  start() {
+    this.stop()
+    this.last = this.now() - 0.004
+    this.timer = setInterval(() => this.tick(), 25)
+  }
+  stop() { if (this.timer !== undefined) { clearInterval(this.timer); this.timer = undefined } }
+  /** After a jump in the song: forget what was already scheduled. */
+  reset() { this.last = this.now() - 0.004 }
+  private tick() {
+    const src = this.source()
+    const t = this.now(), horizon = t + 0.12
+    if (src && horizon > this.last) {
+      for (const c of src(this.last, horizon)) if (c.t > this.last && c.t <= horizon) this.play(this.ctx, this.ctx.currentTime + Math.max(0, c.t - t), c.accent, this.settings(), this.out)
+    }
+    this.last = Math.max(this.last, horizon)
+  }
+}
+
+/** A metronome of its own, for practising without a song. Reports each beat so the page can flash it. */
+export class Practice {
+  private timer?: ReturnType<typeof setInterval>
+  private next = 0
+  private index = 0
+  bpm = 80
+  beats = 4
+  constructor(private ctx: AudioContext, private settings: () => ClickSettings, private onBeat: (index: number, accent: boolean) => void, private out?: AudioNode) {}
+  get running() { return this.timer !== undefined }
+  start() {
+    this.stop()
+    void this.ctx.resume()
+    this.index = 0
+    this.next = this.ctx.currentTime + 0.06
+    const pump = () => {
+      while (this.next < this.ctx.currentTime + 0.12) {
+        const i = this.index % this.beats, accent = i === 0
+        playClick(this.ctx, this.next, accent, this.settings(), this.out)
+        const delay = Math.max(0, (this.next - this.ctx.currentTime) * 1000)
+        setTimeout(() => this.onBeat(i, accent), delay)
+        this.next += 60 / this.bpm
+        this.index++
+      }
+    }
+    pump()
+    this.timer = setInterval(pump, 25)
+  }
+  stop() { if (this.timer !== undefined) { clearInterval(this.timer); this.timer = undefined } }
+}

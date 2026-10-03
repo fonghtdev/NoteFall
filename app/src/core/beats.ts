@@ -95,3 +95,12 @@ export function quantize(notes: Note[], g: BeatGrid, div = 4, tol = 0.05): Note[
     return { ...n, start: s, duration: e - s }
   })
 }
+
+/** How many quarter notes one metronome click lasts in a time signature: 6/8 and 9/8 click on the dotted quarter, 3/8 and 5/8 on each eighth… */
+export const clickStep = (beats: number, unit: number): number => (unit === 8 ? (beats % 3 === 0 && beats > 3 ? 1.5 : 0.5) : 4 / unit)
+
+/** A beat grid for sheet music: its beats are the metronome clicks, so 6/8 has two per bar and 3/8 three. `bpm` is quarter notes per minute. */
+export const gridForSignature = (bpm: number, beats: number, unit: number, offset = 0): BeatGrid => {
+  const step = clickStep(beats, unit)
+  return { bpm: bpm / step, offset, barStart: 0, beatsPerBar: Math.max(1, Math.round((beats * 4) / unit / step)) }
+}

@@ -362,6 +362,7 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
     if (ui) { // open one of the floating panels for a screenshot
       const click = (id: string) => (document.getElementById(id) as HTMLElement).click()
       if (ui === 'settings') click('btn-settings')
+      if (ui === 'metronome') click('btn-met')
       if (ui === 'export') click('btn-export')
       if (ui === 'keys') (document.getElementById('dlg-keys') as HTMLDialogElement).showModal()
       if (ui === 'play') { click('play'); await new Promise((r) => setTimeout(r, 2200)) }

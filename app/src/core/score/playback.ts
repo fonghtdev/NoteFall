@@ -75,13 +75,28 @@ export function tempoRatios(score: Score, repeats = true): { at: number; ratio: 
   return out
 }
 
+/** Quarter notes -> seconds, walking through the tempo changes. */
+export function secondsAt(q: number, bpm: number, changes: { at: number; ratio: number }[] = []): number {
+  const k = 60 / bpm
+  let t = 0, from = 0, ratio = 1
+  for (const c of changes) { if (c.at >= q) break; t += ((c.at - from) * k) / ratio; from = c.at; ratio = c.ratio }
+  return t + ((q - from) * k) / ratio
+}
+
+/** Metronome clicks for a whole piece in played order (repeats and jumps included), in seconds. The first click of every bar is the accent. */
+export function scoreClicks(score: Score, repeats: boolean, bpm: number, changes: { at: number; ratio: number }[] = []): { t: number; accent: boolean }[] {
+  const out: { t: number; accent: boolean }[] = []
+  let at = 0
+  for (const mi of playOrder(score.measures, repeats)) {
+    const m = score.measures[mi], step = m.beat ?? 1
+    for (let q = 0, k = 0; q < m.length - 1e-9; q += step, k++) out.push({ t: secondsAt(at + q, bpm, changes), accent: k === 0 })
+    at += m.length
+  }
+  return out
+}
+
 /** `bpm` = quarter notes per minute (at the start; `changes` speed it up or down from there). */
 export function toNotes(timed: Timed[], bpm: number, velocity = 85, changes: { at: number; ratio: number }[] = []): Note[] {
-  const k = 60 / bpm
-  const secs = (q: number) => { // quarter notes -> seconds, walking through the tempo changes
-    let t = 0, from = 0, ratio = 1
-    for (const c of changes) { if (c.at >= q) break; t += (c.at - from) * k / ratio; from = c.at; ratio = c.ratio }
-    return t + (q - from) * k / ratio
-  }
+  const secs = (q: number) => secondsAt(q, bpm, changes)
   return timed.map((n) => ({ pitch: n.pitch, start: secs(n.start), duration: secs(n.start + n.duration) - secs(n.start), velocity: n.velocity ?? velocity, hand: (n.staff >= 1 ? 1 : 0) as 0 | 1 })) // upper staff = right hand
 }

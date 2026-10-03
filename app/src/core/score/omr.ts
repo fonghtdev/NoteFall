@@ -2,6 +2,7 @@
 // Deterministic geometry, not machine learning: noteheads/clefs/accidentals are music-font glyphs, staves/stems/bars are lines.
 // Glyph codes follow the Sonata/Maestro layout; codes marked "unverified" are absent from the sample PDF and rely on the bar-length check.
 import type { Glyph, PagePrims, Poly, Seg } from './primitives'
+import { clickStep } from '../beats'
 import { readNavigation, type BarGeom } from './navigation'
 import { DYN_BY_TEXT, L_P, L_Z, dynText } from './dynamics'
 import { fromSmufl, isSmufl } from './smufl'
@@ -35,6 +36,7 @@ export interface Measure {
   suspect?: string       // set when the rhythm does not add up to `length`
   tempo?: number         // quarter notes per minute in force at the start of this bar (absent = the score's single tempo)
   tempoChanges?: { at: number; bpm: number }[] // changes inside the bar, `at` in quarter notes from the barline
+  beat?: number          // quarter notes per metronome click in this bar (1 in 4/4, 1.5 in 6/8 …)
   written?: { staff: number; hand?: number; voices: Written[][] }[] // notation view of the same bar, for editing
   // navigation (set by the composer / MusicXML, not read from PDFs yet)
   volta?: number[]       // this bar is inside an ending bracket for these passes (1st, 2nd ending…)
@@ -570,7 +572,7 @@ export function readScore(rawPages: PagePrims[]): Score {
             const n = Math.min(500, Math.max(1, digits.length ? +digits.map((g) => (g.code >= 0xf030 ? g.code - 0xf030 : g.code - 0x30)).join('') : 1))
             for (let k = 0; k < n; k++) {
               navEntry.geoms.push({ x0, x1, top: staves[sys[0]].top, bottom: staves[sys[sys.length - 1]].bottom, sp: staves[sys[0]].sp })
-              measures.push({ index: measures.length + 1, length: barLen, notes: [], startRepeat: k === 0 && (startRepeat || pendingStartRepeat), endRepeat: k === n - 1 && endRepeat, written: [] })
+              measures.push({ index: measures.length + 1, length: barLen, beat: clickStep(beats, unit), notes: [], startRepeat: k === 0 && (startRepeat || pendingStartRepeat), endRepeat: k === n - 1 && endRepeat, written: [] })
             }
             pendingStartRepeat = false
             continue
@@ -581,7 +583,7 @@ export function readScore(rawPages: PagePrims[]): Score {
         const fifthsOf = (si: number) => [...(keyAlter.get(si)?.values() ?? [])].reduce((a, v) => a + Math.sign(v), 0)
         const measureNotes: ScoreNote[] = writtenOut.flatMap((w) => w.voices.flatMap((vv) => realizeVoice(vv, fifthsOf(sys[w.staff]), w.hand ?? w.staff)))
         navEntry.geoms.push({ x0, x1, top: staves[sys[0]].top, bottom: staves[sys[sys.length - 1]].bottom, sp: staves[sys[0]].sp })
-        measures.push({ index: measures.length + 1, length: barLen, notes: measureNotes.sort((a, b) => a.start - b.start || a.pitch - b.pitch), startRepeat: startRepeat || pendingStartRepeat, endRepeat, suspect, written: writtenOut })
+        measures.push({ index: measures.length + 1, length: barLen, beat: clickStep(beats, unit), notes: measureNotes.sort((a, b) => a.start - b.start || a.pitch - b.pitch), startRepeat: startRepeat || pendingStartRepeat, endRepeat, suspect, written: writtenOut })
         pendingStartRepeat = false
       }
       if (dynMarks.length) level = dynMarks[dynMarks.length - 1].vel

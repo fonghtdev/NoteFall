@@ -47,6 +47,32 @@
       </div>
 
       <div class="pop-anchor">
+        <button id="btn-met" class="btn" aria-label="Metronome" aria-pressed="false" title="Metronome (M: bật / tắt theo bài)"><span data-icon="metronome"></span>Metronome</button>
+        <div id="pop-met" class="popover" role="dialog" aria-label="Metronome" hidden>
+          <section>
+            <span class="label">Theo bài</span>
+            <label class="switch"><input id="met-follow" type="checkbox" /> Gõ nhịp theo bài khi phát <kbd>M</kbd></label>
+            <p style="margin:0;color:var(--text-3);font-size:12px">Nhịp đi theo tempo và số phách của bài (6/8 gõ hai nhịp mỗi ô…), phách đầu ô nhấn nhẹ hơn.</p>
+          </section>
+          <section>
+            <span class="label">Âm thanh</span>
+            <label class="row between">Tiếng <select id="met-sound" class="field"></select></label>
+            <label class="row between">Âm lượng <input id="met-vol" type="range" min="0" max="100" value="45" style="width:150px" aria-label="Âm lượng metronome" /></label>
+            <label class="switch"><input id="met-accent" type="checkbox" checked /> Nhấn phách đầu ô (cao hơn một quãng năm)</label>
+            <div class="row"><button id="met-test" class="btn sm">Nghe thử</button></div>
+          </section>
+          <section>
+            <span class="label">Luyện tập một mình</span>
+            <div class="row"><button id="met-minus" class="btn sm icon" aria-label="Giảm 1 nhịp mỗi phút">−</button><input id="met-bpm" type="number" class="field" min="30" max="240" value="80" aria-label="Số nhịp mỗi phút" style="width:72px;text-align:center" /><button id="met-plus" class="btn sm icon" aria-label="Tăng 1 nhịp mỗi phút">+</button><button id="met-tap" class="btn sm" title="Gõ đều vào nút này để đo tempo">Gõ nhịp</button></div>
+            <input id="met-bpm-range" type="range" min="30" max="240" value="80" aria-label="Tempo" />
+            <label class="row between">Số phách mỗi ô <select id="met-beats" class="field"></select></label>
+            <div id="met-dots" class="dots" aria-hidden="true"></div>
+            <div class="row"><button id="met-run" class="btn primary sm">Bắt đầu</button><button id="met-song" class="btn sm ghost" title="Lấy tempo đang dùng của bài">Lấy tempo của bài</button></div>
+          </section>
+        </div>
+      </div>
+
+      <div class="pop-anchor">
         <button id="btn-settings" class="btn" aria-label="Cài đặt hiển thị và nhịp"><span data-icon="sliders"></span>Cài đặt</button>
         <div id="pop-settings" class="popover" role="dialog" aria-label="Cài đặt" hidden>
           <section>

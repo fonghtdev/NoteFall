@@ -23,6 +23,7 @@ const P = {
   copy: '<rect x="8" y="8" width="11" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h1"/>',
   cut: '<circle cx="6.5" cy="17.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/><path d="M8.3 15.7 18 4M15.7 15.7 6 4"/>',
   paste: '<rect x="5" y="5" width="14" height="16" rx="2"/><path d="M9 5V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1M9 12h6M9 16h4"/>',
+  metronome: '<path d="M8.5 21 10.5 4h3l2 17z"/><path d="M12 16.5 16.5 7"/><circle cx="16.5" cy="7" r="1.2" fill="currentColor"/><path d="M6.5 21h11"/>',
   wand: '<path d="M5 19 16 8"/><path d="m14.5 6.5 3 3"/><path d="M19 3v3M17.5 4.5h3M6 5v2M5 6h2"/>',
 } as const
 

@@ -8,10 +8,11 @@ import { transcribe } from './core/basicPitch'
 import { renderNotes } from './core/synth'
 import { clean } from './core/postprocess'
 import { end, type Note } from './core/models'
-import { estimateGrid, quantize, scaleTempo, shiftOffset, type BeatGrid } from './core/beats'
+import { beatTimes, estimateGrid, gridForSignature, quantize, scaleTempo, shiftOffset, type BeatGrid } from './core/beats'
+import { DEFAULT_CLICK, Follower, Practice, SOUNDS, playClick, type ClickSettings, type ClickSound, type ClickSource } from './core/metronome'
 import * as cache from './core/cache'
 import { readPdfScore } from './core/score/pdf'
-import { tempoRatios, toNotes, unroll } from './core/score/playback'
+import { scoreClicks, tempoRatios, toNotes, unroll } from './core/score/playback'
 import { setGraceBeats } from './core/score/realize'
 import type { Score } from './core/score/omr'
 import { THEMES } from './ui/theme'
@@ -31,6 +32,7 @@ const status = $('status'), progress = $<HTMLProgressElement>('progress')
 paintIcons()
 popover($('btn-settings'), $('pop-settings'))
 popover($('btn-export'), $('pop-export'))
+popover($('btn-met'), $('pop-met'))
 
 /** Status line in the dock; errors get the danger colour. */
 const say = (text: string, kind: '' | 'error' = '') => { status.textContent = text; status.title = text; status.style.color = kind === 'error' ? 'var(--danger)' : '' }
@@ -80,9 +82,14 @@ function paintLegend() {
   $('np-title').textContent = songName
 }
 
+// metronome clicks of the open song: from its beat grid, or (sheet music) from the bars themselves
+const gridClicks: ClickSource = (a, b) => (grid ? beatTimes(grid, a, b).map((x) => ({ t: x.t, accent: x.bar })) : [])
+let clickSource: ClickSource | undefined = gridClicks
+
 /** Show a finished song: notes drawn, audio (if any) ready to play. */
 export function show(notes: Note[], audio?: AudioBuffer, g?: BeatGrid, k?: string) {
   raw = notes; key = k; audioBuf = audio
+  clickSource = gridClicks
   grid = g ?? estimateGrid(notes)
   if (key && grid && !g) void cache.save(key + CACHE_V + ':grid', grid)
   const duration = Math.max(audio?.duration ?? 0, ...notes.map(end)) + 1
@@ -108,8 +115,17 @@ async function showScore() {
   say('Đang tổng hợp tiếng piano…')
   const audio = await renderNotes(notes)
   document.body.classList.add('score'); $('scorectl').hidden = false
-  show(notes, audio, { bpm, offset: 0, barStart: 0, beatsPerBar: score.beatsPerBar })
-  if (ratios.length) { grid = undefined; refresh() } // the tempo changes along the way: one fixed beat grid would drift, so the beat lines are left out
+  show(notes, audio, gridForSignature(bpm, score.beatsPerBar, score.beatUnit))
+  const list = scoreClicks(score, repeats, bpm, ratios)
+  clickSource = (a, b) => { // the clicks between a and b (the list is sorted)
+    let lo = 0, hi = list.length
+    while (lo < hi) { const m = (lo + hi) >> 1; list[m].t <= a ? (lo = m + 1) : (hi = m) }
+    const out = []
+    for (let i = lo; i < list.length && list[i].t <= b; i++) out.push(list[i])
+    return out
+  }
+  const barLen0 = score.measures[0]?.length
+  if (ratios.length || score.measures.some((m) => m.length !== barLen0)) { grid = undefined; refresh() } // tempo or time signature changes along the way: one fixed beat grid would drift, so the beat lines are left out
   const bad = score.measures.filter((m) => m.suspect)
   say(`${notes.length} nốt · ${score.measures.length} ô nhịp ${score.beatsPerBar}/${score.beatUnit}` + (bad.length || score.warnings.length ? ` · ⚠ ${bad.length + score.warnings.length} chỗ cần kiểm tra` : ' · mọi ô nhịp đều đủ phách'))
   const notes_ = [...bad.map((m) => `Ô ${m.index}: ${m.suspect}`), ...score.warnings]
@@ -221,11 +237,80 @@ document.addEventListener('drop', (e) => {
   const f = e.dataTransfer?.files[0]
   if (f) void (f.type.startsWith('image/') ? useBackground(f) : loadFile(f))
 })
+// ---- metronome: clicks along the song, and a free-standing one for practice
+type MetState = ClickSettings & { follow: boolean; bpm: number; beats: number }
+const met: MetState = { ...DEFAULT_CLICK, follow: false, bpm: 80, beats: 4 }
+try { Object.assign(met, JSON.parse(localStorage.getItem('notefall.met') ?? '{}')) } catch { /* defaults */ }
+const saveMet = () => { try { localStorage.setItem('notefall.met', JSON.stringify(met)) } catch { /* best effort */ } }
+const follower = new Follower(transport.ctx, () => transport.now(), () => clickSource, () => met)
+const dots = $('met-dots'), runBtn = $('met-run')
+const practice = new Practice(transport.ctx, () => met, (i, accent) => {
+  const el = dots.children[i] as HTMLElement | undefined
+  if (!el) return
+  el.classList.add('on'); el.classList.toggle('acc', accent && met.accent)
+  setTimeout(() => el.classList.remove('on'), 110)
+})
+const sound = $<HTMLSelectElement>('met-sound'), vol = $<HTMLInputElement>('met-vol'), beatsSel = $<HTMLSelectElement>('met-beats')
+const bpmNum = $<HTMLInputElement>('met-bpm'), bpmRange = $<HTMLInputElement>('met-bpm-range')
+for (const [k, label] of Object.entries(SOUNDS)) sound.add(new Option(label, k))
+for (let n = 1; n <= 9; n++) beatsSel.add(new Option(String(n), String(n)))
+const drawDots = () => { dots.innerHTML = ''; for (let i = 0; i < met.beats; i++) dots.appendChild(document.createElement('span')) }
+const applyMet = () => {
+  met.bpm = Math.min(240, Math.max(30, Math.round(met.bpm || 80)))
+  $<HTMLInputElement>('met-follow').checked = met.follow
+  $('btn-met').setAttribute('aria-pressed', String(met.follow || practice.running))
+  sound.value = met.sound; vol.value = String(Math.round(met.volume * 100)); fill(vol)
+  $<HTMLInputElement>('met-accent').checked = met.accent
+  bpmNum.value = String(met.bpm); bpmRange.value = String(met.bpm); fill(bpmRange)
+  beatsSel.value = String(met.beats)
+  practice.bpm = met.bpm; practice.beats = met.beats
+  runBtn.textContent = practice.running ? 'Dừng' : 'Bắt đầu'
+  saveMet()
+}
+const stopPractice = () => { practice.stop(); dots.querySelectorAll('.on').forEach((e) => e.classList.remove('on')); applyMet() }
+const setFollow = (on: boolean) => { met.follow = on; if (on && practice.running) stopPractice(); applyMet() }
+$<HTMLInputElement>('met-follow').onchange = (e) => setFollow((e.target as HTMLInputElement).checked)
+sound.onchange = () => { met.sound = sound.value as ClickSound; applyMet(); playClick(transport.ctx, transport.ctx.currentTime + 0.02, false, met) }
+vol.oninput = () => { met.volume = +vol.value / 100; applyMet() }
+vol.onchange = () => playClick(transport.ctx, transport.ctx.currentTime + 0.02, true, met)
+$<HTMLInputElement>('met-accent').onchange = (e) => { met.accent = (e.target as HTMLInputElement).checked; applyMet() }
+$('met-test').onclick = () => { void transport.ctx.resume(); const t = transport.ctx.currentTime + 0.05; playClick(transport.ctx, t, true, met); playClick(transport.ctx, t + 0.5, false, met); playClick(transport.ctx, t + 1, false, met); playClick(transport.ctx, t + 1.5, false, met) }
+bpmNum.onchange = () => { met.bpm = +bpmNum.value; applyMet() }
+bpmRange.oninput = () => { met.bpm = +bpmRange.value; applyMet() }
+$('met-minus').onclick = () => { met.bpm -= 1; applyMet() }
+$('met-plus').onclick = () => { met.bpm += 1; applyMet() }
+beatsSel.onchange = () => { met.beats = +beatsSel.value; drawDots(); applyMet() }
+let taps: number[] = []
+$('met-tap').onclick = () => {
+  const now = performance.now()
+  if (taps.length && now - taps[taps.length - 1] > 2000) taps = []
+  taps.push(now); taps = taps.slice(-6)
+  if (taps.length >= 2) { met.bpm = 60000 / ((taps[taps.length - 1] - taps[0]) / (taps.length - 1)); applyMet() }
+}
+runBtn.onclick = () => {
+  if (practice.running) { stopPractice(); return }
+  if (transport.playing) { transport.pause(); setPlayState() } // one thing at a time
+  met.follow = false; drawDots(); applyMet(); practice.start(); applyMet()
+}
+$('met-song').onclick = () => { const bpm = +$<HTMLInputElement>('tempo').value || grid?.bpm; if (bpm) { met.bpm = bpm; applyMet() } }
+drawDots(); applyMet()
+;(window as unknown as { __metronome: unknown }).__metronome = { playClick, SOUNDS, met }
+let lastFrameT = 0
+const syncMetronome = (t: number) => { // called every frame
+  if (met.follow && transport.playing) { if (!follower.running) follower.start(); else if (Math.abs(t - lastFrameT) > 0.4) follower.reset() }
+  else if (follower.running) follower.stop()
+  if (transport.playing && practice.running) stopPractice() // the song started: the practice click gives way
+  lastFrameT = t
+}
+
 playBtn.onclick = () => {
   transport.playing ? transport.pause() : transport.play()
   setPlayState()
 }
 seek.oninput = () => { transport.seek(+seek.value); fill(seek) }
+document.addEventListener('keydown', (e) => { // M switches the metronome along the song on and off
+  if (e.key.toLowerCase() === 'm' && !e.ctrlKey && !e.metaKey && !e.altKey && !$('falling').hidden && !/^(INPUT|SELECT|TEXTAREA)$/.test((e.target as HTMLElement).tagName)) { setFollow(!met.follow); say(met.follow ? 'Metronome theo bài: bật' : 'Metronome theo bài: tắt') }
+})
 document.addEventListener('keydown', (e) => { // Space plays / pauses the falling view
   const t = e.target as HTMLElement
   if (e.key === ' ' && !$('falling').hidden && !playBtn.disabled && !/^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(t.tagName)) { e.preventDefault(); playBtn.click() }
@@ -341,6 +426,7 @@ function frame() {
   const t = transport.now()
   if (transport.playing && t >= transport.duration) { transport.pause(); setPlayState() }
   view.draw(t)
+  syncMetronome(t)
   if (document.activeElement !== seek) { seek.value = String(t); fill(seek) }
   $('time').textContent = `${fmt(t)} / ${fmt(transport.duration)}`
   requestAnimationFrame(frame)

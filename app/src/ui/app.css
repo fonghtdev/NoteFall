@@ -294,3 +294,10 @@ body { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-are
 
 /* dragging the page with the right / middle button */
 .cmp-page.panning, .cmp-page.panning * { cursor: grabbing !important; user-select: none; }
+
+/* the grip between a line's two staves (drag to change their distance) */
+.gap-handle { cursor: row-resize; pointer-events: all; } /* 'all': a transparent fill is not hit by a real pointer otherwise */
+.gap-handle rect { pointer-events: all; fill: transparent; transition: fill var(--ease); }
+.gap-handle circle { fill: #8b92a5; opacity: 0.45; }
+.gap-handle:hover rect { fill: rgba(29, 111, 255, 0.14); }
+.gap-handle:hover circle { fill: #1d6fff; opacity: 0.9; }

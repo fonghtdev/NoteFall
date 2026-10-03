@@ -71,6 +71,7 @@ export interface Measure {
   barline?: BarlineKind   // kind of the line closing this bar (repeat signs have their own flags)
   break?: 'system' | 'page' // a new line (or page) starts after this bar
   stretch?: number        // widens (>1) or narrows (<1) this bar
+  staffGap?: number       // on the first bar of a line: how much farther apart (px, - = closer) the line's two staves are drawn
   startRepeat?: boolean
   endRepeat?: boolean
   volta?: number[]        // inside an ending bracket for these passes (1st, 2nd ending…)
@@ -704,6 +705,13 @@ export function setBarline(s: Score, i: number, kind?: BarlineKind) {
   if (kind) m.endRepeat = false
 }
 export function setBreak(s: Score, i: number, kind?: 'system' | 'page') { const m = s.measures[i]; if (m) m.break = m.break === kind ? undefined : kind }
+/** The gap between the two staves of the line that runs from bar `from` to `to` (set on its first bar; 0 puts it back to the usual). */
+export function setStaffGap(s: Score, from: number, to: number, extra: number) {
+  for (let i = from; i <= to; i++) if (s.measures[i]) s.measures[i].staffGap = undefined
+  const m = s.measures[from]
+  if (m && Math.abs(extra) >= 1) m.staffGap = Math.round(Math.min(STAFF_GAP_MAX, Math.max(STAFF_GAP_MIN, extra)))
+}
+export const STAFF_GAP_MIN = -40, STAFF_GAP_MAX = 120
 export function setStretch(s: Score, i: number, factor: number) { const m = s.measures[i]; if (m) m.stretch = Math.abs(factor - 1) < 0.01 ? undefined : Math.min(3, Math.max(0.5, factor)) }
 
 /** "Repeat bar": copy the previous bar (every staff and voice) into bar `i`, with fresh ids. */

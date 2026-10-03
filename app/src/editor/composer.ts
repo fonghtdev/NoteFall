@@ -6,7 +6,7 @@ import { hitTest, keyAlter, type Hit } from './hit'
 import {
   CLEFS, STEPS, TPQ, addGrace, barTicks, clearGrace, contextAt, copyPrevious, deleteEv, deleteMeasure, diatonic, emptyScore, findEv, flipStem, fromDiatonic, graceStep, midiOf, insertMeasure, ottavaShiftAt, putNote, putRest,
   TUPLETS, makeTuplet, navigationProblems, pruneRefs, setBarline, setBreak, setClef, setJump, setRehearsal, setTempoMark, setText, setTimeSymbol, setVolta, toggleEv, toggleMark, type BarlineKind, type ClefName, type Mark, type Orn, type SpanKind, type TextField,
-  putInTuplet, removeTuplet, setDyn, setKey, setLength, setTime, starts, toggleArt, toggleSpan, toggleTie, transpose, validate, allEventIds, clearMark, copyEvents, moveEv, moveMark, moveTempo, setMarkOffset, setTempoOffset, pasteClip, type Clip, type Art, type Dyn, type Ev, type Pitch, type Score,
+  putInTuplet, removeTuplet, setDyn, setKey, setLength, setTime, starts, toggleArt, toggleSpan, toggleTie, transpose, validate, allEventIds, clearMark, copyEvents, moveEv, moveMark, moveTempo, setMarkOffset, setStaffGap, STAFF_GAP_MAX, STAFF_GAP_MIN, setTempoOffset, pasteClip, type Clip, type Art, type Dyn, type Ev, type Pitch, type Score,
 } from './model'
 import { toPerformance } from './perform'
 import { DYN_GLYPH, keyName, renderScore, tickAtX, type DrawnEv, type Layout, type MarkRef } from './render'
@@ -30,6 +30,7 @@ const shiftOf = (el: Element) => +(/translate\(0 (-?[\d.]+)\)/.exec(el.getAttrib
 
 /** A pitch as a musician writes it: F♯4, B♭3. */
 const pitchLabel = (p: Pitch) => `${p.step}${p.alter > 0 ? '♯'.repeat(p.alter) : p.alter < 0 ? '♭'.repeat(-p.alter) : ''}${p.octave}`
+const GAP_USUAL = 105 // px between the tops of a line's two staves when nobody moved them (the same number render.ts draws with)
 const TIME_SIGS = ['2/4', '3/4', '4/4', '5/4', '6/4', '2/2', '3/8', '6/8', '9/8', '12/8']
 
 type Mode = 'select' | 'input'
@@ -59,7 +60,7 @@ export class Composer {
   private btns = new Map<string, HTMLButtonElement>()
   selMark?: MarkRef                  // a text / dynamic / tempo / rehearsal mark picked up (click it; drag it; Delete removes it)
   sysRange?: [number, number]        // a whole line (system) picked by clicking beside its bars: add / remove bar act on it
-  private drag?: { kind: 'note'; ev: DrawnEv; sx: number; sy: number; moved: boolean } | { kind: 'mark'; mark: MarkRef; sx: number; sy: number; moved: boolean; el: SVGGraphicsElement; lx: number; ly: number; clone?: SVGElement } | { kind: 'marquee'; sx: number; sy: number; moved: boolean; x0: number; y0: number }
+  private drag?: { kind: 'note'; ev: DrawnEv; sx: number; sy: number; moved: boolean } | { kind: 'mark'; mark: MarkRef; sx: number; sy: number; moved: boolean; el: SVGGraphicsElement; lx: number; ly: number; clone?: SVGElement } | { kind: 'marquee'; sx: number; sy: number; moved: boolean; x0: number; y0: number } | { kind: 'gap'; sys: number; sx: number; sy: number; moved: boolean; y0: number; base: number }
   private suppressClick = false
   private clip?: Clip
   private zoom: number | 'fit' = 'fit'   // the page is drawn LOGICAL_WIDTH wide; 'fit' = as wide as the window allows, a number = that many times LOGICAL_WIDTH px
@@ -162,6 +163,7 @@ export class Composer {
     if (page) page.scrollTop = keep
     this.drawBarHighlight()
     this.drawCursor()
+    this.drawGapHandles()
     this.syncToolbar()
     this.saveDraft()
   }
@@ -177,9 +179,23 @@ export class Composer {
       const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
       const y0 = dm.staves[0].top - 24, y1 = dm.staves[dm.staves.length - 1].bottom + 14
       r.setAttribute('x', String(dm.x)); r.setAttribute('y', String(y0)); r.setAttribute('width', String(dm.w)); r.setAttribute('height', String(y1 - y0))
-      r.setAttribute('fill', '#1d6fff'); r.setAttribute('opacity', '0.06'); r.setAttribute('pointer-events', 'none')
+      r.setAttribute('fill', '#1d6fff'); r.setAttribute('opacity', '0.06'); r.setAttribute('pointer-events', 'none'); r.setAttribute('data-ui', '')
       this.svg().insertBefore(r, this.svg().firstChild)
     }
+  }
+
+  /** A grip at the right edge of every line, between its two staves: drag it to pull the staves apart or together (double-click puts them back). */
+  private drawGapHandles() {
+    this.layout.systems.forEach((_, i) => {
+      const dm = this.layout.measures.find((q) => q.system === i)
+      if (!dm || dm.staves.length < 2) return
+      const y0 = dm.staves[0].bottom + 10, y1 = dm.staves[1].top - 10, x = this.layout.width - 16
+      const g = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+      g.setAttribute('class', 'gap-handle'); g.setAttribute('data-gap', String(i)); g.setAttribute('data-ui', ''); g.setAttribute('role', 'slider'); g.setAttribute('aria-label', 'Khoảng cách giữa hai khuông')
+      g.innerHTML = `<title>Kéo để chỉnh khoảng cách giữa hai khuông (bấm đúp: về mặc định)</title><rect x="${x}" y="${y0}" width="14" height="${Math.max(12, y1 - y0)}" rx="4"/>` +
+        [-5, 0, 5].map((o) => `<circle cx="${x + 7}" cy="${(y0 + y1) / 2 + o}" r="1.3"/>`).join('')
+      this.svg().appendChild(g)
+    })
   }
 
   private cursorX(): { x: number; y0: number; y1: number } | undefined {
@@ -197,7 +213,7 @@ export class Composer {
     if (!c) return
     const l = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
     l.setAttribute('x', String(c.x - 9)); l.setAttribute('y', String(c.y0)); l.setAttribute('width', '2'); l.setAttribute('height', String(c.y1 - c.y0))
-    l.setAttribute('fill', '#1d6fff'); l.setAttribute('opacity', '0.8'); l.setAttribute('pointer-events', 'none')
+    l.setAttribute('fill', '#1d6fff'); l.setAttribute('opacity', '0.8'); l.setAttribute('pointer-events', 'none'); l.setAttribute('data-ui', '')
     this.svg().appendChild(l)
   }
 
@@ -262,6 +278,15 @@ export class Composer {
     return best?.ev
   }
 
+  /** The gap between the two staves a drag of the grip would give, kept inside what looks sane. */
+  private dragGap(d: { base: number; y0: number }, y: number) { return Math.min(GAP_USUAL + STAFF_GAP_MAX, Math.max(GAP_USUAL + STAFF_GAP_MIN, d.base + (y - d.y0))) }
+  /** Set (or with 0, reset) how far the staves of line `sys` are drawn from their usual distance. */
+  private setGap(sys: number, extra: number) {
+    const dms = this.layout.measures.filter((q) => q.system === sys)
+    if (!dms.length) return
+    this.commit((s) => setStaffGap(s, dms[0].m, dms[dms.length - 1].m, extra))
+  }
+
   private panTo(e: MouseEvent) {
     const p = this.pan!
     p.page.scrollLeft = p.left - (e.clientX - p.x)
@@ -269,6 +294,12 @@ export class Composer {
   }
   private mouseDown(e: Pt) {
     if (e.button !== undefined && e.button !== 0) return
+    const gh = (e.target as Element).closest?.('[data-gap]')
+    if (gh) {
+      const sys = +gh.getAttribute('data-gap')!, dm = this.layout.measures.find((q) => q.system === sys)!, [, ly] = this.toLogical(e)
+      this.drag = { kind: 'gap', sys, sx: e.clientX, sy: e.clientY, moved: false, y0: ly, base: dm.staves[1].top - dm.staves[0].top }
+      e.preventDefault(); return
+    }
     const el = (e.target as Element).closest?.('[data-mark]')
     if (el) { const [lx, ly] = this.toLogical(e); this.drag = { kind: 'mark', mark: JSON.parse(el.getAttribute('data-mark')!) as MarkRef, sx: e.clientX, sy: e.clientY, moved: false, el: el as SVGGraphicsElement, lx, ly }; this.suppressClick = true; e.preventDefault(); return }
     const [x, y] = this.toLogical(e)
@@ -293,6 +324,13 @@ export class Composer {
       }
       this.marquee.setAttribute('x', String(Math.min(x, d.x0))); this.marquee.setAttribute('y', String(Math.min(y, d.y0)))
       this.marquee.setAttribute('width', String(Math.abs(x - d.x0))); this.marquee.setAttribute('height', String(Math.abs(y - d.y0)))
+      return
+    }
+    if (d.kind === 'gap') {
+      const dm = this.layout.measures.find((q) => q.system === d.sys)!, gap = this.dragGap(d, y)
+      if (!this.ghost) { this.ghost = document.createElementNS('http://www.w3.org/2000/svg', 'g'); this.ghost.setAttribute('pointer-events', 'none'); this.ghost.setAttribute('data-ui', ''); this.svg().appendChild(this.ghost) }
+      const ly = dm.staves[0].top + gap
+      this.ghost.innerHTML = `<line x1="20" x2="${this.layout.width - 20}" y1="${ly}" y2="${ly}" stroke="#1d6fff" stroke-width="1.5" stroke-dasharray="6 4"/><text x="${this.layout.width - 24}" y="${ly - 6}" text-anchor="end" font-size="12" fill="#1d6fff">${gap - d.base >= 0 ? '+' : '−'}${Math.abs(Math.round(gap - d.base))} px</text>`
       return
     }
     if (d.kind === 'mark') { // a copy of the mark follows the pointer, the original stays faint where it was
@@ -327,6 +365,7 @@ export class Composer {
       return
     }
     const [x, y] = this.toLogical(e)
+    if (d.kind === 'gap') { this.setGap(d.sys, this.dragGap(d, y) - GAP_USUAL); setTimeout(() => { this.suppressClick = false }, 0); return }
     if (d.kind === 'note') this.dropNote(d.ev, d.sy, x, y, !!e.shiftKey)
     else { d.clone?.remove(); this.dropMark(d.mark, x, y, d.el, d.lx, d.ly) }
     setTimeout(() => { this.suppressClick = false }, 0)
@@ -1122,6 +1161,7 @@ export class Composer {
     this.host = this.el('div', 'cmp-sheet', page)
     this.host.addEventListener('click', (e) => { const [x, y] = this.toLogical(e); this.click(x, y, { shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey || e.metaKey }) })
     this.host.addEventListener('mousemove', (e) => this.hover(e))
+    this.host.addEventListener('dblclick', (e) => { const gh = (e.target as Element).closest?.('[data-gap]'); if (gh) this.setGap(+gh.getAttribute('data-gap')!, 0) })
     page.addEventListener('wheel', (e) => this.wheelZoom(e), { passive: false })
     // hold the right (or the middle) button and drag: the page follows the hand, like MuseScore, so there is no need for the scroll bars
     page.addEventListener('contextmenu', (e) => e.preventDefault())

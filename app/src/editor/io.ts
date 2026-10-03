@@ -537,6 +537,7 @@ export function pdfPages(svg: SVGElement, layout: PageLayout): string {
   pages.push([from, Math.max(cut, from + 10)])
   return pages.map(([y0, y1]) => {
     const copy = svg.cloneNode(true) as SVGElement
+    copy.querySelectorAll('[data-ui]').forEach((e) => e.remove()) // selection highlight, cursor, drag handles: not part of the music
     copy.setAttribute('viewBox', `0 ${y0} ${layout.width} ${y1 - y0}`)
     copy.setAttribute('style', 'width:100%;height:auto;display:block')
     return `<div class="page">${copy.outerHTML}</div>`

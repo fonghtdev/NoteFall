@@ -353,6 +353,27 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
             ok(`dragging a ${field} 30 px ${dir > 0 ? 'down' : 'up'} sets its offset and keeps it on its note`, Math.abs((o.off?.[field] ?? 0) - dir * 30 / scale()) < 1.5 && Math.abs(Math.abs(moved) - 30 / scale()) < 2 && (field === 'hairpin' ? !!o.hairpin : !!o[field]))
           }
         }
+        { // the grip between a line's two staves
+          c.setScore(d.minuet()); c.zoomFit()
+          const sheet = document.querySelector<HTMLElement>('.cmp-sheet')!
+          const scale = () => sheet.getBoundingClientRect().width / c.layout.width
+          const gap = (sys: number) => { const dm = c.layout.measures.find((q) => q.system === sys)!; return dm.staves[1].top - dm.staves[0].top }
+          const fire = (type: string, target: EventTarget, x: number, y: number) => target.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true, cancelable: true }))
+          const grip = (sys: number) => document.querySelector(`.cmp-sheet svg .gap-handle[data-gap="${sys}"] rect`)!
+          const drag = (sys: number, dy: number) => { const r = grip(sys).getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2; fire('mousedown', grip(sys), x, y); fire('mousemove', window, x, y + dy); fire('mouseup', window, x, y + dy) }
+          const usual = gap(0), second = gap(1), h0 = c.layout.height
+          { const r = grip(0).getBoundingClientRect(); ok('a real pointer over the grip hits the grip', !!document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.closest('.gap-handle')) }
+          drag(0, 30 * scale())
+          ok('dragging the grip pulls the staves of that line apart, and only that line', Math.abs(gap(0) - usual - 30) < 1.5 && gap(1) === second && c.layout.height > h0 + 25)
+          drag(0, -500 * scale())
+          ok('they cannot be pushed into each other', gap(0) >= 65 && gap(0) <= usual)
+          c.undo(); c.undo()
+          ok('undo puts them back', gap(0) === usual)
+          drag(1, 20 * scale()); grip(1).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+          ok('a double click on the grip resets the line', gap(1) === second)
+          const { pdfPages } = await import('./editor/io')
+          ok('the grips are not part of an exported page', !pdfPages(document.querySelector('.cmp-sheet svg') as unknown as SVGElement, c.layout).includes('gap-handle'))
+        }
         c.setMode('select')
         // marks must be hit by a real pointer: ask the page which element is under the centre of each kind of mark
         c.setScore(d.fromText([{ rh: 'C5:1 D5:1 E5:1 F5:1', lh: 'C3:4' }, { rh: 'G5:4', lh: 'r:4' }], { tempo: 60 }))

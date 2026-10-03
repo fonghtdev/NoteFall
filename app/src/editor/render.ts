@@ -244,10 +244,11 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
   if (cur.length) systems.push({ from, to: n - 1, specs: cur })
 
   // 2. draw
-  const SYS_H = STAFF_GAP + STAFF_H + TOP_SPACE + SYSTEM_GAP, PAGE_GAP = 70
+  const gapOf = (sys: { from: number; to: number }) => STAFF_GAP + (score.clefs.length > 1 ? score.measures.slice(sys.from, sys.to + 1).find((m) => m.staffGap !== undefined)?.staffGap ?? 0 : 0) // the user may have pulled this line's staves apart or together
+  const sysH = (sys: { from: number; to: number }) => gapOf(sys) + STAFF_H + TOP_SPACE + SYSTEM_GAP, PAGE_GAP = 70
   const sysY: number[] = [] // top of each system; a page break leaves a visible gap (and starts a new sheet in the PDF)
-  { let y = TITLE_H; systems.forEach((sys, i) => { sysY.push(y); y += SYS_H + (score.measures[sys.to].break === 'page' && i < systems.length - 1 ? PAGE_GAP : 0) }) }
-  const height = sysY.length ? sysY[sysY.length - 1] + SYS_H + MARGIN : TITLE_H + MARGIN
+  { let y = TITLE_H; systems.forEach((sys, i) => { sysY.push(y); y += sysH(sys) + (score.measures[sys.to].break === 'page' && i < systems.length - 1 ? PAGE_GAP : 0) }) }
+  const height = sysY.length ? sysY[sysY.length - 1] + sysH(systems[systems.length - 1]) + MARGIN : TITLE_H + MARGIN
   const shifts = ottavaShifts(score)
   const r = new Renderer(host as HTMLDivElement, Renderer.Backends.SVG)
   r.resize(opts.width, height)
@@ -274,7 +275,7 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
   systems.forEach((sys, sIdx) => {
     const y0 = sysY[sIdx]
     const last = sIdx === systems.length - 1
-    layout.systems.push({ y0: y0 + 5, y1: y0 + STAFF_GAP + TOP_SPACE + STAFF_H + 40, pageBreakAfter: score.measures[sys.to].break === 'page' }) // room for ledger lines above/below
+    layout.systems.push({ y0: y0 + 5, y1: y0 + gapOf(sys) + TOP_SPACE + STAFF_H + 40, pageBreakAfter: score.measures[sys.to].break === 'page' }) // room for ledger lines above/below
     // one force pulls the springs of the whole line, so equal notes get equal room across bars; a short last line or a forced break is not stretched to the edge
     const natural = sys.specs.reduce((a, sp) => a + naturalWidth(sp), 0)
     const target = last ? Math.min(usable, natural * 1.25) : sys.forced ? Math.min(usable, natural * 2) : usable
@@ -285,7 +286,7 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
     sys.specs.forEach((spec, k) => {
       const mi = sys.from + k
       const w = spec.mods + spec.lead + spec.gaps.reduce((a, g) => a + gapWidth(g, force), 0)
-      const staves = score.clefs.map((_, si) => modifierStave(score, mi, k === 0, x, y0 + si * STAFF_GAP, w, si))
+      const staves = score.clefs.map((_, si) => modifierStave(score, mi, k === 0, x, y0 + si * gapOf(sys), w, si))
       const m = score.measures[mi]
       const vt = voltaType(score, mi)
       staves.forEach((st, si) => {

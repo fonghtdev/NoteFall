@@ -290,6 +290,23 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
           c.key('0')
           ok('0 enters a rest and moves on', c.cursor.at === 1920)
         }
+        { // texts around a very high and a very low note step aside: nothing placed on the page covers a note or another text
+          const sc = d.fromText([{ rh: 'C7:1 E5:1 r:2', lh: 'A1:1 C3:1 r:2' }])
+          const [hi, mid] = sc.measures[0].staves[0][0], [lo] = sc.measures[0].staves[1][0]
+          hi.chord = 'Am'; hi.staffText = 'dolce'; mid.chord = 'F'
+          lo.dyn = 'p'; lo.lyric = 'la'; lo.expr = 'rit.'
+          c.setScore(sc)
+          const rect = (el: Element) => el.getBoundingClientRect()
+          const box = (el: Element) => { const r = (el as SVGGraphicsElement).getBBox(), t = /translate\(0 (-?[\d.]+)\)/.exec(el.getAttribute('transform') ?? ''); return { x0: r.x, x1: r.x + r.width, y0: r.y + +(t?.[1] ?? 0), y1: r.y + r.height + +(t?.[1] ?? 0) } }
+          const over = (a: ReturnType<typeof box>, b: ReturnType<typeof box>) => a.x0 < b.x1 - 0.5 && a.x1 > b.x0 + 0.5 && a.y0 < b.y1 - 0.5 && a.y1 > b.y0 + 0.5
+          const marks = [...document.querySelectorAll('.cmp-sheet svg [data-mark]')].filter((el) => /"field":"(chord|staffText|lyric|expr)"/.test(el.getAttribute('data-mark')!)) // (a music-font glyph's box is the font's em, not its ink: dynamics are checked below)
+          const heads = c.layout.measures[0].evs.filter((e) => !e.rest).flatMap((e) => e.ys.map((y) => ({ x0: e.x - e.left, x1: e.x + e.right, y0: y - 6, y1: y + 6 })))
+          const bad = marks.flatMap((m, i) => [...heads.filter((h) => over(box(m), h)).map(() => m.textContent + ' x head'), ...marks.slice(i + 1).filter((o) => over(box(m), box(o))).map((o) => m.textContent + ' x ' + o.textContent)])
+          if (bad.length) console.log('  clashing: ' + bad.join(', '))
+          ok('chord symbols, text, lyrics and expression marks do not cover notes or each other', marks.length === 5 && bad.length === 0)
+          const lyricEl = marks.find((m) => m.textContent === 'la')!
+          ok('a lyric on the same note as a dynamic steps below it', !!lyricEl.getAttribute('transform'))
+        }
         c.setMode('select')
         // marks must be hit by a real pointer: ask the page which element is under the centre of each kind of mark
         c.setScore(d.fromText([{ rh: 'C5:1 D5:1 E5:1 F5:1', lh: 'C3:4' }, { rh: 'G5:4', lh: 'r:4' }], { tempo: 60 }))

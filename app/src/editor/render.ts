@@ -404,6 +404,34 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
     right.forEach((t, i) => text(t, dm.x + dm.w - 6, top - i * 17, 'end'))
   })
 
+  // Anything text-like that is placed next to the notes steps aside from what is already there (notes with their ledger lines and stems, and the texts placed before it),
+  // upward for marks above the staff, downward for marks below it: MuseScore calls this autoplace.
+  const taken: { x0: number; x1: number; y0: number; y1: number }[] = []
+  // (measured from the heads, stem and reach of each note: the boxes the browser reports for music-font glyphs are the font's em, several times taller than the ink)
+  noteOf.forEach(({ note }) => {
+    if (!(note instanceof StaveNote) || !note.getKeyProps().length || note.isRest()) return
+    const ys = note.getYs(), x = note.getAbsoluteX(), r = reach(note)
+    let y0 = Math.min(...ys) - 6, y1 = Math.max(...ys) + 6 // head, ledger lines, an articulation dot beside it
+    if (note.hasStem()) { const e = note.getStemExtents(); y0 = Math.min(y0, e.topY - 3); y1 = Math.max(y1, e.baseY + 3) }
+    taken.push({ x0: x - r.left, x1: x + r.right, y0, y1 })
+  })
+  const MAX_UP = 64 // px a mark may be pushed up: past that a small overlap is the lesser evil
+  const maxDown = (si: number) => (si < score.clefs.length - 1 ? 60 : 110) // below the upper staff the other staff starts; below the last one there is the whole gap to the next line
+  /** `ink` is the glyph's real extent above / below its baseline, for music-font glyphs whose box (the font's em) is several times taller than what is drawn. */
+  const avoid = (el: SVGGraphicsElement, dir: 1 | -1, si: number, ink?: [number, number]) => {
+    const bb = el.getBBox()
+    const b = ink ? { x: bb.x, width: bb.width, y: +el.getAttribute('y')! - ink[0], height: ink[0] + ink[1] } : bb
+    let dy = 0
+    for (let k = 0; k < 12; k++) {
+      const hit = taken.find((o) => o.x0 < b.x + b.width + 1 && o.x1 > b.x - 1 && o.y0 < b.y + dy + b.height && o.y1 > b.y + dy)
+      if (!hit) break
+      dy = dir > 0 ? hit.y1 + 1 - b.y : hit.y0 - 1 - (b.y + b.height)
+    }
+    if (dir > 0 ? dy > maxDown(si) : dy < -MAX_UP) dy = 0
+    if (dy) el.setAttribute('transform', `translate(0 ${dy})`)
+    taken.push({ x0: b.x, x1: b.x + b.width, y0: b.y + dy, y1: b.y + b.height + dy })
+  }
+
   // 4. dynamics under the staff, hairpins and slurs (may span bars)
   score.measures.forEach((m, mi) => m.staves.forEach((vs, si) => vs.forEach((events, vi) => events.forEach((ev, ei) => {
     const a = noteOf.get(ev.id)
@@ -418,6 +446,7 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
       t.setAttribute('data-mark', JSON.stringify(dm_)); t.setAttribute('style', 'cursor:grab'); t.setAttribute('pointer-events', 'all'); t.setAttribute('stroke', 'transparent'); t.setAttribute('stroke-width', '8')
       if (isSel(dm_)) t.setAttribute('fill', '#1d6fff')
       svg.appendChild(t)
+      avoid(t, 1, si, [18, 14])
     }
     if (ev.hairpin) {
       const b = noteOf.get(ev.hairpin.end)
@@ -446,7 +475,7 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
 
   // 5. the rest of the palette: texts, tempo, rehearsal marks, ottava, pedal, glissando, breath marks
   const NS = 'http://www.w3.org/2000/svg'
-  const put = (t: string, x: number, y: number, o: { size?: number; italic?: boolean; bold?: boolean; font?: string; anchor?: string; mark?: MarkRef } = {}) => {
+  const put = (t: string, x: number, y: number, o: { size?: number; italic?: boolean; bold?: boolean; font?: string; anchor?: string; mark?: MarkRef; side?: 1 | -1; staff?: number } = {}) => {
     const e = document.createElementNS(NS, 'text')
     e.textContent = t
     e.setAttribute('x', String(x)); e.setAttribute('y', String(y)); e.setAttribute('text-anchor', o.anchor ?? 'start')
@@ -458,6 +487,7 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
       if (isSel(o.mark)) e.setAttribute('fill', '#1d6fff')
     }
     svg.appendChild(e)
+    if (o.side) avoid(e, o.side, o.staff ?? 0)
     return e
   }
   layout.measures.forEach((dm) => {
@@ -505,10 +535,10 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
       const n = noteOf.get(ev.id)
       if (!n) return
       const st = layout.measures[m].staves[si], x = n.note.getAbsoluteX()
-      if (ev.chord) put(ev.chord, x - 2, st.top - 34, { size: 14, bold: true, font: 'Arial, sans-serif', mark: { kind: 'ev', field: 'chord', id: ev.id } })
-      if (ev.staffText) put(ev.staffText, x - 2, st.top - (ev.chord ? 52 : 34), { size: 13, bold: true, italic: true, mark: { kind: 'ev', field: 'staffText', id: ev.id } })
-      if (ev.expr) put(ev.expr, x - 2, st.bottom + 54, { size: 14, bold: true, italic: true, mark: { kind: 'ev', field: 'expr', id: ev.id } })
-      if (ev.lyric) put(ev.lyric, x + 5, st.bottom + 26, { size: 13, anchor: 'middle', mark: { kind: 'ev', field: 'lyric', id: ev.id } })
+      if (ev.chord) put(ev.chord, x - 2, st.top - 34, { size: 14, bold: true, font: 'Arial, sans-serif', side: -1, staff: si, mark: { kind: 'ev', field: 'chord', id: ev.id } })
+      if (ev.staffText) put(ev.staffText, x - 2, st.top - 34, { size: 13, bold: true, italic: true, side: -1, staff: si, mark: { kind: 'ev', field: 'staffText', id: ev.id } })
+      if (ev.expr) put(ev.expr, x - 2, st.bottom + 54, { size: 14, bold: true, italic: true, side: 1, staff: si, mark: { kind: 'ev', field: 'expr', id: ev.id } })
+      if (ev.lyric) put(ev.lyric, x + 5, st.bottom + 26, { size: 13, anchor: 'middle', side: 1, staff: si, mark: { kind: 'ev', field: 'lyric', id: ev.id } })
       if (ev.breath) put(ev.breath === 'breath' ? '\uE4CE' : '\uE4D1', x + 20, st.top - 2, { size: 30, font: 'Bravura, serif' })
       if (ev.ottava) {
         const j = chain.findIndex((q) => q.ev.id === ev.ottava!.end)

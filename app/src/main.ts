@@ -182,6 +182,16 @@ async function playComposed(sc: import('./editor/model').Score) {
 }
 
 const composer = new Composer($('composer'), { toFalling: playComposed })
+// commands from the macOS menu. A key press that already did the job (the page saw it too) is not done twice.
+let lastKeyAt = 0
+document.addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && /^(z|a|\+|=|-|_|0)$/i.test(e.key)) lastKeyAt = performance.now() }, true)
+;(window as unknown as { notefall?: { onMenu?(cb: (cmd: string) => void): void } }).notefall?.onMenu?.((cmd) => {
+  if (performance.now() - lastKeyAt < 250) return
+  const field = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName ?? ''), sheet = !$('composer').hidden
+  if (cmd === 'undo' || cmd === 'redo') { if (field) document.execCommand(cmd); else if (sheet) composer[cmd]() }
+  else if (cmd === 'select-all') { if (field) document.execCommand('selectAll'); else if (sheet) composer.selectAll() }
+  else if (sheet) { if (cmd === 'zoom-in') composer.zoomIn(); else if (cmd === 'zoom-out') composer.zoomOut(); else if (cmd === 'zoom-fit') composer.zoomFit() }
+})
 ;(window as unknown as { __composer: Composer }).__composer = composer
 
 

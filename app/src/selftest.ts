@@ -249,6 +249,49 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
         c.setMode('select')
         c.setScore(d.minuet())
       }
+      { // zoom: fit follows the window, steps, pointer-anchored wheel zoom, clicks still land on the right note
+        const d = await import('./editor/demo')
+        c.setScore(d.minuet())
+        const page = document.querySelector('.cmp-page') as HTMLElement, sheet = document.querySelector('.cmp-sheet') as HTMLElement
+        const width = () => sheet.getBoundingClientRect().width
+        c.zoomFit()
+        const avail = () => page.clientWidth - 2 * parseFloat(getComputedStyle(page).paddingLeft)
+        ok('fit: the page is as wide as the window allows', Math.abs(width() - Math.min(1900, avail())) < 2)
+        const wide = width()
+        page.style.maxWidth = '640px'; await new Promise((r) => setTimeout(r, 120))
+        ok('fit: a narrower window makes the page narrower by itself', width() < wide - 50 && Math.abs(width() - avail()) < 2)
+        page.style.maxWidth = ''
+        const p0 = c.zoomPercent()
+        c.zoomIn(); ok('zoom in grows the page', c.zoomPercent() > p0 && c.zoomMode !== 'fit')
+        c.setZoom(1); ok('100 % = 1000 px wide', Math.abs(width() - 1000) < 1 && c.zoomPercent() === 100)
+        c.setZoom(2); ok('200 % = 2000 px wide (scrolls)', Math.abs(width() - 2000) < 1)
+        c.zoomOut(); ok('zoom out steps down', c.zoomPercent() < 200 && c.zoomPercent() >= 150)
+        for (let i = 0; i < 20; i++) c.zoomOut()
+        ok('zoom out stops at the smallest size', c.zoomPercent() >= 34 && c.zoomPercent() <= 36)
+        for (let i = 0; i < 30; i++) c.zoomIn()
+        ok('zoom in stops at the largest size', c.zoomPercent() >= 349 && c.zoomPercent() <= 351)
+        c.key('0', { ctrlKey: true }); ok('Ctrl+0 fits again', c.zoomMode === 'fit')
+        c.key('=', { ctrlKey: true }); ok('Ctrl and + zooms in', c.zoomMode !== 'fit')
+        c.key('-', { metaKey: true }); c.key('-', { metaKey: true })
+        ok('Cmd and − zooms out', c.zoomPercent() < 100)
+        ok('the choice is remembered', localStorage.getItem('notefall.zoom') !== null)
+        // a click on a note at 250 %: the layout is in logical units, the pointer is in pixels: they must still agree
+        c.setZoom(2.5); await new Promise((r) => setTimeout(r, 80))
+        const ev = c.layout.measures[1].evs.find((e) => e.staff === 0 && !e.rest)!
+        const r = (document.querySelector('.cmp-sheet svg') as SVGElement).getBoundingClientRect()
+        c.setMode('select')
+        document.querySelector('.cmp-sheet')!.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: r.left + ((ev.x + 5) * r.width) / c.layout.width, clientY: r.top + (ev.ys[0] * r.width) / c.layout.width }))
+        ok('at 250 % a click still selects the note under the pointer', c.sel === ev.id)
+        // Ctrl + wheel keeps the spot under the pointer
+        c.setZoom(1); await new Promise((r2) => setTimeout(r2, 80))
+        const rb = sheet.getBoundingClientRect(), cx = rb.left + rb.width * 0.4, cy = rb.top + 160
+        const lx = ((cx - rb.left) * c.layout.width) / rb.width
+        page.dispatchEvent(new WheelEvent('wheel', { ctrlKey: true, deltaY: -240, clientX: cx, clientY: cy, bubbles: true, cancelable: true }))
+        const ra = sheet.getBoundingClientRect(), lx2 = ((cx - ra.left) * c.layout.width) / ra.width
+        ok('Ctrl + wheel zooms in around the pointer', ra.width > rb.width + 100 && Math.abs(lx - lx2) < 4)
+        c.zoomFit()
+        c.setScore(d.minuet())
+      }
       { // preview sound: a second click cancels instead of doubling, and leaving the tab silences it
         const playing = () => !!(c as unknown as { playing?: unknown }).playing || (c as unknown as { starting: boolean }).starting
         void c.togglePlay(); void c.togglePlay()

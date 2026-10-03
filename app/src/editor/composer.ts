@@ -14,6 +14,8 @@ import { exportMidi, exportMusicXml, exportPdf, importFileFull, saveJson } from 
 
 export interface ComposerHooks { toFalling(score: Score): void | Promise<void> }
 
+const MIN_ZOOM = 0.35, MAX_ZOOM = 3.5
+const ZOOM_STEPS = [0.35, 0.5, 0.65, 0.8, 0.9, 1, 1.15, 1.3, 1.5, 1.75, 2, 2.5, 3, 3.5]
 const DRAFT = 'notefall.draft'
 const LOGICAL_WIDTH = 1000
 const DURATIONS: [string, string, number][] = [
@@ -50,6 +52,8 @@ export class Composer {
   private drag?: { kind: 'note'; ev: DrawnEv; sx: number; sy: number; moved: boolean } | { kind: 'mark'; mark: MarkRef; sx: number; sy: number; moved: boolean } | { kind: 'marquee'; sx: number; sy: number; moved: boolean; x0: number; y0: number }
   private suppressClick = false
   private clip?: Clip
+  private zoom: number | 'fit' = 'fit'   // the page is drawn LOGICAL_WIDTH wide; 'fit' = as wide as the window allows, a number = that many times LOGICAL_WIDTH px
+  private zoomBtn?: HTMLButtonElement
   private marquee?: SVGRectElement
 
   constructor(private root: HTMLElement, private hooks: ComposerHooks) {
@@ -367,6 +371,49 @@ export class Composer {
     this.refresh()
   }
 
+  // ---- zoom --------------------------------------------------------------------------------------------
+  /** How big the page is on screen right now, in percent (100 % = one logical unit per pixel). */
+  zoomPercent() { const w = this.host.getBoundingClientRect().width; return Math.round((w / LOGICAL_WIDTH) * 100) }
+  get zoomMode() { return this.zoom }
+  /** Show the page at `z` (a factor) or fitted to the window width. With a point (client coordinates) that spot of the page stays under the pointer. */
+  setZoom(z: number | 'fit', at?: { x: number; y: number }) {
+    const page = this.root.querySelector<HTMLElement>('.cmp-page')
+    const before = this.host.getBoundingClientRect()
+    const ax = at ? (at.x - before.left) / before.width : 0, ay = at ? (at.y - before.top) / before.width : 0 // logical share of the point
+    this.zoom = z === 'fit' ? 'fit' : Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z))
+    try { localStorage.setItem('notefall.zoom', String(this.zoom)) } catch { /* best effort */ }
+    this.applyZoom()
+    if (at && page && this.zoom !== 'fit') { // keep the point under the pointer
+      const after = this.host.getBoundingClientRect()
+      page.scrollLeft += after.left + ax * after.width - at.x
+      page.scrollTop += after.top + ay * after.width - at.y
+    }
+    this.updateZoomLabel()
+  }
+  private applyZoom() {
+    const fit = this.zoom === 'fit'
+    this.host.classList.toggle('fit', fit)
+    this.host.style.width = fit ? '' : `${LOGICAL_WIDTH * (this.zoom as number)}px`
+  }
+  private updateZoomLabel() {
+    if (!this.zoomBtn) return
+    const p = this.zoomPercent()
+    this.zoomBtn.textContent = this.zoom === 'fit' ? `Vừa khung · ${p}%` : `${p}%`
+    this.zoomBtn.title = this.zoom === 'fit' ? 'Đang tự co giãn theo cửa sổ. Bấm để vẽ đúng 100%' : 'Bấm để tự co giãn theo cửa sổ (Ctrl/Cmd+0)'
+    this.btns.get('zoomout')?.toggleAttribute('disabled', p <= MIN_ZOOM * 100 + 1)
+    this.btns.get('zoomin')?.toggleAttribute('disabled', p >= MAX_ZOOM * 100 - 1)
+  }
+  zoomIn(at?: { x: number; y: number }) { const now = this.zoomPercent() / 100; this.setZoom(ZOOM_STEPS.find((z) => z > now + 0.01) ?? MAX_ZOOM, at) }
+  zoomOut(at?: { x: number; y: number }) { const now = this.zoomPercent() / 100; this.setZoom([...ZOOM_STEPS].reverse().find((z) => z < now - 0.01) ?? MIN_ZOOM, at) }
+  zoomFit() { this.setZoom('fit') }
+  /** Ctrl + wheel (also a pinch on a trackpad): smooth zoom around the pointer. */
+  private wheelZoom(e: WheelEvent) {
+    if (!e.ctrlKey && !e.metaKey) return
+    e.preventDefault()
+    const now = this.zoomPercent() / 100
+    this.setZoom(now * Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0022)), { x: e.clientX, y: e.clientY })
+  }
+
   // ---- copy, cut, paste, select all ------------------------------------------------------------------------
   /** The events a copy takes: the selection, or everything in the selected bars / line when no note is selected. */
   private copyIds(): number[] {
@@ -519,6 +566,9 @@ export class Composer {
     let used = true
     if (mod && k.toLowerCase() === 'z') e.shiftKey ? this.redo() : this.undo()
     else if (mod && k.toLowerCase() === 'y') this.redo()
+    else if (mod && (k === '+' || k === '=')) this.zoomIn()
+    else if (mod && (k === '-' || k === '_')) this.zoomOut()
+    else if (mod && k === '0') this.zoomFit()
     else if (mod && k === '3') this.tuplet()
     else if (mod && k.toLowerCase() === 'c') this.copy()
     else if (mod && k.toLowerCase() === 'x') this.cut()
@@ -893,6 +943,10 @@ export class Composer {
     this.el('span', 'spacer', top)
     this.btn(top, 'play', 'Nghe thử', 'Nghe bản soạn (Space)', () => void this.togglePlay(), { cls: '', html: `${icon('play')}Nghe thử` })
     this.btn(top, 'falling', 'Xem nốt rơi', 'Chuyển bản soạn sang màn hình nốt rơi', () => void this.hooks.toFalling(this.score), { cls: 'primary', html: `Xem nốt rơi${icon('bars')}` })
+    const zoomBar = this.group(top); zoomBar.setAttribute('role', 'group'); zoomBar.setAttribute('aria-label', 'Phóng to / thu nhỏ')
+    this.btn(zoomBar, 'zoomout', 'Thu nhỏ', 'Thu nhỏ (Ctrl/Cmd + −, hoặc Ctrl + lăn chuột)', () => this.zoomOut(), { cls: 'ghost icon', html: icon('minus') })
+    this.zoomBtn = this.btn(zoomBar, 'zoomfit', 'Vừa khung', 'Tự co giãn theo cửa sổ', () => { this.zoom === 'fit' ? this.setZoom(1) : this.zoomFit() }, { cls: 'ghost zoomlabel', html: '' })
+    this.btn(zoomBar, 'zoomin', 'Phóng to', 'Phóng to (Ctrl/Cmd + +, hoặc Ctrl + lăn chuột)', () => this.zoomIn(), { cls: 'ghost icon', html: icon('plus') })
     this.btn(top, 'panel', 'Bảng ký hiệu', 'Ẩn / hiện bảng ký hiệu', () => { const a = r.querySelector<HTMLElement>('.cmp-insp')!; a.hidden = !a.hidden; this.btns.get('panel')!.setAttribute('aria-pressed', String(!a.hidden)); try { localStorage.setItem('notefall.insp', a.hidden ? '0' : '1') } catch { /* ignore */ } }, { cls: 'ghost icon', html: icon('panel') })
 
     // ---- note-entry tools: what you reach for on every note
@@ -933,6 +987,10 @@ export class Composer {
     this.host = this.el('div', 'cmp-sheet', page)
     this.host.addEventListener('click', (e) => { const [x, y] = this.toLogical(e); this.click(x, y, { shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey || e.metaKey }) })
     this.host.addEventListener('mousemove', (e) => this.hover(e))
+    page.addEventListener('wheel', (e) => this.wheelZoom(e), { passive: false })
+    try { const z = localStorage.getItem('notefall.zoom'); if (z && z !== 'fit' && +z > 0) this.zoom = +z } catch { /* fit */ }
+    this.applyZoom()
+    new ResizeObserver(() => this.updateZoomLabel()).observe(this.host)
     this.host.addEventListener('mousedown', (e) => this.mouseDown(e))
     window.addEventListener('mousemove', (e) => this.mouseMove(e))
     window.addEventListener('mouseup', (e) => this.mouseUp(e))

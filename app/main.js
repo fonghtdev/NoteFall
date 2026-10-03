@@ -1,4 +1,4 @@
-const { app, BrowserWindow, protocol, net, ipcMain, session } = require('electron')
+const { app, BrowserWindow, protocol, net, ipcMain, session, Menu } = require('electron')
 const path = require('path')
 const { pathToFileURL } = require('url')
 const fs = require('fs')
@@ -44,6 +44,28 @@ app.whenReady().then(() => {
     webPreferences: { autoplayPolicy: 'no-user-gesture-required', backgroundThrottling: false, preload: path.join(__dirname, 'preload.cjs') },
   })
   win.setMenuBarVisibility(false)
+  // The default menu has its own zoom (the whole window) and undo / select-all that never reach the page as key presses.
+  // Windows and Linux need no menu at all; macOS gets a small one whose commands go to the page.
+  if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
+  else {
+    const send = (cmd) => () => win.webContents.send('menu-cmd', cmd)
+    Menu.setApplicationMenu(Menu.buildFromTemplate([
+      { role: 'appMenu' },
+      { label: 'Chỉnh sửa', submenu: [
+        { label: 'Hoàn tác', accelerator: 'CmdOrCtrl+Z', click: send('undo') },
+        { label: 'Làm lại', accelerator: 'Shift+CmdOrCtrl+Z', click: send('redo') },
+        { type: 'separator' }, { role: 'cut', label: 'Cắt' }, { role: 'copy', label: 'Sao chép' }, { role: 'paste', label: 'Dán' },
+        { label: 'Chọn tất cả', accelerator: 'CmdOrCtrl+A', click: send('select-all') },
+      ] },
+      { label: 'Xem', submenu: [
+        { label: 'Phóng to trang nhạc', accelerator: 'CmdOrCtrl+Plus', click: send('zoom-in') },
+        { label: 'Thu nhỏ trang nhạc', accelerator: 'CmdOrCtrl+-', click: send('zoom-out') },
+        { label: 'Vừa khung', accelerator: 'CmdOrCtrl+0', click: send('zoom-fit') },
+        { type: 'separator' }, { role: 'togglefullscreen' },
+      ] },
+      { role: 'windowMenu' },
+    ]))
+  }
   win.loadURL('app://notefall/index.html' + (selftest ? '?selftest' + (process.env.NOTEFALL_FILE ? '&file&name=' + encodeURIComponent(path.basename(process.env.NOTEFALL_FILE)) : '') + (process.env.NOTEFALL_VF ? '&vf' : '') + (process.env.NOTEFALL_EDIT ? '&edit' : '') + (process.env.NOTEFALL_SEEK ? '&seek=' + process.env.NOTEFALL_SEEK : '') + (process.env.NOTEFALL_UI ? '&ui=' + process.env.NOTEFALL_UI : '') + (process.env.NOTEFALL_PERSIST ? '&persist' : '') + (process.env.NOTEFALL_SHELL ? '&shell' : '') + (process.env.NOTEFALL_COMPOSE ? '&compose' + (process.env.NOTEFALL_COMPOSE === 'falling' ? '&falling' : process.env.NOTEFALL_COMPOSE === 'pdf' ? '&pdf' : process.env.NOTEFALL_COMPOSE === 'showcase' ? '&showcase' : process.env.NOTEFALL_COMPOSE === 'palette' ? '&palette' : process.env.NOTEFALL_COMPOSE === 'voices' ? '&voices' : '') : '') + (process.env.NOTEFALL_EDITOR ? '&editor' + (process.env.NOTEFALL_EDITOR === 'showcase' ? '&showcase' : process.env.NOTEFALL_EDITOR === 'endings' ? '&endings' : '') : '') + (process.env.NOTEFALL_LEAD ? '&lead' : '') + (process.env.NOTEFALL_TX ? '&tx' : '') + (process.env.NOTEFALL_SYNTH ? '&synth' : '') + (process.env.NOTEFALL_EXPORT ? '&export' : '') + (process.env.NOTEFALL_THEME ? '&theme=' + process.env.NOTEFALL_THEME : '') : ''))
   if (process.env.NOTEFALL_JS) { // developer hook: run a script file in the page once it has loaded and print what it returns
     win.webContents.once('did-finish-load', () => setTimeout(async () => { try {

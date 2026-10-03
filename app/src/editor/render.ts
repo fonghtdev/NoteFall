@@ -215,10 +215,10 @@ export interface RenderOptions { width: number; selected?: Set<number>; selected
 
 /** Draw the whole score into `host` (an SVG) and return where things ended up. */
 /** How long the last render took, for tuning. */
-export const renderStats = { totalMs: 0, passes: 0, widthMs: 0, drawMs: 0 }
+export const renderStats = { totalMs: 0, widthMs: 0 }
 
 export function renderScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout {
-  const t0 = performance.now(); renderStats.widthMs = 0; renderStats.drawMs = 0; renderStats.passes = 1
+  const t0 = performance.now(); renderStats.widthMs = 0
   const layout = drawScore(host, score, opts)
   renderStats.totalMs = performance.now() - t0
   return layout
@@ -433,7 +433,7 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
   }
 
   // 4. dynamics under the staff, hairpins and slurs (may span bars)
-  score.measures.forEach((m, mi) => m.staves.forEach((vs, si) => vs.forEach((events, vi) => events.forEach((ev, ei) => {
+  score.measures.forEach((m, mi) => m.staves.forEach((vs, si) => vs.forEach((events) => events.forEach((ev) => {
     const a = noteOf.get(ev.id)
     if (!a) return
     if (ev.dyn) {
@@ -470,7 +470,6 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
         new Curve(undefined, b.note, { openingDirection: 'auto' }).setContext(ctx).draw()
       }
     }
-    void ei; void vi
   }))))
 
   // 5. the rest of the palette: texts, tempo, rehearsal marks, ottava, pedal, glissando, breath marks

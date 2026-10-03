@@ -46,7 +46,17 @@ app.whenReady().then(() => {
   win.setMenuBarVisibility(false)
   win.loadURL('app://notefall/index.html' + (selftest ? '?selftest' + (process.env.NOTEFALL_FILE ? '&file&name=' + encodeURIComponent(path.basename(process.env.NOTEFALL_FILE)) : '') + (process.env.NOTEFALL_VF ? '&vf' : '') + (process.env.NOTEFALL_EDIT ? '&edit' : '') + (process.env.NOTEFALL_SEEK ? '&seek=' + process.env.NOTEFALL_SEEK : '') + (process.env.NOTEFALL_UI ? '&ui=' + process.env.NOTEFALL_UI : '') + (process.env.NOTEFALL_PERSIST ? '&persist' : '') + (process.env.NOTEFALL_SHELL ? '&shell' : '') + (process.env.NOTEFALL_COMPOSE ? '&compose' + (process.env.NOTEFALL_COMPOSE === 'falling' ? '&falling' : process.env.NOTEFALL_COMPOSE === 'pdf' ? '&pdf' : process.env.NOTEFALL_COMPOSE === 'showcase' ? '&showcase' : process.env.NOTEFALL_COMPOSE === 'palette' ? '&palette' : process.env.NOTEFALL_COMPOSE === 'voices' ? '&voices' : '') : '') + (process.env.NOTEFALL_EDITOR ? '&editor' + (process.env.NOTEFALL_EDITOR === 'showcase' ? '&showcase' : process.env.NOTEFALL_EDITOR === 'endings' ? '&endings' : '') : '') + (process.env.NOTEFALL_LEAD ? '&lead' : '') + (process.env.NOTEFALL_TX ? '&tx' : '') + (process.env.NOTEFALL_SYNTH ? '&synth' : '') + (process.env.NOTEFALL_EXPORT ? '&export' : '') + (process.env.NOTEFALL_THEME ? '&theme=' + process.env.NOTEFALL_THEME : '') : ''))
   if (process.env.NOTEFALL_JS) { // developer hook: run a script file in the page once it has loaded and print what it returns
-    win.webContents.once('did-finish-load', () => setTimeout(async () => { try { console.log('JS_RESULT ' + JSON.stringify(await win.webContents.executeJavaScript(fs.readFileSync(process.env.NOTEFALL_JS, 'utf8')))) } catch (e) { console.log('JS_ERROR ' + e) } if (!process.env.NOTEFALL_KEEP) { const img = await win.webContents.capturePage(); fs.writeFileSync(process.env.NOTEFALL_SHOT || 'shot.png', img.toPNG()); app.quit() } }, 1500))
+    win.webContents.once('did-finish-load', () => setTimeout(async () => { try {
+      const r = await win.webContents.executeJavaScript(fs.readFileSync(process.env.NOTEFALL_JS, 'utf8'))
+      console.log('JS_RESULT ' + JSON.stringify(r))
+      // real mouse input (the whole path: hit-testing, default actions, event order): the script may return { input: [{type, x, y, button?, modifiers?}] }
+      const input = typeof r === 'string' ? (() => { try { return JSON.parse(r).input } catch { return undefined } })() : r?.input
+      if (Array.isArray(input)) {
+        for (const ev of input) { win.webContents.sendInputEvent({ button: 'left', clickCount: 1, ...ev }); await new Promise((res) => setTimeout(res, ev.wait ?? 25)) }
+        await new Promise((res) => setTimeout(res, 300))
+        if (process.env.NOTEFALL_JS2) console.log('JS2_RESULT ' + JSON.stringify(await win.webContents.executeJavaScript(fs.readFileSync(process.env.NOTEFALL_JS2, 'utf8'))))
+      }
+    } catch (e) { console.log('JS_ERROR ' + e) } if (!process.env.NOTEFALL_KEEP) { const img = await win.webContents.capturePage(); fs.writeFileSync(process.env.NOTEFALL_SHOT || 'shot.png', img.toPNG()); app.quit() } }, 1500))
   }
   if (selftest) {
     win.webContents.on('console-message', async (_e, _l, msg) => {

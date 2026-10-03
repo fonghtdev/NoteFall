@@ -219,6 +219,24 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
         ok('dragging a box on empty space selects the notes inside it', c.targets().length === 2 && c.targets().every((id) => evs.slice(0, 2).some((e) => e.id === id)))
         c.setScore(d.minuet())
       }
+      { // stacking: clicking another pitch on a note's column makes a chord (also with a dotted / beamed run), clicking it again takes it out
+        const d = await import('./editor/demo'), { validate } = await import('./editor/model')
+        c.setScore(d.fromText([{ rh: 'C5:1 D5:1 E5:1 F5:1', lh: 'C3:4' }]))
+        c.setMode('input')
+        const dm = () => c.layout.measures[0], st = () => dm().staves[0]
+        const col = () => dm().evs.filter((e) => e.staff === 0 && e.voice === 0)[1]
+        const yOf = (step: number) => st().bottom - (step * st().spacing) / 2      // step 0 = bottom line (E4)
+        c.click(col().x + 5, yOf(8))                                          // F5 above D5 on the same column
+        const note = () => c.score.measures[0].staves[0][0][1]
+        ok('input mode: a click on a note\'s column stacks the pitch (a dyad)', note().pitches.map((p) => p.step + p.octave).join(' ') === 'D5 F5' && c.score.measures[0].staves[0][0].length === 4)
+        c.click(col().x + 5, yOf(0))                                          // a third one, E4, far below
+        ok('and again: three notes on one stem, the bar is still full', note().pitches.length === 3 && validate(c.score).length === 0)
+        c.click(col().x + 5, yOf(8))                                          // F5 again: taken out
+        ok('clicking a pitch that is already there removes it from the chord', note().pitches.map((p) => p.step + p.octave).join(' ') === 'E4 D5')
+        c.click(col().x + 5, yOf(1), { ctrl: true })                           // Ctrl: replace instead of stack
+        ok('Ctrl+click replaces the note', c.score.measures[0].staves[0][0][1].pitches.length === 1)
+        c.setScore(d.minuet())
+      }
       { // preview sound: a second click cancels instead of doubling, and leaving the tab silences it
         const playing = () => !!(c as unknown as { playing?: unknown }).playing || (c as unknown as { starting: boolean }).starting
         void c.togglePlay(); void c.togglePlay()

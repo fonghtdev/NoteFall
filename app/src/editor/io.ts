@@ -497,6 +497,19 @@ export function scoreFromNotes(notes: Note[], bpm = 100, time = { beats: 4, unit
   return s
 }
 
+/** Open any file the composer understands, with the things a reader had doubts about. A sheet-music PDF is read the same way the falling view reads it. */
+export async function importFileFull(f: File): Promise<{ score: Score; warnings: string[] }> {
+  if (f.name.toLowerCase().endsWith('.pdf')) {
+    const { readPdfScore } = await import('../core/score/pdf')
+    const { scoreFromOmr } = await import('./importScore')
+    return scoreFromOmr(await readPdfScore(await f.arrayBuffer()), f.name.replace(/\.[^.]+$/, ''))
+  }
+  const name = f.name.toLowerCase()
+  if (name.endsWith('.mxl')) return scoreFromMusicXml(await unzipMxl(await f.arrayBuffer()))
+  if (name.endsWith('.musicxml') || name.endsWith('.xml')) return scoreFromMusicXml(await f.text())
+  return { score: await importFile(f), warnings: [] }
+}
+
 export async function importFile(f: File): Promise<Score> {
   const name = f.name.toLowerCase()
   if (name.endsWith('.json')) return scoreFromJson(await f.text())

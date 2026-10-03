@@ -250,6 +250,7 @@ export function renderScore(host: HTMLElement, score: Score, opts: RenderOptions
         const o = b.order.find((q) => b.notes.get(q.ev.id) === first)!
         v.draw(ctx, staves[o.staff])
       })
+      b.notes.forEach((note, id) => { const g = (note as unknown as { getSVGElement?: () => SVGElement | undefined }).getSVGElement?.(); g?.setAttribute('data-ev', String(id)) }) // lets the page fade a note while it is being dragged
       b.beams.forEach((bm) => bm.setContext(ctx).draw())
       b.tuplets.forEach((tp) => tp.setContext(ctx).draw())
 

@@ -10,7 +10,7 @@ import {
 } from './model'
 import { toPerformance } from './perform'
 import { DYN_GLYPH, keyName, renderScore, type DrawnEv, type Layout, type MarkRef } from './render'
-import { exportMidi, exportMusicXml, exportPdf, importFile, saveJson } from './io'
+import { exportMidi, exportMusicXml, exportPdf, importFileFull, saveJson } from './io'
 
 export interface ComposerHooks { toFalling(score: Score): void | Promise<void> }
 
@@ -194,7 +194,7 @@ export class Composer {
   }
 
   /** A click in score coordinates (also used by tests). */
-  click(x: number, y: number, mods: { shift?: boolean; alt?: boolean } = {}) {
+  click(x: number, y: number, mods: { shift?: boolean; alt?: boolean; ctrl?: boolean } = {}) {
     if (this.suppressClick) { this.suppressClick = false; return }
     this.selMark = undefined
     const hit = hitTest(this.layout, x, y, this.voice)
@@ -216,7 +216,12 @@ export class Composer {
     }
     this.sysRange = undefined
     this.cursor = { m: hit.m, staff: hit.staff, at: hit.at }
-    if (this.mode === 'input' && !mods.alt) { this.enterAt(hit, mods.shift ?? false); return }
+    if (this.mode === 'input' && !mods.alt) {
+      // clicking on a note's own column stacks the pitch onto it (Ctrl / Cmd + click replaces the note instead)
+      if (!mods.ctrl && hit.ev && !hit.ev.rest && Math.abs(hit.ev.x - x) < 18 && this.stackOn(hit)) return
+      this.enterAt(hit, mods.shift ?? false)
+      return
+    }
     const near = hit.ev && Math.abs(hit.ev.x - x) < 28 ? hit.ev : undefined
     if (near && mods.shift && this.sel !== undefined) this.selectRange(near.id)
     else { this.sel = near?.id; this.range = [] }
@@ -236,7 +241,7 @@ export class Composer {
         const sp = dm.staves[ev.staff].spacing
         for (const hy of ev.ys) {
           const d = Math.hypot(ev.x + 5 - x, hy - y)
-          if (Math.abs(ev.x + 5 - x) < 10 && Math.abs(hy - y) < 0.9 * sp && (!best || d < best.d)) best = { ev, d }
+          if (Math.abs(ev.x + 5 - x) < 13 && Math.abs(hy - y) < 1.1 * sp && (!best || d < best.d)) best = { ev, d }
         }
       }
     }
@@ -247,17 +252,19 @@ export class Composer {
     if (e.button !== 0) return
     const el = (e.target as Element).closest?.('[data-mark]')
     if (el) { this.drag = { kind: 'mark', mark: JSON.parse(el.getAttribute('data-mark')!) as MarkRef, sx: e.clientX, sy: e.clientY, moved: false }; this.suppressClick = true; return }
-    if (this.mode !== 'select') return
     const [x, y] = this.toLogical(e)
     const ev = this.pickNote(x, y)
-    if (ev) this.drag = { kind: 'note', ev, sx: e.clientX, sy: e.clientY, moved: false }
-    else this.drag = { kind: 'marquee', sx: e.clientX, sy: e.clientY, moved: false, x0: x, y0: y } // empty space: a drag draws a box and selects what is inside
+    if (ev) { this.drag = { kind: 'note', ev, sx: e.clientX, sy: e.clientY, moved: false }; e.preventDefault() } // (no text selection while dragging)
+    else if (this.mode === 'select') this.drag = { kind: 'marquee', sx: e.clientX, sy: e.clientY, moved: false, x0: x, y0: y } // empty space: a drag draws a box and selects what is inside
   }
   private mouseMove(e: MouseEvent) {
     const d = this.drag
     if (!d) return
     if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 5) return
-    if (!d.moved) { d.moved = true; this.suppressClick = true; document.body.style.cursor = 'grabbing' }
+    if (!d.moved) {
+      d.moved = true; this.suppressClick = true; document.body.style.cursor = 'grabbing'
+      if (d.kind === 'note') this.svg().querySelectorAll<SVGElement>(`[data-ev="${d.ev.id}"]`).forEach((g) => { g.style.opacity = '0.25' }) // the note stays visible but faint where it was; the ghost shows where it will land
+    }
     const [x, y] = this.toLogical(e)
     if (d.kind === 'marquee') {
       if (!this.marquee) {
@@ -435,6 +442,29 @@ export class Composer {
     const p = fromDiatonic(d)
     p.alter = this.pendingAlter ?? keyAlter(key, p.step)
     return p
+  }
+
+  /** A click on the column of a note puts the new pitch on the same stem (a chord / dyad): same length, same beat. A pitch already there is taken out again. */
+  private stackOn(hit: Hit): boolean {
+    const de = hit.ev
+    if (!de || de.rest) return false
+    const f = findEv(this.score, de.id)
+    if (!f || !f.ev.pitches.length) return false
+    const p = this.pitchAt(hit.m, hit.diatonic - 7 * ottavaShiftAt(this.score, hit.m, hit.staff, this.voice, hit.at))
+    this.pendingAlter = undefined
+    const same = f.ev.pitches.findIndex((q) => diatonic(q) === diatonic(p) && q.alter === p.alter)
+    const id = f.ev.id
+    if (same >= 0) {
+      if (f.ev.pitches.length < 2) { this.say('Nốt này đã có ở đó. Để xoá thì chọn nốt rồi nhấn Delete'); return true }
+      this.commit((s) => { const g = findEv(s, id)!; g.ev.pitches.splice(same, 1) })
+      this.say('Đã bỏ nốt khỏi hợp âm')
+    } else {
+      this.commit((s) => { if (f.ev.tup) putInTuplet(s, id, p, true); else putNote(s, { m: f.m, staff: f.staff, voice: f.voice }, f.at, f.ev.ticks, p, true) })
+      this.say(`Hợp âm ${findEv(this.score, id)?.ev.pitches.length ?? ''} nốt: bấm thêm nốt để chồng, bấm lại một nốt để bỏ nó khỏi hợp âm`)
+    }
+    this.sel = id; this.range = []; this.lastPlaced = { m: f.m, staff: f.staff, voice: f.voice, at: f.at, ticks: f.ev.ticks }; this.lastD = diatonic(p)
+    this.refresh()
+    return true
   }
 
   private enterAt(hit: Hit, chord: boolean) {
@@ -740,6 +770,16 @@ export class Composer {
     return `Ô ${f.m + 1} · ${f.ev.pitches.length ? f.ev.pitches.map(name).join(' ') : 'dấu lặng'} · ${f.ev.ticks / TPQ} phách${f.ev.tie ? ' · nối' : ''}`
   }
 
+  /** Open a score file (JSON, MusicXML, MIDI, or a sheet-music PDF). */
+  async openFile(f: File) {
+    this.say(`Đang mở ${f.name}…`)
+    try {
+      const { score, warnings } = await importFileFull(f)
+      this.setScore(score)
+      this.say(`Đã mở ${f.name}` + (warnings.length ? ` · ⚠ ${warnings[0]}${warnings.length > 1 ? ` (+${warnings.length - 1})` : ''}` : ''), warnings.length > 0)
+    } catch (e) { this.say(`Không mở được: ${e instanceof Error ? e.message : e}`, true) }
+  }
+
   /** Export the engraved score as PDF (the tab must be visible so the SVG is laid out). */
   async pdf() {
     try { await exportPdf(this.score, this.svg() as unknown as SVGElement, this.layout); this.say('Đã xuất PDF') } catch (e) { this.say(`Không xuất được PDF: ${e instanceof Error ? e.message : e}`) }
@@ -817,13 +857,15 @@ export class Composer {
     const menu = this.el('div', 'popover menu', fileWrap); menu.setAttribute('role', 'menu')
     const item = (label: string, ic: IconName, fn: () => void) => { const b = this.el('button', '', menu); b.type = 'button'; b.setAttribute('role', 'menuitem'); b.innerHTML = `${icon(ic)}${label}`; b.onclick = fn }
     const fileInput = this.el('input', '', r); fileInput.type = 'file'; fileInput.hidden = true
-    fileInput.accept = '.json,.musicxml,.xml,.mxl,.mid,.midi'
+    fileInput.accept = '.json,.musicxml,.xml,.mxl,.mid,.midi,.pdf'
     fileInput.onchange = async () => {
       const f = fileInput.files?.[0]
       fileInput.value = ''
-      if (!f) return
-      try { this.setScore(await importFile(f)); this.say(`Đã mở ${f.name}`) } catch (e) { this.say(`Không mở được: ${e instanceof Error ? e.message : e}`, true) }
+      if (f) await this.openFile(f)
     }
+    // drop a file on the composer to open it
+    r.addEventListener('dragover', (e) => { if (e.dataTransfer?.types.includes('Files')) e.preventDefault() })
+    r.addEventListener('drop', (e) => { const f = e.dataTransfer?.files[0]; if (f) { e.preventDefault(); void this.openFile(f) } })
     item('Bản nhạc mới', 'plus', () => { if (confirm('Bỏ bản soạn hiện tại và tạo bản mới?')) this.setScore(emptyScore(8)) })
     item('Mở…', 'folder', () => fileInput.click())
     item('Lưu bản soạn (.json)', 'save', () => saveJson(this.score))
@@ -889,7 +931,7 @@ export class Composer {
     const body = this.el('div', 'cmp-body', r)
     const page = this.el('div', 'cmp-page', body)
     this.host = this.el('div', 'cmp-sheet', page)
-    this.host.addEventListener('click', (e) => { const [x, y] = this.toLogical(e); this.click(x, y, { shift: e.shiftKey, alt: e.altKey }) })
+    this.host.addEventListener('click', (e) => { const [x, y] = this.toLogical(e); this.click(x, y, { shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey || e.metaKey }) })
     this.host.addEventListener('mousemove', (e) => this.hover(e))
     this.host.addEventListener('mousedown', (e) => this.mouseDown(e))
     window.addEventListener('mousemove', (e) => this.mouseMove(e))
@@ -1043,6 +1085,7 @@ export class Composer {
 
   /** In input mode a faint note follows the mouse so you can see what a click will do. */
   private hover(e: MouseEvent) {
+    if (!this.drag) { const [hx, hy] = this.toLogical(e); this.host.style.cursor = this.pickNote(hx, hy) ? 'grab' : '' } // a note you can pick up
     if (this.mode !== 'input' || this.drag) return
     const [x, y] = this.toLogical(e)
     this.moveGhost(x, y, this.voice)

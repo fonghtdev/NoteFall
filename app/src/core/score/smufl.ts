@@ -24,11 +24,15 @@ const FLAGS: Record<number, number> = { 0xe240: 1, 0xe241: 1, 0xe242: 2, 0xe243:
 
 export const isSmufl = (p: PagePrims) => p.glyphs.some((g) => g.code === 0xe0a4 || g.code === 0xe0a3 || g.code === 0xe0a2 || g.code === 0xe050)
 
+const isDigit = (c: number) => c >= 0x30 && c <= 0x39
 export function fromSmufl(p: PagePrims): PagePrims {
   const glyphs: Glyph[] = []
   for (const g of p.glyphs) {
     const flags = FLAGS[g.code]
+    // MuseScore writes a tuplet number as a plain digit of its text font: a lone digit 2-9 (a tempo like "62" is two digits side by side) is read as a tuplet number
+    const lone = g.code >= 0x32 && g.code <= 0x39 && !p.glyphs.some((o) => o !== g && isDigit(o.code) && Math.abs(o.y - g.y) < 2 && Math.abs(o.x - g.x) < 9)
     if (flags) for (let k = 0; k < flags; k++) glyphs.push({ ...g, code: 0xf06a })
+    else if (lone) glyphs.push({ ...g, code: 0xf110 + g.code - 0x30 })
     else glyphs.push(SMUFL_TO_SONATA[g.code] ? { ...g, code: SMUFL_TO_SONATA[g.code] } : g)
   }
   return { ...p, glyphs }

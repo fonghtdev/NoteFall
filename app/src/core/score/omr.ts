@@ -60,12 +60,15 @@ const isMusic = (g: Glyph) => g.code >= 0xf000 && g.code <= 0xf1ff
 
 // ---- staves --------------------------------------------------------------------------------------------------
 function findStaves(p: PagePrims): Staff[] {
+  // Some exporters (MuseScore 4) draw a staff line as one piece per bar: join the pieces that lie on the same height and touch
+  const rows = p.segs.filter((s) => Math.abs(s.y1 - s.y2) < 0.01 && Math.abs(s.x2 - s.x1) > 5).map((s) => ({ y: s.y1, x0: Math.min(s.x1, s.x2), x1: Math.max(s.x1, s.x2) })).sort((a, b) => a.y - b.y || a.x0 - b.x0)
   const ys: { y: number; x0: number; x1: number }[] = []
-  for (const s of p.segs) {
-    if (Math.abs(s.y1 - s.y2) < 0.01 && Math.abs(s.x2 - s.x1) > 100 && !ys.some((l) => Math.abs(l.y - s.y1) < 0.05 && Math.abs(l.x0 - Math.min(s.x1, s.x2)) < 1)) {
-      ys.push({ y: s.y1, x0: Math.min(s.x1, s.x2), x1: Math.max(s.x1, s.x2) })
-    }
+  for (const r of rows) {
+    const last = ys[ys.length - 1]
+    if (last && Math.abs(last.y - r.y) < 0.05 && r.x0 <= last.x1 + 1.5) last.x1 = Math.max(last.x1, r.x1)
+    else ys.push({ ...r })
   }
+  for (let i = ys.length - 1; i >= 0; i--) if (ys[i].x1 - ys[i].x0 <= 100) ys.splice(i, 1)
   ys.sort((a, b) => b.y - a.y)
   const staves: Staff[] = []
   for (let i = 0; i + 4 < ys.length;) {
@@ -141,7 +144,7 @@ export function readScore(rawPages: PagePrims[]): Score {
     }
     const heads: Head[] = []
     const clefs: { g: Glyph; staff: number; base: number }[] = []
-    const rests: { g: Glyph; staff: number; dur: number }[] = []
+    const rests: { g: Glyph; staff: number; dur: number; dots?: number }[] = []
     for (const g of music) {
       const si = staffOf(staves, g.y)
       if (si < 0) continue
@@ -227,6 +230,16 @@ export function readScore(rawPages: PagePrims[]): Score {
         if (dx > -0.5 && dx < 1.7 * sp && Math.abs(d.y - h.g.y) < 0.8 * sp && dx < bd) { best = d; bd = dx }
       }
       if (best) { h.dots = 1; attachedDot.add(best) }
+    }
+    // a dot right after a rest lengthens it too (a dotted quarter rest is a beat and a half); the dot sits somewhere in the rest's height
+    for (const r of rests) {
+      const sp = staves[r.staff].sp
+      const near = (d: Glyph) => !attachedDot.has(d) && staffOf(staves, d.y) === r.staff && d.x - (r.g.x + r.g.w) > -0.5 && d.x - (r.g.x + r.g.w) < 2 * sp && Math.abs(d.y - r.g.y) < 1.6 * sp
+      const first = dots.filter(near).sort((a, b) => a.x - b.x)[0]
+      if (!first) continue
+      attachedDot.add(first); r.dots = 1
+      const second = dots.find((d) => !attachedDot.has(d) && Math.abs(d.y - first.y) < 0.2 && d.x - first.x > 1 && d.x - first.x < 1.2 * sp)
+      if (second) { attachedDot.add(second); r.dots = 2 }
     }
     // articulation marks (staccato, accent, tenuto, marcato) belong to the note whose column and height they sit by
     for (const a of music) {
@@ -445,7 +458,7 @@ export function readScore(rawPages: PagePrims[]): Score {
             events.push({ x: Math.min(...chord.map((o) => o.g.x)), heads: chord, dur, dir: h.dir, grace: h.grace, y: h.g.y })
           }
           // a whole rest standing alone in a bar means "the whole bar", whatever the time signature (3/8, 6/8, 2/4 …)
-          for (const r of rs) events.push({ x: r.g.x, heads: [], rest: r.g, dur: r.dur === 4 && rs.length === 1 && !hs.length ? barLen : r.dur, grace: false, y: r.g.y })
+          for (const r of rs) events.push({ x: r.g.x, heads: [], rest: r.g, dur: r.dur === 4 && rs.length === 1 && !hs.length ? barLen : r.dur * (2 - 0.5 ** (r.dots ?? 0)), grace: false, y: r.g.y })
           events.sort((a, b) => a.x - b.x)
           // tuplets: a digit (3, 5, 6 …) over / under a group of notes: n notes in the time of m, so each lasts m/n of what its beams say
           for (const dg of music) {

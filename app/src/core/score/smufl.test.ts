@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import minuet from './fixtures/minuet-p1.json'
 import { readScore } from './omr'
-import { SMUFL_TO_SONATA } from './smufl'
+import { SMUFL_TO_SONATA, fromSmufl } from './smufl'
 import { extractPrims, type PagePrims } from './primitives'
 
 const strip = (s: ReturnType<typeof readScore>) => JSON.stringify(s.measures.map((m) => m.notes))
@@ -49,5 +49,32 @@ describe('text placement', () => {
     expect(p.glyphs[1].x).toBeCloseTo(90, 5); expect(p.glyphs[1].y).toBeCloseTo(792 - 150, 5)   // both moves added up
     expect(p.glyphs[0].size).toBeCloseTo(6, 5)                       // 100 (font size) * 0.06
     expect(p.glyphs[0].w).toBeCloseTo(6, 5)                          // a 1000-unit advance is one em
+  })
+})
+
+describe('tuplet numbers written in a text font', () => {
+  const g = (code: number, x: number, y = 100) => ({ code, x, y, font: 't', size: 9 }) as unknown as PagePrims['glyphs'][number]
+  it('a lone digit is a tuplet number, two digits side by side (a tempo) are not', () => {
+    const out = fromSmufl({ glyphs: [g(0x33, 50), g(0x36, 200, 300), g(0x32, 205, 300)], segs: [], polys: [] } as unknown as PagePrims).glyphs.map((q) => q.code)
+    expect(out).toEqual([0xf113, 0x36, 0x32])
+  })
+})
+
+describe('pages written the way MuseScore 4 writes them', () => {
+  const page = minuet as unknown as PagePrims
+  it('staff lines drawn as one piece per bar still make staves', () => {
+    const pieces = page.segs.flatMap((s) => {
+      if (Math.abs(s.y1 - s.y2) > 0.01 || Math.abs(s.x2 - s.x1) < 100) return [s]
+      const w = (s.x2 - s.x1) / 4
+      return [0, 1, 2, 3].map((k) => ({ ...s, x1: s.x1 + k * w, x2: s.x1 + (k + 1) * w }))
+    })
+    expect(strip(readScore([{ ...page, segs: pieces }])) === strip(readScore([page]))).toBe(true)
+  })
+  it('a dot after a rest makes it longer (the bar no longer adds up)', () => {
+    const rest = page.glyphs.find((g) => g.code === 0xf0ce)!
+    const dotted = { ...page, glyphs: [...page.glyphs, { ...rest, code: 0xf0aa, x: rest.x + rest.w + 2, w: 2 }] }
+    const bad = (p: PagePrims) => readScore([p]).measures.filter((m) => m.suspect).length
+    expect(bad(page)).toBe(0)
+    expect(bad(dotted)).toBeGreaterThan(0)
   })
 })

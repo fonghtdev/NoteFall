@@ -267,6 +267,29 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
           const ratio = gap(0) / gap(1)
           ok('quarters get 1.5x the room of eighths, and the same room in every bar', ratio > 1.4 && ratio < 1.6 && Math.abs(gap(0) - gap(2)) < 0.5)
         }
+        { // keyboard entry the way MuseScore does it
+          const evs = (m = 0, staff = 0, v = 0) => c.score.measures[m].staves[staff][v]
+          const names = () => evs().map((e) => e.pitches.map((p) => p.step + p.octave).join('+') || 'r').join(' ')
+          const lens = () => evs().map((e) => e.ticks).join()
+          const fresh = () => { c.setScore(d.fromText(Array.from({ length: 3 }, () => ({ rh: 'r:4', lh: 'r:4' })))); c.setMode('input'); c.cursor = { m: 0, staff: 0, at: 0 }; c.sel = undefined }
+          fresh(); c.key('5'); c.key('C'); c.key('w'); c.key('E'); c.key('q'); c.key('q'); c.key('G')
+          ok('W doubles and Q halves the length for the next notes: quarter, half, eighth', lens().startsWith('960,1920,480') && names().startsWith('C4 E4 G4'))
+          c.setScore(d.fromText([{ rh: 'C5:1 r:3', lh: 'r:4' }])); c.setMode('select'); c.sel = evs()[0].id
+          c.key('3', { altKey: true, code: 'Digit3' })
+          ok('Alt+3 adds a third above', names().startsWith('C5+E5 r'))
+          c.key('5', { altKey: true, shiftKey: true, code: 'Digit5' })
+          ok('Shift+Alt+5 adds a fifth below the bottom note', names().startsWith('F4+C5+E5 r'))
+          c.key('ArrowUp', { ctrlKey: true })
+          ok('Ctrl+Up moves the chord an octave', names().startsWith('F5+C6+E6 r'))
+          c.key('2', { ctrlKey: true, altKey: true, code: 'Digit2' })
+          ok('Ctrl+Alt+2 chooses voice 2', c.voice === 1); c.setVoice(0)
+          fresh(); c.key('ArrowRight', { ctrlKey: true })
+          ok('Ctrl+Right jumps to the start of the next bar', c.cursor.m === 1 && c.cursor.at === 0)
+          fresh(); c.key('5'); c.key('C'); c.key('D'); c.sel = undefined; c.key('Backspace')
+          ok('Backspace takes back the last note (it becomes a rest) and stands where it was', names() === 'C5 r r' && c.cursor.at === 960)
+          c.key('0')
+          ok('0 enters a rest and moves on', c.cursor.at === 1920)
+        }
         c.setMode('select')
         // marks must be hit by a real pointer: ask the page which element is under the centre of each kind of mark
         c.setScore(d.fromText([{ rh: 'C5:1 D5:1 E5:1 F5:1', lh: 'C3:4' }, { rh: 'G5:4', lh: 'r:4' }], { tempo: 60 }))

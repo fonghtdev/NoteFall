@@ -4,7 +4,7 @@ import { renderNotes } from '../core/synth'
 import { tempoRatios, toNotes, unroll } from '../core/score/playback'
 import { hitTest, keyAlter, type Hit } from './hit'
 import {
-  CLEFS, STEPS, TPQ, addGrace, barTicks, clearGrace, contextAt, copyPrevious, deleteEv, deleteMeasure, diatonic, emptyScore, findEv, flipStem, fromDiatonic, graceStep, insertMeasure, ottavaShiftAt, putNote, putRest,
+  CLEFS, STEPS, TPQ, addGrace, barTicks, clearGrace, contextAt, copyPrevious, deleteEv, deleteMeasure, diatonic, emptyScore, findEv, flipStem, fromDiatonic, graceStep, midiOf, insertMeasure, ottavaShiftAt, putNote, putRest,
   TUPLETS, makeTuplet, navigationProblems, pruneRefs, setBarline, setBreak, setClef, setJump, setRehearsal, setTempoMark, setText, setTimeSymbol, setVolta, toggleEv, toggleMark, type BarlineKind, type ClefName, type Mark, type Orn, type SpanKind, type TextField,
   putInTuplet, removeTuplet, setDyn, setKey, setLength, setTime, starts, toggleArt, toggleSpan, toggleTie, transpose, validate, allEventIds, clearMark, copyEvents, moveEv, moveMark, moveTempo, setTempoOffset, pasteClip, type Clip, type Art, type Dyn, type Ev, type Pitch, type Score,
 } from './model'
@@ -623,6 +623,7 @@ export class Composer {
     if (t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return
     const k = e.key
     const mod = e.ctrlKey || e.metaKey
+    const digit = /^Digit(\d)$/.exec(e.code)?.[1] ?? (/^\d$/.test(k) ? k : '') // Alt turns the key into another character on a Mac: the physical key says which digit it was
     let used = true
     if (mod && k.toLowerCase() === 'z') e.shiftKey ? this.redo() : this.undo()
     else if (mod && k.toLowerCase() === 'y') this.redo()
@@ -634,8 +635,14 @@ export class Composer {
     else if (mod && k.toLowerCase() === 'x') this.cut()
     else if (mod && k.toLowerCase() === 'v') this.paste()
     else if (mod && k.toLowerCase() === 'a') this.selectAll()
+    else if (mod && e.altKey && /^[1-4]$/.test(digit)) this.setVoice(+digit - 1)
+    else if (mod && (k === 'ArrowUp' || k === 'ArrowDown')) this.vertical(k === 'ArrowUp' ? 1 : -1, 12, false)
+    else if (mod && (k === 'ArrowLeft' || k === 'ArrowRight')) this.barStep(k === 'ArrowRight' ? 1 : -1)
     else if (mod) used = false
+    else if (e.altKey && /^[2-8]$/.test(digit)) this.addInterval(+digit, e.shiftKey)
     else if (/^[1-7]$/.test(k)) this.setDuration(+k - 1)
+    else if (k === '0') this.rest()
+    else if (k.toLowerCase() === 'q' || k.toLowerCase() === 'w') this.stepDuration(k.toLowerCase() === 'w' ? 1 : -1)
     else if (k === '.') { this.dotted = !this.dotted; this.afterToolChange() }
     else if (/^[a-gA-G]$/.test(k)) this.letter(k.toUpperCase(), e.shiftKey)
     else if (k.toLowerCase() === 'n') this.setMode(this.mode === 'input' ? 'select' : 'input')
@@ -645,7 +652,7 @@ export class Composer {
     else if (k.toLowerCase() === 'x') this.flip()
     else if (k === 'ArrowUp' || k === 'ArrowDown') this.vertical(k === 'ArrowUp' ? 1 : -1, e.shiftKey ? 12 : 1, e.altKey)
     else if (k === 'ArrowLeft' || k === 'ArrowRight') this.horizontal(k === 'ArrowRight' ? 1 : -1)
-    else if (k === 'Delete' || k === 'Backspace') { if (!this.delMark()) this.del() }
+    else if (k === 'Delete' || k === 'Backspace') { if (!this.delMark()) { if (k === 'Backspace' && this.mode === 'input' && this.sel === undefined) this.backspace(); else this.del() } }
     else if (k === 'Escape') { if (this.drag) { this.drag = undefined; this.ghost?.remove(); this.ghost = undefined; document.body.style.cursor = '' } this.sel = undefined; this.range = []; this.selMark = undefined; this.sysRange = undefined; this.setMode('select') }
     else if (k === '+' || k === '=') this.accidental(1)
     else if (k === '-') this.accidental(-1)
@@ -824,6 +831,45 @@ export class Composer {
     if (this.sel === undefined) return
     const id = this.sel
     this.commit((s) => transpose(s, id, dir * amount))
+  }
+
+  /** Ctrl+Alt+1-4: the voice new notes go into. */
+  setVoice(v: number) { this.voice = v; this.refresh(); this.say(`Nhập vào giọng ${v + 1}`) }
+
+  /** Q / W: the next shorter / longer note length (the dot stays). */
+  private stepDuration(dir: 1 | -1) {
+    const i = DURATIONS.findIndex((d) => d[2] === this.dur) + dir
+    if (i >= 0 && i < DURATIONS.length) this.setDuration(i)
+  }
+
+  /** Ctrl+←/→: the first place of the previous / next bar. */
+  private barStep(dir: 1 | -1) {
+    const m = Math.max(0, Math.min(this.score.measures.length - 1, this.cursor.m + dir))
+    this.cursor = { m, staff: this.cursor.staff, at: 0 }
+    this.refresh()
+  }
+
+  /** Alt+2 … Alt+8: a note a second … an octave above the chord's top note (Shift+Alt: below its bottom note), spelled in the key. */
+  addInterval(n: number, below = false) {
+    const id = this.sel
+    const f = id === undefined ? undefined : findEv(this.score, id)
+    if (id === undefined || !f || !f.ev.pitches.length) { this.say('Chọn một nốt trước, rồi thêm quãng'); return }
+    const ds = f.ev.pitches.map(diatonic)
+    const d = below ? Math.min(...ds) - (n - 1) : Math.max(...ds) + (n - 1)
+    const p = this.pitchAt(f.m, d)
+    this.pendingAlter = undefined
+    this.commit((s) => { const g = findEv(s, id)!; if (!g.ev.pitches.some((q) => midiOf(q) === midiOf(p))) g.ev.pitches = [...g.ev.pitches, p].sort((a, b) => midiOf(a) - midiOf(b)) })
+  }
+
+  /** Backspace while entering: take back the note just before the cursor (it becomes a rest) and stand where it was. */
+  private backspace() {
+    const before = { ...this.cursor }
+    this.horizontal(-1)
+    const { m, staff, at } = this.cursor
+    if (m === before.m && at === before.at) return
+    let t = 0
+    const ev = (this.score.measures[m].staves[staff][this.voice] ?? []).find((e) => { const here = t === at; t += e.ticks; return here })
+    if (ev?.pitches.length) this.commit((s) => deleteEv(s, ev.id))
   }
 
   /** ←/→: move to the previous/next event of the same voice (in input mode: move the insertion cursor). */

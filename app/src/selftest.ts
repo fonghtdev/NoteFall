@@ -179,6 +179,46 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
         ok('"+ ô nhịp" with line 1 picked adds after the last bar of line 1', c.score.measures.length === nBefore + 1 && c.score.measures[lastOfLine1 + 1].staves[0][0].every((e) => !e.pitches.length) && c.score.measures[lastOfLine1].staves[0][0][0].pitches.length === 1)
         c.undo()
       }
+      { // copy / cut / paste with the keyboard and the buttons, select all, box selection
+        const d = await import('./editor/demo')
+        c.setScore(d.fromText([{ rh: 'C5:1 D5:1 E5:1 F5:1', lh: 'C3:4' }, { rh: 'r:4', lh: 'r:4' }, { rh: 'r:4', lh: 'r:4' }]))
+        c.setMode('select')
+        const notes0 = () => c.score.measures[0].staves[0][0].map((e) => e.pitches[0]?.step ?? 'r').join('')
+        const first = c.score.measures[0].staves[0][0]
+        c.sel = first[0].id; c.selectRange(first[1].id)
+        c.key('c', { ctrlKey: true })                                      // copy C D
+        c.cursor = { m: 1, staff: 0, at: 0 }; c.sel = undefined; c.range = []
+        c.key('v', { ctrlKey: true })
+        ok('Ctrl+C then Ctrl+V pastes the notes at the cursor', c.score.measures[1].staves[0][0].map((e) => e.pitches[0]?.step ?? 'r').join('').startsWith('CD'))
+        ok('the pasted notes are selected', c.targets().length === 2)
+        const second = c.score.measures[1].staves[0][0]
+        c.sel = second[0].id; c.selectRange(second[1].id)
+        c.key('x', { ctrlKey: true })
+        ok('Ctrl+X removes them (they become rests)', c.score.measures[1].staves[0][0].every((e) => !e.pitches.length))
+        c.cursor = { m: 2, staff: 0, at: 0 }; c.range = []; c.sel = undefined
+        c.key('v', { metaKey: true })
+        ok('Cmd+V works too, and pastes what was cut', c.score.measures[2].staves[0][0].map((e) => e.pitches[0]?.step ?? 'r').join('').startsWith('CD'))
+        c.undo(); c.undo(); c.undo()
+        ok('undo takes the pastes back', notes0() === 'CDEF' && c.score.measures[1].staves[0][0].every((e) => !e.pitches.length))
+        c.key('a', { ctrlKey: true })
+        ok('Ctrl+A selects every note and rest', c.targets().length >= 8)
+        c.sel = undefined; c.range = []; c.refresh()
+        // a copied bar goes to another bar with the buttons
+        c.sel = undefined; c.cursor = { m: 0, staff: 0, at: 0 }
+        ;(document.querySelector('[aria-label="Sao chép"]') as HTMLElement).click()
+        c.cursor = { m: 2, staff: 0, at: 0 }
+        ;(document.querySelector('[aria-label="Dán"]') as HTMLElement).click()
+        ok('copy a bar with the button and paste it with the button (both staves)', c.score.measures[2].staves[0][0].map((e) => e.pitches[0]?.step ?? 'r').join('') === 'CDEF' && c.score.measures[2].staves[1][0][0].pitches[0]?.step === 'C')
+        // box selection
+        const svgNow = () => document.querySelector('.cmp-sheet svg') as SVGElement
+        const toClient = (x: number, y: number) => { const r = svgNow().getBoundingClientRect(); return { clientX: r.left + (x * r.width) / c.layout.width, clientY: r.top + (y * r.width) / c.layout.width } }
+        const fire = (el: EventTarget, type: string, x: number, y: number) => el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...toClient(x, y) }))
+        const dm = c.layout.measures[0], st = dm.staves[0], evs = dm.evs.filter((e) => e.staff === 0)
+        const x0 = evs[0].x - 14, y0 = st.top - 40, x1 = evs[1].x + 14, y1 = st.bottom + 20
+        fire(svgNow(), 'mousedown', x0, y0); fire(window, 'mousemove', (x0 + x1) / 2, (y0 + y1) / 2); fire(window, 'mousemove', x1, y1); fire(window, 'mouseup', x1, y1)
+        ok('dragging a box on empty space selects the notes inside it', c.targets().length === 2 && c.targets().every((id) => evs.slice(0, 2).some((e) => e.id === id)))
+        c.setScore(d.minuet())
+      }
       { // preview sound: a second click cancels instead of doubling, and leaving the tab silences it
         const playing = () => !!(c as unknown as { playing?: unknown }).playing || (c as unknown as { starting: boolean }).starting
         void c.togglePlay(); void c.togglePlay()

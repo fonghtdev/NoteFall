@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { palette, fromText, pitch } from './demo'
-import { TPQ, addGrace, clearMark, clefAt, contextAt, moveEv, moveMark, moveTempo, copyPrevious, flipStem, graceStep, octShift, ottavaShiftAt, ottavaShifts, setBarline, setBreak, setClef, setStretch, setTempoMark, setText, toggleEv, toggleSpan, validate } from './model'
+import { TPQ, absOf, copyEvents, makeTuplet, pasteClip, whereAbs, addGrace, clearMark, clefAt, contextAt, moveEv, moveMark, moveTempo, copyPrevious, flipStem, graceStep, octShift, ottavaShiftAt, ottavaShifts, setBarline, setBreak, setClef, setStretch, setTempoMark, setText, toggleEv, toggleSpan, validate } from './model'
 import { toPerformance } from './perform'
 import { tempoRatios, toNotes, unroll } from '../core/score/playback'
 
@@ -187,5 +187,80 @@ describe('moving things', () => {
     const n = play(s).filter((x) => x.pitch >= 60)
     expect(n.map((x) => +x.start.toFixed(3))).toEqual([0, 4, 6, 7])      // C at 0; D at 4; E at 4+2=6 (still 60 bpm) ; F: E lasts 2 beats at 120 = 1 s -> 7
     expect(contextAt(s, 1).tempo).toBe(60); expect(contextAt(s, 2).tempo).toBe(120)
+  })
+})
+
+describe('copy and paste', () => {
+  const shape = (s: ReturnType<typeof fromText>, m: number, staff = 0, voice = 0) => s.measures[m].staves[staff][voice].map((e) => (e.pitches.length ? e.pitches.map((p) => p.step + p.octave).join('+') : 'r') + ':' + e.ticks / TPQ + (e.tie ? '~' : '')).join(' ')
+  const ids = (s: ReturnType<typeof fromText>, m: number, staff = 0) => s.measures[m].staves[staff].flatMap((v) => v.map((e) => e.id))
+
+  it('copies a bar (both staves) and pastes it into another bar', () => {
+    const s = fromText([{ rh: 'C5:1 D5:1 E5:2', lh: 'C3+G3:4' }, { rh: 'r:4', lh: 'r:4' }, { rh: 'r:4', lh: 'r:4' }])
+    const clip = copyEvents(s, [...ids(s, 0, 0), ...ids(s, 0, 1)])!
+    expect(clip.lanes).toHaveLength(2)
+    const r = pasteClip(s, clip, { m: 2, at: 0 })
+    expect(r.ok).toBe(true)
+    expect(shape(s, 2)).toBe('C5:1 D5:1 E5:2'); expect(shape(s, 2, 1)).toBe('C3+G3:4')
+    expect(shape(s, 1)).toBe('r:4')
+    const all = s.measures.flatMap((m) => m.staves.flat(2)).map((e) => e.id)
+    expect(new Set(all).size).toBe(all.length)                       // the copy has its own ids
+    expect(validate(s)).toEqual([])
+  })
+
+  it('pastes a few notes in the middle of a bar, and a note running over the barline becomes tied pieces', () => {
+    const s = fromText([{ rh: 'C5:1 D5:1 E5:2', lh: 'r:4' }, { rh: 'r:4', lh: 'r:4' }])
+    const e = s.measures[0].staves[0][0]
+    const clip = copyEvents(s, [e[2].id])!                            // a half note
+    expect(pasteClip(s, clip, { m: 1, at: 3 * TPQ }).ok).toBe(true)  // starts on beat 4 of bar 2: one beat fits, the rest goes to a new bar
+    expect(shape(s, 1)).toBe('r:2 r:1 E5:1~')
+    expect(shape(s, 2)).toBe('E5:1 r:1 r:2')
+    expect(validate(s)).toEqual([])
+  })
+
+  it('the paste replaces what it lands on (like typing over it) and adds bars when it runs out of room', () => {
+    const s = fromText([{ rh: 'C5:1 D5:1 E5:1 F5:1', lh: 'r:4' }])
+    const clip = copyEvents(s, ids(s, 0, 0))!
+    pasteClip(s, clip, { m: 0, at: 2 * TPQ })
+    expect(s.measures.length).toBe(2)
+    expect(shape(s, 0)).toBe('C5:1 D5:1 C5:1 D5:1'); expect(shape(s, 1)).toBe('E5:1 F5:1 r:2')
+    expect(validate(s)).toEqual([])
+  })
+
+  it('slurs, hairpins and ottava inside the copied music still join the copies; those whose end was left out disappear', () => {
+    const s = fromText([{ rh: 'C5:1 D5:1 E5:1 F5:1', lh: 'r:4' }, { rh: 'r:4', lh: 'r:4' }])
+    const e = s.measures[0].staves[0][0]
+    toggleSpan(s, 'slur', e[0].id, e[1].id); toggleSpan(s, 'cresc', e[1].id, e[3].id)
+    const clip = copyEvents(s, [e[0].id, e[1].id])!                  // the slur is inside, the hairpin's end is not
+    pasteClip(s, clip, { m: 1, at: 0 })
+    const c = s.measures[1].staves[0][0]
+    expect(c[0].slur).toBe(c[1].id)
+    expect(c[1].hairpin).toBeUndefined()
+  })
+
+  it('refuses to cut a tuplet with a barline', () => {
+    const s = fromText([{ rh: 'r:4', lh: 'r:4' }, { rh: 'r:4', lh: 'r:4' }])
+    const t = makeTuplet(s, { m: 0, staff: 0, voice: 0 }, 0, TPQ)   // three quarter-length notes in two beats
+    t.forEach((id, i) => { s.measures[0].staves[0][0].find((e) => e.id === id)!.pitches = [{ step: 'C', alter: 0, octave: 5 + 0 * i }] })
+    const clip = copyEvents(s, t)!
+    const before = JSON.stringify(s)
+    const r = pasteClip(s, clip, { m: 1, at: 3 * TPQ })
+    expect(r.ok).toBe(false)
+    expect(JSON.stringify(s) === before).toBe(true) // nothing was written
+  })
+
+  it('one lane can go to another staff and voice', () => {
+    const s = fromText([{ rh: 'C5:1 D5:1 E5:2', lh: 'r:4' }])
+    const clip = copyEvents(s, ids(s, 0, 0))!
+    pasteClip(s, clip, { m: 0, at: 0, staff: 1, voice: 1 })
+    expect(shape(s, 0, 1, 1)).toBe('C5:1 D5:1 E5:2')
+    expect(shape(s, 0, 0, 0)).toBe('C5:1 D5:1 E5:2')
+  })
+
+  it('absOf and whereAbs agree, also when the time signature changes', () => {
+    const s = fromText([{ rh: 'r:4', lh: 'r:4' }, { rh: 'r:4', lh: 'r:4' }, { rh: 'r:4', lh: 'r:4' }])
+    s.measures[1].time = { beats: 3, unit: 4 }
+    s.measures[1].staves = s.measures[1].staves.map((v) => v.map((e) => [{ ...e[0], ticks: 3 * TPQ }]))
+    s.measures[2].staves = s.measures[2].staves.map((v) => v.map((e) => [{ ...e[0], ticks: 3 * TPQ }]))
+    for (const [m, at] of [[0, 0], [0, 960], [1, 0], [1, 2000], [2, 5]] as const) expect(whereAbs(s, absOf(s, m, at))).toEqual({ m, at })
   })
 })

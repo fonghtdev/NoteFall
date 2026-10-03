@@ -6,7 +6,7 @@ import { hitTest, keyAlter, type Hit } from './hit'
 import {
   CLEFS, STEPS, TPQ, addGrace, barTicks, clearGrace, contextAt, copyPrevious, deleteEv, deleteMeasure, diatonic, emptyScore, findEv, flipStem, fromDiatonic, graceStep, insertMeasure, ottavaShiftAt, putNote, putRest,
   TUPLETS, makeTuplet, navigationProblems, pruneRefs, setBarline, setBreak, setClef, setJump, setRehearsal, setTempoMark, setText, setTimeSymbol, setVolta, toggleEv, toggleMark, type BarlineKind, type ClefName, type Mark, type Orn, type SpanKind, type TextField,
-  putInTuplet, removeTuplet, setDyn, setKey, setLength, setTime, starts, toggleArt, toggleSpan, toggleTie, transpose, validate, clearMark, moveEv, moveMark, moveTempo, type Art, type Dyn, type Ev, type Pitch, type Score,
+  putInTuplet, removeTuplet, setDyn, setKey, setLength, setTime, starts, toggleArt, toggleSpan, toggleTie, transpose, validate, allEventIds, clearMark, copyEvents, moveEv, moveMark, moveTempo, pasteClip, type Clip, type Art, type Dyn, type Ev, type Pitch, type Score,
 } from './model'
 import { toPerformance } from './perform'
 import { DYN_GLYPH, keyName, renderScore, type DrawnEv, type Layout, type MarkRef } from './render'
@@ -47,13 +47,20 @@ export class Composer {
   private btns = new Map<string, HTMLButtonElement>()
   selMark?: MarkRef                  // a text / dynamic / tempo / rehearsal mark picked up (click it; drag it; Delete removes it)
   sysRange?: [number, number]        // a whole line (system) picked by clicking beside its bars: add / remove bar act on it
-  private drag?: { kind: 'note'; ev: DrawnEv; sx: number; sy: number; moved: boolean } | { kind: 'mark'; mark: MarkRef; sx: number; sy: number; moved: boolean }
+  private drag?: { kind: 'note'; ev: DrawnEv; sx: number; sy: number; moved: boolean } | { kind: 'mark'; mark: MarkRef; sx: number; sy: number; moved: boolean } | { kind: 'marquee'; sx: number; sy: number; moved: boolean; x0: number; y0: number }
   private suppressClick = false
+  private clip?: Clip
+  private marquee?: SVGRectElement
 
   constructor(private root: HTMLElement, private hooks: ComposerHooks) {
     this.score = this.loadDraft() ?? emptyScore(8)
     this.buildUi()
     document.addEventListener('keydown', (e) => this.onKey(e))
+    // the application menu (macOS) turns Cmd+C / X / V into these events before the page sees a key press
+    const inField = (t: EventTarget | null) => !!t && /^(INPUT|SELECT|TEXTAREA)$/.test((t as HTMLElement).tagName)
+    document.addEventListener('copy', (e) => { if (this.visible && !inField(e.target)) { e.preventDefault(); this.copy() } })
+    document.addEventListener('cut', (e) => { if (this.visible && !inField(e.target)) { e.preventDefault(); this.cut() } })
+    document.addEventListener('paste', (e) => { if (this.visible && !inField(e.target)) { e.preventDefault(); const t = e.clipboardData?.getData('text/plain') ?? ''; if (!this.clip && t.startsWith('notefall-clip:')) { try { this.clip = JSON.parse(t.slice(14)) as Clip } catch { /* not ours */ } } this.paste() } })
     this.refresh()
   }
 
@@ -244,6 +251,7 @@ export class Composer {
     const [x, y] = this.toLogical(e)
     const ev = this.pickNote(x, y)
     if (ev) this.drag = { kind: 'note', ev, sx: e.clientX, sy: e.clientY, moved: false }
+    else this.drag = { kind: 'marquee', sx: e.clientX, sy: e.clientY, moved: false, x0: x, y0: y } // empty space: a drag draws a box and selects what is inside
   }
   private mouseMove(e: MouseEvent) {
     const d = this.drag
@@ -251,6 +259,16 @@ export class Composer {
     if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 5) return
     if (!d.moved) { d.moved = true; this.suppressClick = true; document.body.style.cursor = 'grabbing' }
     const [x, y] = this.toLogical(e)
+    if (d.kind === 'marquee') {
+      if (!this.marquee) {
+        this.marquee = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+        this.marquee.setAttribute('fill', '#1d6fff'); this.marquee.setAttribute('fill-opacity', '0.10'); this.marquee.setAttribute('stroke', '#1d6fff'); this.marquee.setAttribute('stroke-width', '1'); this.marquee.setAttribute('pointer-events', 'none')
+        this.svg().appendChild(this.marquee)
+      }
+      this.marquee.setAttribute('x', String(Math.min(x, d.x0))); this.marquee.setAttribute('y', String(Math.min(y, d.y0)))
+      this.marquee.setAttribute('width', String(Math.abs(x - d.x0))); this.marquee.setAttribute('height', String(Math.abs(y - d.y0)))
+      return
+    }
     this.moveGhost(x, y, d.kind === 'note' ? (e.shiftKey ? this.voice : d.ev.voice) : 0, d.kind === 'mark')
   }
   private mouseUp(e: MouseEvent) {
@@ -258,7 +276,20 @@ export class Composer {
     this.drag = undefined
     document.body.style.cursor = ''
     this.ghost?.remove(); this.ghost = undefined
+    this.marquee?.remove(); this.marquee = undefined
     if (!d) return
+    if (d.kind === 'marquee') {
+      if (d.moved) {
+        const [x, y] = this.toLogical(e)
+        const x0 = Math.min(x, d.x0), x1 = Math.max(x, d.x0), y0 = Math.min(y, d.y0), y1 = Math.max(y, d.y0)
+        const ids = this.layout.measures.flatMap((dm) => dm.evs.filter((q) => q.x >= x0 - 4 && q.x <= x1 && q.ys.some((qy) => qy >= y0 && qy <= y1)).map((q) => q.id))
+        this.selMark = undefined; this.sysRange = undefined
+        this.range = ids; this.sel = ids[0]
+        this.refresh(); this.say(ids.length ? `Đã chọn ${ids.length} nốt/dấu lặng: Ctrl+C sao chép, Ctrl+X cắt, Delete xoá` : 'Không có gì trong khung chọn')
+        setTimeout(() => { this.suppressClick = false }, 0)
+      }
+      return
+    }
     if (!d.moved) { // a click on a mark picks it up (a click on a note is handled by click())
       if (d.kind === 'mark') { this.selMark = d.mark; this.sel = undefined; this.range = []; this.sysRange = undefined; this.refresh(); this.say(this.markHint(d.mark)); this.suppressClick = true }
       else this.suppressClick = false
@@ -328,6 +359,50 @@ export class Composer {
     }
     this.refresh()
   }
+
+  // ---- copy, cut, paste, select all ------------------------------------------------------------------------
+  /** The events a copy takes: the selection, or everything in the selected bars / line when no note is selected. */
+  private copyIds(): number[] {
+    const ids = this.targets()
+    if (ids.length) return ids
+    const [a, b] = this.measureRange()
+    return this.score.measures.slice(a, b + 1).flatMap((m) => m.staves.flatMap((vs) => vs.flatMap((v) => v.map((e) => e.id))))
+  }
+  copy(): boolean {
+    const clip = copyEvents(this.score, this.copyIds())
+    if (!clip) { this.say('Chọn nốt hoặc ô nhịp để sao chép'); return false }
+    this.clip = clip
+    try { void navigator.clipboard?.writeText('notefall-clip:' + JSON.stringify(clip)).catch(() => {}) } catch { /* the system clipboard is optional */ }
+    const n = clip.lanes.reduce((a, l) => a + l.items.length, 0)
+    this.say(`Đã sao chép ${n} nốt/dấu lặng. Chọn nơi cần dán rồi nhấn Ctrl+V`)
+    return true
+  }
+  cut() {
+    if (!this.copy()) return
+    const ids = this.copyIds()
+    this.commit((s) => ids.forEach((id) => deleteEv(s, id)))
+    this.sel = undefined; this.range = []; this.refresh()
+  }
+  paste() {
+    if (!this.clip) {
+      void navigator.clipboard?.readText().then((t) => { if (t.startsWith('notefall-clip:')) { try { this.clip = JSON.parse(t.slice(14)) as Clip; this.paste() } catch { /* not ours */ } } }).catch(() => {})
+      this.say('Chưa có gì để dán: hãy sao chép nốt trước')
+      return
+    }
+    const clip = this.clip, f = this.sel !== undefined ? findEv(this.score, this.sel) : undefined
+    const dest = f ? { m: f.m, at: f.at, staff: f.staff, voice: f.voice }
+      : this.sysRange ? { m: this.sysRange[0], at: 0, staff: this.cursor.staff, voice: this.voice }
+      : { m: this.cursor.m, at: this.cursor.at, staff: this.cursor.staff, voice: this.voice }
+    let res: ReturnType<typeof pasteClip> | undefined
+    this.commit((s) => { res = pasteClip(s, clip, clip.lanes.length > 1 ? { m: dest.m, at: dest.at } : dest) })
+    if (!res?.ok) { this.say(`Không dán được: ${res?.reason ?? 'không đủ chỗ'}`); this.refresh(); return }
+    this.sysRange = undefined; this.selMark = undefined
+    this.range = res.ids; this.sel = res.ids[0]
+    if (res.end && res.end.m < this.score.measures.length) this.cursor = { m: res.end.m, staff: dest.staff, at: res.end.at }
+    this.refresh()
+    this.say(`Đã dán ${res.ids.length} nốt/dấu lặng tại ô ${dest.m + 1}`)
+  }
+  selectAll() { const ids = allEventIds(this.score); this.sel = ids[0]; this.range = ids; this.selMark = undefined; this.sysRange = undefined; this.refresh(); this.say(`Đã chọn tất cả (${ids.length}): Ctrl+C sao chép`) }
 
   /** Delete / Backspace on a picked mark removes it. */
   private delMark(): boolean {
@@ -415,6 +490,10 @@ export class Composer {
     if (mod && k.toLowerCase() === 'z') e.shiftKey ? this.redo() : this.undo()
     else if (mod && k.toLowerCase() === 'y') this.redo()
     else if (mod && k === '3') this.tuplet()
+    else if (mod && k.toLowerCase() === 'c') this.copy()
+    else if (mod && k.toLowerCase() === 'x') this.cut()
+    else if (mod && k.toLowerCase() === 'v') this.paste()
+    else if (mod && k.toLowerCase() === 'a') this.selectAll()
     else if (mod) used = false
     else if (/^[1-7]$/.test(k)) this.setDuration(+k - 1)
     else if (k === '.') { this.dotted = !this.dotted; this.afterToolChange() }
@@ -757,6 +836,9 @@ export class Composer {
     const edit = this.group(top)
     this.btn(edit, 'undo', 'Hoàn tác', 'Hoàn tác (Ctrl+Z)', () => this.undo(), { cls: 'ghost icon', html: icon('undo') })
     this.btn(edit, 'redo', 'Làm lại', 'Làm lại (Ctrl+Shift+Z)', () => this.redo(), { cls: 'ghost icon', html: icon('redo') })
+    this.btn(edit, 'cut', 'Cắt', 'Cắt nốt đang chọn (Ctrl+X)', () => this.cut(), { cls: 'ghost icon', html: icon('cut') })
+    this.btn(edit, 'copy', 'Sao chép', 'Sao chép nốt hoặc ô nhịp đang chọn (Ctrl+C)', () => void this.copy(), { cls: 'ghost icon', html: icon('copy') })
+    this.btn(edit, 'paste', 'Dán', 'Dán tại nốt hoặc ô đang chọn (Ctrl+V)', () => this.paste(), { cls: 'ghost icon', html: icon('paste') })
     this.el('span', 'divider', top)
 
     const mode = this.el('div', 'seg', top); mode.setAttribute('role', 'group'); mode.setAttribute('aria-label', 'Chế độ')

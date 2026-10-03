@@ -750,3 +750,101 @@ export function moveEv(s: Score, id: number, dest: Loc & { at: number }, steps =
   overwrite(s, dest, dest.at, len, [ev])
   return true
 }
+
+// ---- copy and paste --------------------------------------------------------------------------------------
+/** What the clipboard holds: for each staff+voice the events with their distance (in ticks) from the start of the copied range. */
+export interface Clip { lanes: { staff: number; voice: number; items: { rel: number; ev: Ev }[] }[]; span: number }
+
+/** Ticks from the start of the score to bar `m`, tick `at`. */
+export function absOf(s: Score, m: number, at: number): number {
+  let t = 0
+  for (let i = 0; i < m && i < s.measures.length; i++) t += barTicks(contextAt(s, i).time)
+  return t + at
+}
+/** The bar and the tick inside it for an absolute position (a position past the last bar answers bar `measures.length`). */
+export function whereAbs(s: Score, abs: number): { m: number; at: number } {
+  let t = 0
+  for (let i = 0; i < s.measures.length; i++) {
+    const bar = barTicks(contextAt(s, i).time)
+    if (abs < t + bar) return { m: i, at: abs - t }
+    t += bar
+  }
+  return { m: s.measures.length, at: abs - t }
+}
+
+/** Copy events (any staves, any voices) into a clip. Returns undefined when `ids` holds nothing. */
+export function copyEvents(s: Score, ids: number[]): Clip | undefined {
+  const found = ids.map((id) => findEv(s, id)).filter((f): f is NonNullable<ReturnType<typeof findEv>> => !!f)
+  if (!found.length) return undefined
+  const abs = (f: (typeof found)[number]) => absOf(s, f.m, f.at)
+  const t0 = Math.min(...found.map(abs)), t1 = Math.max(...found.map((f) => abs(f) + f.ev.ticks))
+  const lanes = new Map<string, Clip['lanes'][number]>()
+  for (const f of found.sort((a, b) => abs(a) - abs(b))) {
+    const k = `${f.staff}:${f.voice}`
+    const lane = lanes.get(k) ?? { staff: f.staff, voice: f.voice, items: [] }
+    lane.items.push({ rel: abs(f) - t0, ev: clone(f.ev) })
+    lanes.set(k, lane)
+  }
+  return { lanes: [...lanes.values()], span: t1 - t0 }
+}
+
+/**
+ * Paste a clip with its start at bar `dest.m`, tick `dest.at`. A clip with one lane goes to `dest.staff` / `dest.voice` when they are given,
+ * otherwise every lane goes back to where it came from. Notes that run over a barline become tied pieces; a tuplet that would be cut makes
+ * the paste fail. Bars are added at the end when the clip does not fit. Returns the ids of the pasted events (first pieces) and where it ended.
+ */
+export function pasteClip(s: Score, clip: Clip, dest: { m: number; at: number; staff?: number; voice?: number }): { ok: boolean; ids: number[]; end?: { m: number; at: number }; reason?: string } {
+  const start = absOf(s, dest.m, dest.at)
+  { // look before writing anything: a tuplet that a barline would cut makes the whole paste fail
+    const total = absOf(s, s.measures.length, 0), lastBar = barTicks(contextAt(s, s.measures.length - 1).time)
+    for (const lane of clip.lanes) for (const { rel, ev } of lane.items) {
+      if (!ev.tup) continue
+      const abs = start + rel
+      const pos = abs < total ? whereAbs(s, abs) : { m: s.measures.length, at: (abs - total) % lastBar }
+      const bar = pos.m < s.measures.length ? barTicks(contextAt(s, pos.m).time) : lastBar
+      if (pos.at + ev.ticks > bar) return { ok: false, ids: [], reason: 'bộ ba bị cắt ngang bởi vạch nhịp' }
+    }
+  }
+  const map = new Map<number, number>()
+  const pasted: Ev[] = []
+  const single = clip.lanes.length === 1
+  for (const lane of clip.lanes) {
+    const staff = single && dest.staff !== undefined ? dest.staff : lane.staff
+    const voice = single && dest.voice !== undefined ? dest.voice : lane.voice
+    if (staff >= s.clefs.length) return { ok: false, ids: [], reason: 'khuông đích không có' }
+    const groups = new Map<number, number>()
+    for (const { rel, ev } of lane.items) {
+      let pos = whereAbs(s, start + rel)
+      while (pos.m >= s.measures.length) { insertMeasure(s, s.measures.length - 1); pos = whereAbs(s, start + rel) }
+      const bar = barTicks(contextAt(s, pos.m).time)
+      if (ev.tup && pos.at + ev.ticks > bar) return { ok: false, ids: [], reason: 'bộ ba bị cắt ngang bởi vạch nhịp' }
+      let left = ev.ticks, m = pos.m, at = pos.at, first = true
+      while (left > 0) {
+        while (m >= s.measures.length) insertMeasure(s, s.measures.length - 1)
+        const room = barTicks(contextAt(s, m).time) - at, len = Math.min(left, room)
+        const piece: Ev = first ? { ...clone(ev), id: newId(s), ticks: len } : { id: newId(s), ticks: len, pitches: clone(ev.pitches) }
+        if (first && ev.tup) { if (!groups.has(ev.tup.group)) groups.set(ev.tup.group, newId(s)); piece.tup = { ...ev.tup, group: groups.get(ev.tup.group)! } }
+        const rest = left - len
+        if (piece.pitches.length) piece.tie = rest > 0 ? true : first ? ev.tie : ev.tie
+        if (first) { map.set(ev.id, piece.id); pasted.push(piece) }
+        overwrite(s, { m, staff, voice }, at, len, [piece])
+        left = rest; m++; at = 0; first = false
+      }
+    }
+  }
+  // spans (slurs, hairpins, ottava, pedal) keep working inside the pasted music, and are dropped where their end was not copied
+  const ids = new Set(map.keys())
+  for (const piece of pasted) {
+    const f = findEv(s, piece.id)
+    if (!f) continue
+    const e = f.ev
+    if (e.slur !== undefined) e.slur = ids.has(e.slur) ? map.get(e.slur) : undefined
+    if (e.hairpin) e.hairpin = ids.has(e.hairpin.end) ? { ...e.hairpin, end: map.get(e.hairpin.end)! } : undefined
+    if (e.ottava) e.ottava = ids.has(e.ottava.end) ? { ...e.ottava, end: map.get(e.ottava.end)! } : undefined
+    if (e.pedal) e.pedal = ids.has(e.pedal.end) ? { end: map.get(e.pedal.end)! } : undefined
+  }
+  return { ok: true, ids: pasted.map((p) => p.id), end: whereAbs(s, start + clip.span) }
+}
+
+/** Every event of the score, in reading order (for Select all). */
+export const allEventIds = (s: Score) => s.measures.flatMap((m) => m.staves.flatMap((vs) => vs.flatMap((v) => v.map((e) => e.id))))

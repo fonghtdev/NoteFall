@@ -52,7 +52,9 @@ function reach(note: StaveNote | GhostNote): { left: number; right: number } {
   const mods = note.getModifiers()
   const accs = mods.filter((m) => m instanceof Accidental).length, dots = mods.filter((m) => m instanceof Dot).length
   const displaced = note.noteHeads.some((h) => h.isDisplaced())
-  return { left: accs * 9, right: 11 + (displaced ? 11 : 0) + (dots ? 5 + 5 * dots : 0) }
+  // ledger lines run past the head on both sides, and two neighbours with ledger lines would fuse into one long line
+  const ledger = note.getKeyProps().some((k) => k.line < 1 || k.line > 5) ? 4 : 0
+  return { left: accs * 9 + ledger, right: 11 + (displaced ? 11 : 0) + (dots ? 5 + 5 * dots : 0) + ledger }
 }
 
 /** The only thing in the bar for its voice and no other voice has music: a whole-bar rest stays centred. */
@@ -177,12 +179,14 @@ const modifierStave = (score: Score, mi: number, first: boolean, x: number, y: n
 }
 
 /** Width a bar needs: formatted content plus whatever clef/key/time it carries. */
-function minWidth(score: Score, mi: number, first: boolean): number {
+function minWidth(score: Score, mi: number, first: boolean): { w: number; mods: number } {
   const t0 = performance.now()
   try { return minWidth0(score, mi, first) } finally { renderStats.widthMs += performance.now() - t0 }
 }
-const widthCache = new Map<string, number>()
-function minWidth0(score: Score, mi: number, first: boolean): number {
+/** Bar width with `extra` times the room for its notes: clef, key and time signature (a lot with seven sharps) never need more. */
+const barWidth = (score: Score, mi: number, first: boolean, extra: number) => { const { w, mods } = minWidth(score, mi, first); return mods + (w - mods) * extra }
+const widthCache = new Map<string, { w: number; mods: number }>()
+function minWidth0(score: Score, mi: number, first: boolean): { w: number; mods: number } {
   // the same bar in the same surroundings always needs the same room: remember it (editing one bar then costs one bar, not sixty)
   const ctx = contextAt(score, mi)
   const key = JSON.stringify([score.measures[mi], score.clefs.map((_, si) => clefAt(score, mi, si)), ctx.key, ctx.time, first])
@@ -193,15 +197,36 @@ function minWidth0(score: Score, mi: number, first: boolean): number {
   widthCache.set(key, w)
   return w
 }
-function minWidth1(score: Score, mi: number, first: boolean): number {
+function minWidth1(score: Score, mi: number, first: boolean): { w: number; mods: number } {
   const staves = score.clefs.map((_, si) => modifierStave(score, mi, first, 0, 0, 400, si))
-  const b = build(score, mi, staves, new Set())
-  const f = new Formatter()
-  const byStaff = score.clefs.map((_, si) => b.voices.filter((v) => b.order.find((o) => b.notes.get(o.ev.id) === v.getTickables()[0])?.staff === si))
-  byStaff.forEach((vs) => vs.length && f.joinVoices(vs))
-  const content = f.preCalculateMinTotalWidth(b.voices)
   const mods = Math.max(...staves.map((s) => s.getNoteStartX() - s.getX()))
-  return (Math.max(70, content + 28) + mods) * (score.measures[mi].stretch ?? 1)
+  const k = score.measures[mi].stretch ?? 1
+  // Format the bar the way drawing will and widen the note area until no two columns of notes (heads, ledger lines, dots, accidentals) touch.
+  // Done here, per bar and cached, so the answer does not depend on which line the bar ends up on.
+  let area = 0
+  for (let tries = 0; tries < 8; tries++) {
+    const b = build(score, mi, staves, new Set())
+    const f = new Formatter()
+    const byStaff = score.clefs.map((_, si) => b.voices.filter((v) => b.order.find((o) => b.notes.get(o.ev.id) === v.getTickables()[0])?.staff === si))
+    byStaff.forEach((vs) => vs.length && f.joinVoices(vs))
+    if (!area) area = Math.max(70, f.preCalculateMinTotalWidth(b.voices) + 28) - 12
+    f.format(b.voices, area)
+    let over = 0
+    byStaff.forEach((_, si) => {
+      const cols = new Map<number, { x: number; left: number; right: number }>()
+      for (const o of b.order) {
+        if (o.staff !== si || !o.ev.pitches.length) continue
+        const n = b.notes.get(o.ev.id)!, r = reach(n), x = n.getAbsoluteX(), key = Math.round(x)
+        const c = cols.get(key) ?? { x, left: 0, right: 0 }
+        c.left = Math.max(c.left, r.left); c.right = Math.max(c.right, r.right); cols.set(key, c)
+      }
+      const xs = [...cols.values()].sort((p, q) => p.x - q.x)
+      for (let i = 1; i < xs.length; i++) over = Math.max(over, xs[i - 1].right + xs[i].left + 1 - (xs[i].x - xs[i - 1].x))
+    })
+    if (over <= 0) break
+    area = area * 1.08 + over * 2
+  }
+  return { w: (area + 12 + mods) * k, mods: mods * k }
 }
 
 /** A mark picked up for moving: a text / dynamic on a note, the tempo or the rehearsal mark of a bar. */
@@ -220,18 +245,19 @@ export function renderScore(host: HTMLElement, score: Score, opts: RenderOptions
   let before = Infinity
   for (let pass = 0; pass < 4; pass++) {
     const tight = crowded(layout)
-    if (!tight.length || tight.length >= before) break // fine, or widening did not help (the line is full): stop instead of redrawing for nothing
-    before = tight.length
-    for (const m of tight) extra[m] = Math.min(3, extra[m] * 1.2 + 0.05)
+    const worst = [...tight.values()].reduce((a, b) => a + b, 0) // px of overlap, summed: more telling than how many bars
+    if (!tight.size || worst >= before) break // fine, or widening did not help (the line is full): stop instead of redrawing for nothing
+    before = worst
+    for (const [m, over] of tight) extra[m] = Math.min(5, extra[m] * (1.15 + Math.min(0.5, over / 40)) + 0.05) // the worse the overlap, the bigger the step
     layout = drawScore(host, score, opts, extra); renderStats.passes++
   }
   renderStats.totalMs = performance.now() - t0
   return layout
 }
 
-/** Bars where two neighbouring columns of notes are closer than their heads, dots, displaced heads and accidentals need. */
-function crowded(layout: Layout): number[] {
-  const bad = new Set<number>()
+/** Bars where two neighbouring columns of notes are closer than their heads, ledger lines, dots, displaced heads and accidentals need, and by how many px. */
+function crowded(layout: Layout): Map<number, number> {
+  const bad = new Map<number, number>()
   for (const dm of layout.measures) {
     for (let si = 0; si < dm.staves.length; si++) {
       const cols = new Map<number, { x: number; left: number; right: number }>()
@@ -243,10 +269,13 @@ function crowded(layout: Layout): number[] {
         cols.set(key, c)
       }
       const xs = [...cols.values()].sort((a, b) => a.x - b.x)
-      for (let i = 1; i < xs.length; i++) if (xs[i].x - xs[i - 1].x < xs[i - 1].right + xs[i].left + 1) bad.add(dm.m) // closer than the heads themselves (plus 1px)
+      for (let i = 1; i < xs.length; i++) {
+        const over = xs[i - 1].right + xs[i].left + 1 - (xs[i].x - xs[i - 1].x) // closer than the heads themselves (plus 1px)
+        if (over > 0) bad.set(dm.m, Math.max(bad.get(dm.m) ?? 0, over))
+      }
     }
   }
-  return [...bad]
+  return bad
 }
 
 function drawScore(host: HTMLElement, score: Score, opts: RenderOptions, extra: number[]): Layout {
@@ -261,10 +290,10 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions, extra: 
   const systems: { from: number; to: number; mins: number[]; forced?: boolean }[] = []
   let cur: number[] = [], sum = 0, from = 0
   for (let mi = 0; mi < n; mi++) {
-    const w = minWidth(score, mi, cur.length === 0) * extra[mi]
-    if (cur.length && sum + w > usable) { systems.push({ from, to: mi - 1, mins: cur }); cur = []; sum = 0; from = mi }
-    cur.push(cur.length === 0 ? w : minWidth(score, mi, false) * extra[mi])
-    sum += cur[cur.length - 1]
+    let w = barWidth(score, mi, cur.length === 0, extra[mi])
+    if (cur.length && sum + w > usable) { systems.push({ from, to: mi - 1, mins: cur }); cur = []; sum = 0; from = mi; w = barWidth(score, mi, true, extra[mi]) } // the bar that opens a line carries clef, key and time: size it with them
+    cur.push(w)
+    sum += w
     if (score.measures[mi].break && mi < n - 1) { systems.push({ from, to: mi, mins: cur, forced: true }); cur = []; sum = 0; from = mi + 1 } // the user asked for a new line here
   }
   if (cur.length) systems.push({ from, to: n - 1, mins: cur })

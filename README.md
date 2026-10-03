@@ -45,6 +45,10 @@ open ios/App/App.xcodeproj
 
 In Xcode: pick the *App* target, Signing & Capabilities, sign in with an Apple ID (a free account is enough to run on your own iPad), choose the device and press Run. TestFlight and the App Store need a paid Apple Developer account.
 
+## Web (Safari / any browser)
+
+`npm run build` in `app/` also produces a web app in `app/dist` (manifest, icons, offline cache). Serve that folder over HTTPS from any static host; on an iPad open the link in Safari and choose Share > Add to Home Screen. After the first load it works offline. No Apple account or app review needed, and a redeploy updates everyone.
+
 ## Layout
 
 ```

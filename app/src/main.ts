@@ -51,6 +51,7 @@ const fmt = (t: number) => `${Math.floor(Math.max(0, t) / 60)}:${String(Math.flo
 /** Fill the track of a range input up to its thumb. */
 const fill = (el: HTMLInputElement) => el.style.setProperty('--fill', `${((+el.value - +el.min) / (+el.max - +el.min || 1)) * 100}%`)
 
+if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol) && !location.search.includes('selftest')) navigator.serviceWorker.register('./sw.js').catch(() => {}) // the web build keeps itself offline; Electron (app://) and the iOS app have their own files
 window.addEventListener('vite:preloadError', (e) => { // (preventDefault would make the failed import resolve to undefined, so only when the page is about to reload anyway)
   if (!isMissingChunk(String((e as Event & { payload?: { message?: string } }).payload?.message ?? ''))) return // some other error that came through a lazy module: not ours to handle
   if (handleStaleChunk({ say: (t) => say(t, 'error'), reload: () => location.reload(), storage: sessionStorage, now: Date.now() })) e.preventDefault()

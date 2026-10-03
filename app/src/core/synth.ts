@@ -1,4 +1,6 @@
 import { end, type Note } from './models'
+import { mixSampled } from './sf2'
+import { loadSoundFont } from './soundfonts'
 
 /**
  * Notes -> piano audio, rendered offline so it plays, seeks and exports like any decoded file.
@@ -14,8 +16,8 @@ import { end, type Note } from './models'
  *    and a light hall.
  * 'simple' is the old plain additive tone, kept for comparison.
  */
-export type PianoVoice = 'crystal' | 'simple'
-export const VOICES: Record<PianoVoice, string> = { crystal: 'Piano cơ (Crystal)', simple: 'Đơn giản' }
+export type PianoVoice = 'crystal' | 'simple' | `sf2:${string}` // 'sf2:<id>' plays an installed SoundFont (see soundfonts.ts)
+export const VOICES: Record<'crystal' | 'simple', string> = { crystal: 'Piano cơ (Crystal)', simple: 'Đơn giản' }
 let current: PianoVoice = 'crystal'
 export const setPianoVoice = (v: PianoVoice) => { current = v }
 export const getPianoVoice = () => current
@@ -149,30 +151,41 @@ export async function mixNotes(notes: Note[], sr: number, length: number): Promi
   return [L, R]
 }
 
-export async function renderNotes(notes: Note[], sampleRate = 44100, voice: PianoVoice = current): Promise<AudioBuffer> {
-  const length = Math.ceil((notes.reduce((m, n) => Math.max(m, end(n)), 0) + 3) * sampleRate)
-  if (voice === 'simple') return renderSimple(notes, sampleRate, length)
-  const [L, R] = await mixNotes(notes, sampleRate, length)
-  // the soundboard's colour and a light hall, done by the browser's own (fast) filters
+/** The soundboard's colour (unless the samples already have their own) and a light hall, done by the browser's own (fast) filters; then loud chords are kept from clipping. */
+async function finish(L: Float32Array<ArrayBuffer>, R: Float32Array<ArrayBuffer>, sampleRate: number, length: number, soundboard: boolean): Promise<AudioBuffer> {
   const ctx = new OfflineAudioContext(2, length, sampleRate)
   const src = new AudioBuffer({ length, numberOfChannels: 2, sampleRate })
   src.copyToChannel(L, 0); src.copyToChannel(R, 1)
   const input = new AudioBufferSourceNode(ctx, { buffer: src })
-  const low = new BiquadFilterNode(ctx, { type: 'lowshelf', frequency: 140, gain: 2 })
-  const body = new BiquadFilterNode(ctx, { type: 'peaking', frequency: 2800, Q: 0.8, gain: 1.6 })
-  const air = new BiquadFilterNode(ctx, { type: 'highshelf', frequency: 7500, gain: 1.2 })
   const lp = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 15000, Q: 0.5 })
+  if (soundboard) {
+    const low = new BiquadFilterNode(ctx, { type: 'lowshelf', frequency: 140, gain: 2 })
+    const body = new BiquadFilterNode(ctx, { type: 'peaking', frequency: 2800, Q: 0.8, gain: 1.6 })
+    const air = new BiquadFilterNode(ctx, { type: 'highshelf', frequency: 7500, gain: 1.2 })
+    input.connect(low); low.connect(body); body.connect(air); air.connect(lp)
+  } else input.connect(lp)
   const dry = new GainNode(ctx, { gain: 1 }), wet = new GainNode(ctx, { gain: PIANO.reverbWet })
   const verb = new ConvolverNode(ctx, { buffer: reverbIR(ctx) })
-  input.connect(low); low.connect(body); body.connect(air); air.connect(lp)
   lp.connect(dry); lp.connect(verb); verb.connect(wet)
   dry.connect(ctx.destination); wet.connect(ctx.destination)
   input.start()
   const buf = await ctx.startRendering()
   let peak = 0
   for (let ch = 0; ch < buf.numberOfChannels; ch++) { const d = buf.getChannelData(ch); for (let i = 0; i < d.length; i++) peak = Math.max(peak, Math.abs(d[i])) }
-  if (peak > 0) for (let ch = 0; ch < buf.numberOfChannels; ch++) { const d = buf.getChannelData(ch); for (let i = 0; i < d.length; i++) d[i] *= 0.85 / peak } // dense chords can't clip
+  if (peak > 0) for (let ch = 0; ch < buf.numberOfChannels; ch++) { const d = buf.getChannelData(ch); for (let i = 0; i < d.length; i++) d[i] *= 0.85 / peak }
   return buf
+}
+
+export async function renderNotes(notes: Note[], sampleRate = 44100, voice: PianoVoice = current): Promise<AudioBuffer> {
+  const length = Math.ceil((notes.reduce((m, n) => Math.max(m, end(n)), 0) + 3) * sampleRate)
+  if (voice === 'simple') return renderSimple(notes, sampleRate, length)
+  if (voice.startsWith('sf2:')) {
+    const lib = await loadSoundFont(voice.slice(4))
+    if (lib) { const [L, R] = await mixSampled(lib.font, lib.preset, notes, sampleRate, length); return finish(L, R, sampleRate, length, false) }
+    console.warn('SoundFont not available any more: playing the built-in piano') // its file was removed or the browser cleared its storage
+  }
+  const [L, R] = await mixNotes(notes, sampleRate, length)
+  return finish(L, R, sampleRate, length, true)
 }
 
 /** The old plain tone (one additive oscillator per note). */

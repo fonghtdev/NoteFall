@@ -103,6 +103,7 @@
           <section>
             <span class="label">Tiếng</span>
             <label class="row between" title="Tiếng đàn dùng cho bản nhạc PDF, MIDI và bản soạn (file mp3 giữ nguyên tiếng gốc)">Tiếng đàn <select id="piano" class="field"></select></label>
+            <button id="btn-fonts" class="btn sm" type="button" title="Nạp SoundFont (.sf2) hoặc tải đàn miễn phí để chọn thêm tiếng đàn">Thư viện đàn…</button>
             <label class="row between" title="Độ dài của nốt nhỏ (láy) trước nốt chính, tính theo phách">Nốt láy
               <select id="grace" class="field">
                 <option value="0.0625">Rất nhanh (1/16 phách)</option>
@@ -149,6 +150,23 @@
   </main>
 
   <main id="composer" hidden></main>
+  <dialog id="dlg-fonts" class="dlg" aria-labelledby="dlg-fonts-title">
+    <header><span id="dlg-fonts-title">Thư viện tiếng đàn</span><form method="dialog"><button class="btn ghost icon" aria-label="Đóng"><span data-icon="x"></span></button></form></header>
+    <div class="body fonts">
+      <section>
+        <h3>Đã cài</h3>
+        <div id="fonts-installed"></div>
+        <input id="fonts-file" type="file" accept=".sf2" hidden />
+        <button id="fonts-pick" class="btn sm" type="button">Nạp file .sf2 từ máy…</button>
+      </section>
+      <section>
+        <h3>Tải miễn phí</h3>
+        <div id="fonts-catalog"></div>
+        <p class="hint">Keyscape (Spectrasonics) và các thư viện trả phí khác chạy trong phần mềm riêng của hãng, nên không nạp thẳng vào NoteFall được. Nếu bạn có bản SoundFont (.sf2) hợp lệ của một cây đàn, nạp ở trên là dùng được.</p>
+      </section>
+      <p id="fonts-status" class="hint" role="status"></p>
+    </div>
+  </dialog>
   <dialog id="dlg-insert" class="dlg narrow" aria-labelledby="dlg-insert-title">
     <header><span id="dlg-insert-title">Chèn ô nhịp</span><form method="dialog"><button class="btn ghost icon" aria-label="Đóng"><span data-icon="x"></span></button></form></header>
     <form id="insert-form" method="dialog" class="stack">

@@ -25,6 +25,8 @@ import { toPerformance } from './editor/perform'
 import { scoreFromOmr } from './editor/importScore'
 import { scoreFromNotes } from './editor/io'
 import { keyName } from './editor/render'
+import { initFontsDialog } from './ui/fonts'
+import { listFonts } from './core/soundfonts'
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 const view = new PianoView($('view') as HTMLCanvasElement, $('gl') as HTMLCanvasElement)
@@ -415,20 +417,35 @@ bgDim.oninput = bgBlur.oninput = applySettings
 themeSel.addEventListener('change', () => { if (themeSel.value === 'image' && !view.bgImage) $('bg-file').click() }) // picking "your picture" asks for one
 void cache.load<Blob>('bg:image').then((b) => { if (b) void createImageBitmap(b).then((bmp) => { view.setBackground(bmp) }).catch(() => undefined) })
 
-// the piano the notes are played on
+// the piano the notes are played on: the built-in tones and every SoundFont the user installed
 const pianoSel = $<HTMLSelectElement>('piano')
-for (const [k, label] of Object.entries(VOICES)) pianoSel.add(new Option(label, k))
-try { const v = localStorage.getItem('notefall.piano'); if (v && v in VOICES) setPianoVoice(v as PianoVoice) } catch { /* default */ }
-pianoSel.value = getPianoVoice()
-pianoSel.onchange = async () => {
-  setPianoVoice(pianoSel.value as PianoVoice)
-  try { localStorage.setItem('notefall.piano', pianoSel.value) } catch { /* best effort */ }
+const fillPiano = () => {
+  pianoSel.replaceChildren()
+  for (const [k, label] of Object.entries(VOICES)) pianoSel.add(new Option(label, k))
+  for (const f of listFonts()) pianoSel.add(new Option(f.name, `sf2:${f.id}`))
+  if (![...pianoSel.options].some((o) => o.value === getPianoVoice())) setPianoVoice('crystal') // its library is gone
+  pianoSel.value = getPianoVoice()
+}
+try { const v = localStorage.getItem('notefall.piano'); if (v && (v in VOICES || listFonts().some((f) => `sf2:${f.id}` === v))) setPianoVoice(v as PianoVoice) } catch { /* default */ }
+fillPiano()
+/** Make the sound again with the chosen piano, keeping the place in the song. */
+const remakePiano = async () => {
   const t = transport.now(), was = transport.playing
   if (score) await showScore()
   else if (midiNotes) { say('Đang tổng hợp tiếng piano…'); show(midiNotes, await renderNotes(midiNotes)) }
   else return
   transport.seek(t); if (was) { transport.play(); setPlayState() }
 }
+pianoSel.onchange = async () => {
+  setPianoVoice(pianoSel.value as PianoVoice)
+  try { localStorage.setItem('notefall.piano', pianoSel.value) } catch { /* best effort */ }
+  await remakePiano()
+}
+initFontsDialog((use, remake) => {
+  if (use) { setPianoVoice(use as PianoVoice); try { localStorage.setItem('notefall.piano', use) } catch { /* best effort */ } }
+  fillPiano()
+  if (remake) void remakePiano()
+}, getPianoVoice)
 graceSel.onchange = () => { applySettings(); if (score) void showScore() } // grace notes are part of the sound: rebuild the notes
 applySettings()
 refresh()

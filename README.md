@@ -8,7 +8,7 @@ Turn piano sheet music into **crystal notes falling onto the right keys**, compo
 
 - **Falling notes**: open a sheet-music PDF, MIDI, MP3, WAV or FLAC; notes fall onto the 88 keys and each key presses and lights up when a note lands. Three looks: Black, Crystal, Your photo.
 - **Composer**: a two-staff score editor with voices, chords, grace notes, arpeggios, tremolo, key and time signatures, tempo, repeats and endings. Drag, copy and paste like in an office app, zoom with auto-fit, and bars widen themselves when notes crowd. Open a sheet-music PDF to edit it; save MusicXML, MIDI or PDF.
-- **Sound**: a modelled grand piano (string resonance, soundboard, reverb) and a metronome that follows the piece's meter.
+- **Sound**: a modelled grand piano (string resonance, soundboard, reverb), SoundFont (.sf2) libraries (load your own, or download the free GeneralUser GS from the *Thư viện đàn* dialog) and a metronome that follows the piece's meter.
 - **Video export**: mp4 (H.264 + AAC) at 720p or 1080p, rendered frame by frame so it is smooth on any machine; the metronome is never in the video.
 - **iPad**: full touch support (tap, drag, pinch to zoom, up / down / delete keys).
 

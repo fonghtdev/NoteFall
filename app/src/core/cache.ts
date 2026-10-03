@@ -29,3 +29,10 @@ export async function save(key: string, value: unknown): Promise<void> {
     db.transaction('notes', 'readwrite').objectStore('notes').put(value, key)
   } catch { /* cache is best-effort */ }
 }
+
+export async function remove(key: string): Promise<void> {
+  try {
+    const db = await open()
+    db.transaction('notes', 'readwrite').objectStore('notes').delete(key)
+  } catch { /* best-effort */ }
+}

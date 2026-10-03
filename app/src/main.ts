@@ -389,6 +389,7 @@ let cancelExport = false
 exportBtn.onclick = async () => {
   if (progress.hidden === false && exportBtn.textContent === 'Huỷ') { cancelExport = true; return }
   transport.pause(); setPlayState()
+  stopPractice() // the video's sound is the song alone: the metronome never goes into it (and stays quiet while it is made)
   cancelExport = false
   exportBtn.textContent = 'Huỷ'
   playBtn.disabled = true

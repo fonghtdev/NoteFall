@@ -322,6 +322,7 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
     console.log('glass available: ' + v.glassAvailable)
     const t0 = performance.now()
     let last = 0
+    ;(window as unknown as { __metronome?: { met: { follow: boolean } } }).__metronome!.met.follow = true // metronome switched on while exporting
     const blob = (await exportVideo({ view: v, duration: 3, audio, height: 720, fps: 30, onProgress: (p) => (last = p), cancelled: () => false }))!
     console.log(`exported ${blob.size} bytes in ${Math.round(performance.now() - t0)} ms (progress ${last})`)
     const vid = document.createElement('video')
@@ -331,6 +332,17 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
     vid.src = URL.createObjectURL(blob)
     await new Promise((r) => (vid.onloadedmetadata = r))
     console.log(`decoded: ${vid.videoWidth}x${vid.videoHeight}, duration ${vid.duration.toFixed(2)} s`)
+    { // the metronome is on, yet the video's sound is the song alone: decode it back and check it is the pure 440 Hz tone we put in
+      const m = (window as unknown as { __metronome?: { met: { follow: boolean } } }).__metronome
+      const decoded = await new OfflineAudioContext(1, 48000, 48000).decodeAudioData(await blob.arrayBuffer())
+      const d = decoded.getChannelData(0), from = 6000, n = Math.min(d.length - from, 48000 * 2)
+      let a = 0, b = 0, tot = 0
+      for (let i = 0; i < n; i++) { const x = d[from + i], ph = (2 * Math.PI * 440 * (from + i)) / 48000; a += x * Math.sin(ph); b += x * Math.cos(ph); tot += x * x }
+      a = (2 * a) / n; b = (2 * b) / n
+      const tone = (a * a + b * b) / 2, residual = Math.max(0, tot / n - tone)
+      console.log(`  exported sound: tone ${Math.sqrt(tone).toFixed(3)} rms, other ${Math.sqrt(residual).toFixed(4)} rms (metronome following: ${!!m?.met.follow})`)
+      console.log(`${Math.sqrt(residual) < 0.02 && Math.sqrt(tone) > 0.1 ? 'PASS' : 'FAIL'} the video carries no metronome clicks`)
+    }
     vid.currentTime = 1.4
     await new Promise((r) => (vid.onseeked = r))
     await new Promise((r) => setTimeout(r, 300))

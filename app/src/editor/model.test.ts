@@ -310,3 +310,30 @@ describe('dragged marks keep their place', () => {
     expect(findEv(s, a)!.ev.dyn === undefined && findEv(s, a)!.ev.off === undefined).toBe(true)
   })
 })
+
+import { contextAt, deleteMeasures, insertMeasures, toggleKeep } from './model'
+describe('inserting and removing several bars', () => {
+  const piece = (n: number) => { const s = emptyScore(n, { beats: 4, unit: 4 }, 0); putNote(s, { m: 1, staff: 0, voice: 0 }, 0, TPQ, P('C', 0, 5)); return s }
+  it('inserts empty bars at the start, in the middle and at the end, keeping the music where it was', () => {
+    const s = piece(3), mark = s.measures[1]
+    insertMeasures(s, 0, 2); expect(s.measures.length).toBe(5); expect(s.measures[3]).toBe(mark)
+    insertMeasures(s, 4, 3); expect(s.measures.length).toBe(8); expect(s.measures[3]).toBe(mark)
+    insertMeasures(s, 8, 1); expect(s.measures.length).toBe(9)
+    expect(validate(s)).toEqual([])
+  })
+  it('new bars take the time signature in force where they go in', () => {
+    const s = piece(3); setTime(s, 1, { beats: 3, unit: 4 })
+    insertMeasures(s, 2, 1)
+    expect(barTicks(contextAt(s, 2).time)).toBe(3 * TPQ)
+    expect(validate(s)).toEqual([])
+  })
+  it('removes a run of bars but always leaves one', () => {
+    const s = piece(4); deleteMeasures(s, 1, 2); expect(s.measures.length).toBe(2)
+    deleteMeasures(s, 0, 5); expect(s.measures.length).toBe(2) // would leave none: refused
+  })
+  it('keep-together marks the bars before the last one and releases them on the second call', () => {
+    const s = piece(4)
+    toggleKeep(s, 0, 2); expect(s.measures.map((m) => !!m.keep)).toEqual([true, true, false, false])
+    toggleKeep(s, 0, 2); expect(s.measures.map((m) => !!m.keep)).toEqual([false, false, false, false])
+  })
+})

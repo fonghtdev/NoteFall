@@ -374,6 +374,37 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
           const { pdfPages } = await import('./editor/io')
           ok('the grips are not part of an exported page', !pdfPages(document.querySelector('.cmp-sheet svg') as unknown as SVGElement, c.layout).includes('gap-handle'))
         }
+        { // inserting layout the way MuseScore does
+          const { findEv } = await import('./editor/model')
+          const bars = (n: number) => d.fromText(Array.from({ length: n }, () => ({ rh: 'C5:4', lh: 'r:4' })))
+          c.setScore(bars(4)); c.sel = c.score.measures[1].staves[0][0][0].id
+          const open = (count: number, where: string) => {
+            const dlg = document.getElementById('dlg-insert') as HTMLDialogElement
+            c.openInsertBars()
+            ;(dlg.querySelector('#ins-count') as HTMLInputElement).value = String(count)
+            ;(dlg.querySelector(`input[name="ins-where"][value="${where}"]`) as HTMLInputElement).checked = true
+            ;(dlg.querySelector('button[value="ok"]') as HTMLButtonElement).click()
+          }
+          open(3, 'after'); await new Promise((r) => setTimeout(r, 30))
+          ok('the dialog inserts several bars after the selected one, in one go', c.score.measures.length === 7 && c.score.measures[5].staves[0][0].some((e) => e.pitches.length) && !c.score.measures[2].staves[0][0].some((e) => e.pitches.length))
+          c.undo(); ok('one undo takes them all out', c.score.measures.length === 4)
+          open(2, 'start'); await new Promise((r) => setTimeout(r, 30)); open(1, 'end'); await new Promise((r) => setTimeout(r, 30))
+          ok('also at the start and at the end of the piece', c.score.measures.length === 7 && findEv(c.score, c.score.measures[2].staves[0][0][0].id)!.m === 2)
+          // keeping bars together and breaking sections
+          c.setScore(bars(24))
+          const sysOf = (m: number) => c.layout.measures[m].system
+          const brokeAt = c.layout.measures.find((dm, i) => i > 0 && dm.system !== c.layout.measures[i - 1].system)!.m // the first bar of line 2 without any help
+          c.setScore(bars(24)); c.cursor.m = brokeAt - 1; c.sel = c.score.measures[brokeAt - 1].staves[0][0][0].id
+          c.keepTogether()
+          ok('"keep together" moves a bar to the next line with its partner instead of splitting them', sysOf(brokeAt - 1) === sysOf(brokeAt) && sysOf(brokeAt - 1) !== sysOf(brokeAt - 2))
+          c.setScore(bars(4)); c.sel = c.score.measures[1].staves[0][0][0].id; c.pageBreak('section')
+          ok('a section break starts a new line after that bar, with a double bar', sysOf(2) !== sysOf(1) && c.score.measures[1].break === 'section')
+          // deleting a whole line
+          c.setScore(bars(24)); const n0 = c.score.measures.length
+          const first = c.layout.measures.filter((dm) => dm.system === 0).length
+          c.sysRange = [0, first - 1]; c.sel = undefined; c.delLine()
+          ok('"delete the line" takes out every bar of the picked line', c.score.measures.length === n0 - first)
+        }
         c.setMode('select')
         // marks must be hit by a real pointer: ask the page which element is under the centre of each kind of mark
         c.setScore(d.fromText([{ rh: 'C5:1 D5:1 E5:1 F5:1', lh: 'C3:4' }, { rh: 'G5:4', lh: 'r:4' }], { tempo: 60 }))

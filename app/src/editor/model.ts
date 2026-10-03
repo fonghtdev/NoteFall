@@ -69,7 +69,8 @@ export interface Measure {
   rehearsal?: string      // rehearsal mark (A, B, 1…) in a box
   clefs?: (ClefName | undefined)[] // per staff, set when a clef changes here
   barline?: BarlineKind   // kind of the line closing this bar (repeat signs have their own flags)
-  break?: 'system' | 'page' // a new line (or page) starts after this bar
+  break?: 'system' | 'page' | 'section' // a new line (or page, or section: a new line with a gap and a double bar) starts after this bar
+  keep?: boolean          // this bar stays on the same line as the next one
   stretch?: number        // widens (>1) or narrows (<1) this bar
   staffGap?: number       // on the first bar of a line: how much farther apart (px, - = closer) the line's two staves are drawn
   startRepeat?: boolean
@@ -372,8 +373,24 @@ export function toggleTie(s: Score, id: number) {
   if (f && f.ev.pitches.length) f.ev.tie = !f.ev.tie
 }
 
-export function insertMeasure(s: Score, after: number) {
-  s.measures.splice(after + 1, 0, blankMeasure(s, contextAt(s, after).time))
+export function insertMeasure(s: Score, after: number) { insertMeasures(s, after + 1, 1) }
+
+/** `count` empty bars before bar `at` (0 = at the start of the piece, the number of bars = at the end), in the time signature in force there. */
+export function insertMeasures(s: Score, at: number, count: number) {
+  const time = at > 0 ? contextAt(s, at - 1).time : s.time
+  s.measures.splice(at, 0, ...Array.from({ length: Math.max(0, Math.floor(count)) }, () => blankMeasure(s, time)))
+}
+
+/** Take out bars `from` to `to`; at least one bar always stays. */
+export function deleteMeasures(s: Score, from: number, to: number) {
+  const n = Math.min(to, s.measures.length - 1) - Math.max(from, 0) + 1
+  if (n > 0 && n < s.measures.length) s.measures.splice(Math.max(from, 0), n)
+}
+
+/** Bars `from` to `to` stay on one line, as far as the page allows (turn it on again to release them). */
+export function toggleKeep(s: Score, from: number, to: number) {
+  const on = !s.measures.slice(from, to).every((m) => m.keep)
+  for (let i = from; i < to; i++) s.measures[i].keep = on ? true : undefined
 }
 
 export function deleteMeasure(s: Score, i: number) {
@@ -704,7 +721,7 @@ export function setBarline(s: Score, i: number, kind?: BarlineKind) {
   m.barline = kind && kind !== 'single' ? kind : undefined
   if (kind) m.endRepeat = false
 }
-export function setBreak(s: Score, i: number, kind?: 'system' | 'page') { const m = s.measures[i]; if (m) m.break = m.break === kind ? undefined : kind }
+export function setBreak(s: Score, i: number, kind?: 'system' | 'page' | 'section') { const m = s.measures[i]; if (m) m.break = m.break === kind ? undefined : kind }
 /** The gap between the two staves of the line that runs from bar `from` to `to` (set on its first bar; 0 puts it back to the usual). */
 export function setStaffGap(s: Score, from: number, to: number, extra: number) {
   for (let i = from; i <= to; i++) if (s.measures[i]) s.measures[i].staffGap = undefined

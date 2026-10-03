@@ -6,7 +6,7 @@ import { hitTest, keyAlter, type Hit } from './hit'
 import {
   CLEFS, STEPS, TPQ, addGrace, barTicks, clearGrace, contextAt, copyPrevious, deleteEv, deleteMeasure, diatonic, emptyScore, findEv, flipStem, fromDiatonic, graceStep, midiOf, insertMeasure, ottavaShiftAt, putNote, putRest,
   TUPLETS, makeTuplet, navigationProblems, pruneRefs, setBarline, setBreak, setClef, setJump, setRehearsal, setTempoMark, setText, setTimeSymbol, setVolta, toggleEv, toggleMark, type BarlineKind, type ClefName, type Mark, type Orn, type SpanKind, type TextField,
-  putInTuplet, removeTuplet, setDyn, setKey, setLength, setTime, starts, toggleArt, toggleSpan, toggleTie, transpose, validate, allEventIds, clearMark, copyEvents, moveEv, moveMark, moveTempo, setMarkOffset, setStaffGap, STAFF_GAP_MAX, STAFF_GAP_MIN, setTempoOffset, pasteClip, type Clip, type Art, type Dyn, type Ev, type Pitch, type Score,
+  putInTuplet, removeTuplet, setDyn, setKey, setLength, setTime, starts, toggleArt, toggleSpan, toggleTie, transpose, validate, allEventIds, clearMark, copyEvents, moveEv, moveMark, moveTempo, setMarkOffset, setStaffGap, insertMeasures, deleteMeasures, toggleKeep, STAFF_GAP_MAX, STAFF_GAP_MIN, setTempoOffset, pasteClip, type Clip, type Art, type Dyn, type Ev, type Pitch, type Score,
 } from './model'
 import { toPerformance } from './perform'
 import { DYN_GLYPH, keyName, renderScore, tickAtX, type DrawnEv, type Layout, type MarkRef } from './render'
@@ -810,7 +810,45 @@ export class Composer {
   }
   rehearsal(text?: string) { const m = this.here(); this.commit((s) => setRehearsal(s, m, text)) }
   barline(kind: BarlineKind) { const [, b] = this.measureRange(); this.commit((s) => setBarline(s, b, kind)) }
-  pageBreak(kind: 'system' | 'page') { const [, b] = this.measureRange(); this.commit((s) => setBreak(s, b, kind)) }
+  pageBreak(kind: 'system' | 'page' | 'section') { const [, b] = this.measureRange(); this.commit((s) => setBreak(s, b, kind)) }
+  /** Insert `count` empty bars: at the start, before / after the selected bars, or at the end (the dialog the Layout palette opens). */
+  insertBars(count: number, where: 'start' | 'before' | 'after' | 'end') {
+    const [a, b] = this.measureRange()
+    const at = where === 'start' ? 0 : where === 'before' ? a : where === 'after' ? b + 1 : this.score.measures.length
+    const k = Math.max(1, Math.min(200, Math.floor(count) || 1))
+    this.commit((s) => insertMeasures(s, at, k))
+    this.cursor = { m: at, staff: this.cursor.staff, at: 0 }; this.sysRange = undefined; this.sel = undefined; this.range = []
+    this.refresh(); this.say(`Đã chèn ${k} ô nhịp (từ ô ${at + 1})`)
+  }
+  openInsertBars() {
+    const dlg = document.getElementById('dlg-insert') as HTMLDialogElement | null
+    if (!dlg) return
+    dlg.returnValue = ''
+    dlg.onclose = () => {
+      if (dlg.returnValue !== 'ok') return
+      const where = (dlg.querySelector<HTMLInputElement>('input[name="ins-where"]:checked')?.value ?? 'after') as 'start' | 'before' | 'after' | 'end'
+      this.insertBars(+(dlg.querySelector<HTMLInputElement>('#ins-count')?.value ?? 1), where)
+    }
+    dlg.showModal()
+    dlg.querySelector<HTMLInputElement>('#ins-count')?.select()
+  }
+  /** Take out the whole picked line (click beside its bars first). */
+  delLine() {
+    if (!this.sysRange) { this.say('Bấm cạnh các ô của một dòng để chọn cả dòng, rồi xoá'); return }
+    const [a, b] = this.sysRange
+    if (b - a + 1 >= this.score.measures.length) { this.say('Phải giữ lại ít nhất một ô nhịp'); return }
+    this.commit((s) => deleteMeasures(s, a, b))
+    this.cursor.m = Math.max(0, Math.min(a, this.score.measures.length - 1)); this.sysRange = undefined; this.sel = undefined; this.range = []
+    this.refresh(); this.say(`Đã xoá ${b - a + 1} ô của dòng`)
+  }
+  /** The selected bars (or this one and the next) stay on one line. */
+  keepTogether() {
+    const [a, b] = this.measureRange(), to = Math.min(this.score.measures.length - 1, b === a ? a + 1 : b)
+    if (to === a) { this.say('Cần ít nhất hai ô nhịp'); return }
+    this.commit((s) => toggleKeep(s, a, to))
+    this.say(this.score.measures[a].keep ? `Ô ${a + 1}–${to + 1} giữ cùng một dòng` : `Đã bỏ giữ ô ${a + 1}–${to + 1} cùng dòng`)
+  }
+
   /** The bar the + / − buttons mean: the last bar of the picked line, otherwise the last selected bar. */
   private barForAdd() { return this.measureRange()[1] }
   addBar() { const b = this.barForAdd(); this.commit((s) => insertMeasure(s, b)); this.cursor.m = b + 1; if (this.sysRange) this.sysRange = undefined; this.refresh(); this.say(`Đã thêm ô nhịp sau ô ${b + 1}`) }
@@ -1311,9 +1349,14 @@ export class Composer {
     const lay = P('Bố cục', 'Layout'); g = grid(lay)
     this.btn(g, 'sysbreak', 'Xuống dòng', 'Bắt đầu hệ khuông mới sau ô đang chọn', () => this.pageBreak('system'), { html: 'Xuống dòng ↵' })
     this.btn(g, 'pgbreak', 'Sang trang', 'Bắt đầu trang mới sau ô đang chọn (khi xuất PDF)', () => this.pageBreak('page'), { html: 'Sang trang ⎘' })
+    this.btn(g, 'sectbreak', 'Ngắt đoạn', 'Kết thúc một đoạn sau ô đang chọn: xuống dòng, chừa khoảng trống và đóng bằng vạch đôi', () => this.pageBreak('section'), { html: 'Ngắt đoạn ‖' })
+    this.btn(g, 'keep', 'Giữ cùng dòng', 'Giữ các ô đang chọn (hoặc ô này và ô sau) trên cùng một dòng; bấm lại để thả', () => this.keepTogether(), { html: 'Giữ cùng dòng' })
     g = grid(lay)
     this.btn(g, 'addbar', 'Thêm ô nhịp', 'Thêm ô nhịp sau ô đang chọn (hoặc sau ô cuối của dòng đang chọn)', () => this.addBar(), { html: `${icon('plus')}Ô nhịp` })
     this.btn(g, 'delbar', 'Xoá ô nhịp', 'Xoá ô nhịp đang chọn (hoặc ô cuối của dòng đang chọn)', () => this.delBar(), { html: `${icon('minus')}Ô nhịp` })
+    g = grid(lay)
+    this.btn(g, 'insbars', 'Chèn nhiều ô nhịp', 'Chèn nhiều ô nhịp cùng lúc: đầu bài, trước / sau ô đang chọn, hay cuối bài', () => this.openInsertBars(), { html: `${icon('plus')}Chèn nhiều ô…` })
+    this.btn(g, 'delline', 'Xoá cả dòng', 'Xoá tất cả các ô của dòng đang chọn (bấm cạnh các ô của dòng để chọn)', () => this.delLine(), { html: `${icon('minus')}Cả dòng` })
 
     const tp = P('Bộ ba', 'Tuplets')
     const tup = this.el('select', 'field', tp); tup.id = 'cmp-tup'; tup.title = 'Loại bộ ba'; tup.setAttribute('aria-label', 'Loại bộ ba')

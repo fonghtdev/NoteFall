@@ -149,6 +149,20 @@
   </main>
 
   <main id="composer" hidden></main>
+  <dialog id="dlg-insert" class="dlg narrow" aria-labelledby="dlg-insert-title">
+    <header><span id="dlg-insert-title">Chèn ô nhịp</span><form method="dialog"><button class="btn ghost icon" aria-label="Đóng"><span data-icon="x"></span></button></form></header>
+    <form id="insert-form" method="dialog" class="stack">
+      <label class="row"><span>Số ô nhịp</span><input id="ins-count" class="field" type="number" min="1" max="200" value="4" /></label>
+      <fieldset>
+        <legend>Vị trí</legend>
+        <label><input type="radio" name="ins-where" value="after" checked /> Sau ô đang chọn</label>
+        <label><input type="radio" name="ins-where" value="before" /> Trước ô đang chọn</label>
+        <label><input type="radio" name="ins-where" value="start" /> Đầu bài</label>
+        <label><input type="radio" name="ins-where" value="end" /> Cuối bài</label>
+      </fieldset>
+      <footer><button class="btn ghost" value="cancel" formnovalidate>Huỷ</button><button class="btn primary" value="ok">Chèn</button></footer>
+    </form>
+  </dialog>
   <dialog id="dlg-keys" class="dlg" aria-labelledby="dlg-keys-title">
     <header><span id="dlg-keys-title">Phím tắt</span><form method="dialog"><button class="btn ghost icon" aria-label="Đóng"><span data-icon="x"></span></button></form></header>
     <div class="body">

@@ -236,7 +236,16 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
   let cur: BarSpec[] = [], sum = 0, from = 0
   for (let mi = 0; mi < n; mi++) {
     let sp = barSpec(score, mi, cur.length === 0)
-    if (cur.length && sum + naturalWidth(sp) > usable) { systems.push({ from, to: mi - 1, specs: cur }); cur = []; sum = 0; from = mi; sp = barSpec(score, mi, true) }
+    if (cur.length && sum + naturalWidth(sp) > usable) {
+      // the line is full: break here, unless the bar before is to stay with this one: then the break moves back past every bar tied to its successor
+      let cut = cur.length
+      while (cut > 1 && score.measures[from + cut - 1].keep) cut--
+      const moved = cur.splice(cut)
+      systems.push({ from, to: from + cut - 1, specs: cur })
+      from += cut; cur = []; sum = 0
+      moved.forEach((_, k) => { const m = barSpec(score, from + k, k === 0); cur.push(m); sum += naturalWidth(m) })
+      sp = barSpec(score, mi, cur.length === 0)
+    }
     cur.push(sp)
     sum += naturalWidth(sp)
     if (score.measures[mi].break && mi < n - 1) { systems.push({ from, to: mi, specs: cur, forced: true }); cur = []; sum = 0; from = mi + 1 } // the user asked for a new line here
@@ -245,9 +254,9 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
 
   // 2. draw
   const gapOf = (sys: { from: number; to: number }) => STAFF_GAP + (score.clefs.length > 1 ? score.measures.slice(sys.from, sys.to + 1).find((m) => m.staffGap !== undefined)?.staffGap ?? 0 : 0) // the user may have pulled this line's staves apart or together
-  const sysH = (sys: { from: number; to: number }) => gapOf(sys) + STAFF_H + TOP_SPACE + SYSTEM_GAP, PAGE_GAP = 70
+  const sysH = (sys: { from: number; to: number }) => gapOf(sys) + STAFF_H + TOP_SPACE + SYSTEM_GAP, PAGE_GAP = 70, SECTION_GAP = 30
   const sysY: number[] = [] // top of each system; a page break leaves a visible gap (and starts a new sheet in the PDF)
-  { let y = TITLE_H; systems.forEach((sys, i) => { sysY.push(y); y += sysH(sys) + (score.measures[sys.to].break === 'page' && i < systems.length - 1 ? PAGE_GAP : 0) }) }
+  { let y = TITLE_H; systems.forEach((sys, i) => { sysY.push(y); y += sysH(sys) + (i < systems.length - 1 ? ({ page: PAGE_GAP, section: SECTION_GAP, system: 0 }[score.measures[sys.to].break ?? 'system'] ?? 0) : 0) }) }
   const height = sysY.length ? sysY[sysY.length - 1] + sysH(systems[systems.length - 1]) + MARGIN : TITLE_H + MARGIN
   const shifts = ottavaShifts(score)
   const r = new Renderer(host as HTMLDivElement, Renderer.Backends.SVG)
@@ -299,6 +308,7 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
         else if (m.barline === 'double') st.setEndBarType(Barline.type.DOUBLE)
         else if (m.barline === 'final') st.setEndBarType(Barline.type.END)
         else if (m.barline === 'none' || m.barline === 'dashed' || m.barline === 'dotted') st.setEndBarType(Barline.type.NONE)
+        else if (m.break === 'section') st.setEndBarType(Barline.type.DOUBLE)
         else if (mi === n - 1) st.setEndBarType(Barline.type.END)
         st.setContext(ctx).draw()
       })

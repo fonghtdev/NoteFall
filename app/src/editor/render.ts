@@ -1,4 +1,5 @@
-import { Accidental, Articulation, Barline, Beam, Curve, Dot, Formatter, Fraction, GhostNote, GraceNote, GraceNoteGroup, Modifier, Ornament, PedalMarking, Renderer, Stave, StaveConnector, StaveNote, StaveTie, Stroke, TextBracket, Tremolo, Tuplet, Voice, Volta } from 'vexflow/bravura'
+import { Accidental, Articulation, Barline, Beam, Curve, Dot, Formatter, Fraction, GhostNote, GraceNote, GraceNoteGroup, Modifier, Ornament, PedalMarking, Renderer, Stave, StaveConnector, StaveNote, TickContext, StaveTie, Stroke, TextBracket, Tremolo, Tuplet, Voice, Volta } from 'vexflow/bravura'
+import { NATURAL, forceFor, gapWidth, gapsOf, leadOf, type Col, type Gap } from './spacing'
 import { CLEFS, barTicks, clefAt, contextAt, diatonic, nominalTicks, notationOf, ottavaShifts, starts, type Art, type ClefName, type Ev, type Score } from './model'
 
 /** One drawn event, for hit-testing and selection. */
@@ -178,56 +179,35 @@ const modifierStave = (score: Score, mi: number, first: boolean, x: number, y: n
   return st
 }
 
-/** Width a bar needs: formatted content plus whatever clef/key/time it carries. */
-function minWidth(score: Score, mi: number, first: boolean): { w: number; mods: number } {
-  const t0 = performance.now()
-  try { return minWidth0(score, mi, first) } finally { renderStats.widthMs += performance.now() - t0 }
-}
-/** Bar width with `extra` times the room for its notes: clef, key and time signature (a lot with seven sharps) never need more. */
-const barWidth = (score: Score, mi: number, first: boolean, extra: number) => { const { w, mods } = minWidth(score, mi, first); return mods + (w - mods) * extra }
-const widthCache = new Map<string, { w: number; mods: number }>()
-function minWidth0(score: Score, mi: number, first: boolean): { w: number; mods: number } {
-  // the same bar in the same surroundings always needs the same room: remember it (editing one bar then costs one bar, not sixty)
+/** What a bar asks of the page: room for its clef / key / time, and its columns of notes with the springs between them. */
+interface BarSpec { mods: number; lead: number; cols: Col[]; gaps: Gap[] }
+const specCache = new Map<string, BarSpec>()
+function barSpec(score: Score, mi: number, first: boolean): BarSpec {
+  // the same bar in the same surroundings always asks the same: remember it (editing one bar then costs one bar, not sixty)
   const ctx = contextAt(score, mi)
   const key = JSON.stringify([score.measures[mi], score.clefs.map((_, si) => clefAt(score, mi, si)), ctx.key, ctx.time, first])
-  const hit = widthCache.get(key)
-  if (hit !== undefined) return hit
-  const w = minWidth1(score, mi, first)
-  if (widthCache.size > 3000) widthCache.clear()
-  widthCache.set(key, w)
-  return w
-}
-function minWidth1(score: Score, mi: number, first: boolean): { w: number; mods: number } {
+  const hit = specCache.get(key)
+  if (hit) return hit
+  const t0 = performance.now()
   const staves = score.clefs.map((_, si) => modifierStave(score, mi, first, 0, 0, 400, si))
   const mods = Math.max(...staves.map((s) => s.getNoteStartX() - s.getX()))
-  const k = score.measures[mi].stretch ?? 1
-  // Format the bar the way drawing will and widen the note area until no two columns of notes (heads, ledger lines, dots, accidentals) touch.
-  // Done here, per bar and cached, so the answer does not depend on which line the bar ends up on.
-  let area = 0
-  for (let tries = 0; tries < 8; tries++) {
-    const b = build(score, mi, staves, new Set())
-    const f = new Formatter()
-    const byStaff = score.clefs.map((_, si) => b.voices.filter((v) => b.order.find((o) => b.notes.get(o.ev.id) === v.getTickables()[0])?.staff === si))
-    byStaff.forEach((vs) => vs.length && f.joinVoices(vs))
-    if (!area) area = Math.max(70, f.preCalculateMinTotalWidth(b.voices) + 28) - 12
-    f.format(b.voices, area)
-    let over = 0
-    byStaff.forEach((_, si) => {
-      const cols = new Map<number, { x: number; left: number; right: number }>()
-      for (const o of b.order) {
-        if (o.staff !== si || !o.ev.pitches.length) continue
-        const n = b.notes.get(o.ev.id)!, r = reach(n), x = n.getAbsoluteX(), key = Math.round(x)
-        const c = cols.get(key) ?? { x, left: 0, right: 0 }
-        c.left = Math.max(c.left, r.left); c.right = Math.max(c.right, r.right); cols.set(key, c)
-      }
-      const xs = [...cols.values()].sort((p, q) => p.x - q.x)
-      for (let i = 1; i < xs.length; i++) over = Math.max(over, xs[i - 1].right + xs[i].left + 1 - (xs[i].x - xs[i - 1].x))
-    })
-    if (over <= 0) break
-    area = area * 1.08 + over * 2
+  const bar = barTicks(ctx.time), b = build(score, mi, staves, new Set())
+  const at = new Map<number, Col>()
+  for (const o of b.order) {
+    if (!o.ev.pitches.length && o.ev.ticks >= bar) continue // a rest for the whole bar sits in the middle, whatever the columns do
+    const r = reach(b.notes.get(o.ev.id)!), c = at.get(o.at) ?? { tick: o.at, left: 0, right: 0 }
+    c.left = Math.max(c.left, r.left); c.right = Math.max(c.right, r.right); at.set(o.at, c)
   }
-  return { w: (area + 12 + mods) * k, mods: mods * k }
+  const cols = [...at.values()].sort((p, q) => p.tick - q.tick)
+  const k = score.measures[mi].stretch ?? 1 // the user's wider / narrower bar
+  const spec = { mods, lead: leadOf(cols), cols, gaps: gapsOf(cols, bar).map((g) => ({ min: g.min, stretch: g.stretch * k })) }
+  if (specCache.size > 3000) specCache.clear()
+  specCache.set(key, spec)
+  renderStats.widthMs += performance.now() - t0
+  return spec
 }
+/** Width of a bar when its springs rest at their natural length. */
+const naturalWidth = (sp: BarSpec) => sp.mods + sp.lead + sp.gaps.reduce((a, g) => a + gapWidth(g, NATURAL), 0)
 
 /** A mark picked up for moving: a text / dynamic on a note, the tempo or the rehearsal mark of a bar. */
 export type MarkRef = { kind: 'ev'; field: 'dyn' | 'staffText' | 'expr' | 'chord' | 'lyric'; id: number } | { kind: 'tempo' | 'rehearsal'; bar: number }
@@ -239,65 +219,29 @@ export const renderStats = { totalMs: 0, passes: 0, widthMs: 0, drawMs: 0 }
 
 export function renderScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout {
   const t0 = performance.now(); renderStats.widthMs = 0; renderStats.drawMs = 0; renderStats.passes = 1
-  // Draw; if notes of a bar still touch each other (many chords, seconds, accidentals), give that bar more room and draw again.
-  const extra = score.measures.map(() => 1)
-  let layout = drawScore(host, score, opts, extra)
-  let before = Infinity
-  for (let pass = 0; pass < 4; pass++) {
-    const tight = crowded(layout)
-    const worst = [...tight.values()].reduce((a, b) => a + b, 0) // px of overlap, summed: more telling than how many bars
-    if (!tight.size || worst >= before) break // fine, or widening did not help (the line is full): stop instead of redrawing for nothing
-    before = worst
-    for (const [m, over] of tight) extra[m] = Math.min(5, extra[m] * (1.15 + Math.min(0.5, over / 40)) + 0.05) // the worse the overlap, the bigger the step
-    layout = drawScore(host, score, opts, extra); renderStats.passes++
-  }
+  const layout = drawScore(host, score, opts)
   renderStats.totalMs = performance.now() - t0
   return layout
 }
 
-/** Bars where two neighbouring columns of notes are closer than their heads, ledger lines, dots, displaced heads and accidentals need, and by how many px. */
-function crowded(layout: Layout): Map<number, number> {
-  const bad = new Map<number, number>()
-  for (const dm of layout.measures) {
-    for (let si = 0; si < dm.staves.length; si++) {
-      const cols = new Map<number, { x: number; left: number; right: number }>()
-      for (const e of dm.evs) {
-        if (e.staff !== si || e.rest) continue
-        const key = Math.round(e.x)
-        const c = cols.get(key) ?? { x: e.x, left: 0, right: 0 }
-        c.left = Math.max(c.left, e.left); c.right = Math.max(c.right, e.right)
-        cols.set(key, c)
-      }
-      const xs = [...cols.values()].sort((a, b) => a.x - b.x)
-      for (let i = 1; i < xs.length; i++) {
-        const over = xs[i - 1].right + xs[i].left + 1 - (xs[i].x - xs[i - 1].x) // closer than the heads themselves (plus 1px)
-        if (over > 0) bad.set(dm.m, Math.max(bad.get(dm.m) ?? 0, over))
-      }
-    }
-  }
-  return bad
-}
-
-function drawScore(host: HTMLElement, score: Score, opts: RenderOptions, extra: number[]): Layout {
+function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout {
   host.innerHTML = ''
   const selected = opts.selected ?? new Set<number>()
   const isSel = (m: MarkRef) => { const q = opts.selectedMark; return !!q && q.kind === m.kind && ((q.kind === 'ev' && m.kind === 'ev') ? q.id === m.id && q.field === m.field : (q as { bar?: number }).bar === (m as { bar?: number }).bar) }
   const usable = opts.width - 2 * MARGIN
   const n = score.measures.length
 
-  // 1. system breaks: greedy fill on minimum widths
-  const first = (mi: number, startOfSystem: boolean) => startOfSystem
-  const systems: { from: number; to: number; mins: number[]; forced?: boolean }[] = []
-  let cur: number[] = [], sum = 0, from = 0
+  // 1. system breaks: greedy fill on the natural widths (the bar that opens a line carries clef, key and time, so it is measured with them)
+  const systems: { from: number; to: number; specs: BarSpec[]; forced?: boolean }[] = []
+  let cur: BarSpec[] = [], sum = 0, from = 0
   for (let mi = 0; mi < n; mi++) {
-    let w = barWidth(score, mi, cur.length === 0, extra[mi])
-    if (cur.length && sum + w > usable) { systems.push({ from, to: mi - 1, mins: cur }); cur = []; sum = 0; from = mi; w = barWidth(score, mi, true, extra[mi]) } // the bar that opens a line carries clef, key and time: size it with them
-    cur.push(w)
-    sum += w
-    if (score.measures[mi].break && mi < n - 1) { systems.push({ from, to: mi, mins: cur, forced: true }); cur = []; sum = 0; from = mi + 1 } // the user asked for a new line here
+    let sp = barSpec(score, mi, cur.length === 0)
+    if (cur.length && sum + naturalWidth(sp) > usable) { systems.push({ from, to: mi - 1, specs: cur }); cur = []; sum = 0; from = mi; sp = barSpec(score, mi, true) }
+    cur.push(sp)
+    sum += naturalWidth(sp)
+    if (score.measures[mi].break && mi < n - 1) { systems.push({ from, to: mi, specs: cur, forced: true }); cur = []; sum = 0; from = mi + 1 } // the user asked for a new line here
   }
-  if (cur.length) systems.push({ from, to: n - 1, mins: cur })
-  void first
+  if (cur.length) systems.push({ from, to: n - 1, specs: cur })
 
   // 2. draw
   const SYS_H = STAFF_GAP + STAFF_H + TOP_SPACE + SYSTEM_GAP, PAGE_GAP = 70
@@ -331,13 +275,16 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions, extra: 
     const y0 = sysY[sIdx]
     const last = sIdx === systems.length - 1
     layout.systems.push({ y0: y0 + 5, y1: y0 + STAFF_GAP + TOP_SPACE + STAFF_H + 40, pageBreakAfter: score.measures[sys.to].break === 'page' }) // room for ledger lines above/below
-    const total = sys.mins.reduce((a, b) => a + b, 0)
-    const stretch = last ? Math.min(1.25, usable / total) : sys.forced ? Math.min(2, usable / total) : usable / total
+    // one force pulls the springs of the whole line, so equal notes get equal room across bars; a short last line or a forced break is not stretched to the edge
+    const natural = sys.specs.reduce((a, sp) => a + naturalWidth(sp), 0)
+    const target = last ? Math.min(usable, natural * 1.25) : sys.forced ? Math.min(usable, natural * 2) : usable
+    const fixed = sys.specs.reduce((a, sp) => a + sp.mods + sp.lead, 0)
+    const force = forceFor(sys.specs.flatMap((sp) => sp.gaps), target - fixed)
     let x = MARGIN
     const rowStaves: Stave[][] = []
-    sys.mins.forEach((min, k) => {
+    sys.specs.forEach((spec, k) => {
       const mi = sys.from + k
-      const w = min * stretch
+      const w = spec.mods + spec.lead + spec.gaps.reduce((a, g) => a + gapWidth(g, force), 0)
       const staves = score.clefs.map((_, si) => modifierStave(score, mi, k === 0, x, y0 + si * STAFF_GAP, w, si))
       const m = score.measures[mi]
       const vt = voltaType(score, mi)
@@ -364,6 +311,18 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions, extra: 
       })
       const noteArea = Math.min(...staves.map((s) => s.getNoteEndX())) - Math.max(...staves.map((s) => s.getNoteStartX())) - 12
       f.format(b.voices, Math.max(40, noteArea))
+      // VexFlow has placed the notes; put every column where the springs of the line say (VexFlow's own spacing only decides who shares a column)
+      const x0 = Math.max(...staves.map((s) => s.getNoteStartX()))
+      const colX = new Map<number, number>()
+      { let acc = spec.lead; spec.cols.forEach((c, i) => { colX.set(c.tick, x0 + acc); acc += gapWidth(spec.gaps[i], force) }) }
+      const moves = new Map<TickContext, number>()
+      const bar = barTicks(contextAt(score, mi).time)
+      for (const o of b.order) {
+        if (!o.ev.pitches.length && o.ev.ticks >= bar) continue // a rest for the whole bar is centred by VexFlow: its x says nothing about the column
+        const note = b.notes.get(o.ev.id)!, tc = note.getTickContext(), want = colX.get(o.at)
+        if (want !== undefined && !moves.has(tc)) moves.set(tc, want - (note.getAbsoluteX() - tc.getX()))
+      }
+      moves.forEach((tx, tc) => tc.setX(tx))
       b.voices.forEach((v) => {
         const first = v.getTickables()[0]
         const o = b.order.find((q) => b.notes.get(q.ev.id) === first)!

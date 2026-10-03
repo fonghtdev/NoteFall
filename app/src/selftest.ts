@@ -260,6 +260,13 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
           }))
           ok('seven sharps, chords on ledger lines, bars that open a line: no two columns touch', gaps.every((v) => v >= 0))
         }
+        { // the whole line is pulled by one force: eighths get 1/1.5 of the room of quarters, in every bar of the line
+          const sc = d.fromText([{ rh: 'C5:1 C5:1 C5:1 C5:1', lh: 'r:4' }, { rh: Array(8).fill('C5:0.5').join(' '), lh: 'r:4' }, { rh: 'C5:1 C5:1 C5:1 C5:1', lh: 'r:4' }])
+          c.setScore(sc)
+          const gap = (m: number) => { const xs = c.layout.measures[m].evs.filter((q) => q.staff === 0 && !q.rest).map((q) => q.x).sort((p, q) => p - q); return xs[2] - xs[1] }
+          const ratio = gap(0) / gap(1)
+          ok('quarters get 1.5x the room of eighths, and the same room in every bar', ratio > 1.4 && ratio < 1.6 && Math.abs(gap(0) - gap(2)) < 0.5)
+        }
         c.setMode('select')
         // marks must be hit by a real pointer: ask the page which element is under the centre of each kind of mark
         c.setScore(d.fromText([{ rh: 'C5:1 D5:1 E5:1 F5:1', lh: 'C3:4' }, { rh: 'G5:4', lh: 'r:4' }], { tempo: 60 }))
@@ -480,15 +487,6 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
       await new Promise((r) => setTimeout(r, 600))
       const c = (window as unknown as { __composer: import('./editor/composer').Composer }).__composer
       console.log(`composer: ${c.score.measures.length} bars, key ${c.score.key}, status: ${document.querySelector('.cmp-status')?.textContent}`)
-      { const bad: string[] = [] // bars where two columns of notes still touch after the automatic widening
-        c.layout.measures.forEach((dm) => [0, 1].forEach((si) => {
-          const per = new Map<number, { x: number; right: number; left: number }>()
-          for (const e of dm.evs.filter((q) => q.staff === si && !q.rest)) per.set(Math.round(e.x), { x: e.x, right: Math.max(per.get(Math.round(e.x))?.right ?? 0, e.right), left: Math.max(per.get(Math.round(e.x))?.left ?? 0, e.left) })
-          const cols = [...per.values()].sort((p, q) => p.x - q.x)
-          const g = Math.min(...cols.slice(1).map((q, i) => q.x - cols[i].x - cols[i].right - q.left))
-          if (g < 0) bad.push(`bar ${dm.m + 1} staff ${si}: ${Math.round(g)}px`)
-        }))
-        console.log('TOUCHING ' + (bad.join('; ') || 'none')) }
       return console.log('SELFTEST_DONE')
     }
     console.log('NOTES ' + JSON.stringify((window as unknown as { __raw: () => Note[] }).__raw()))

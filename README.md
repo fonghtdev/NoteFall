@@ -2,6 +2,8 @@
 
 Turn piano sheet music into **crystal notes falling onto the right keys**, compose like in MuseScore, then export a video. Runs on Mac, Windows and iPad.
 
+**Try it in the browser: https://fonghtdev.github.io/NoteFall/** (on an iPad: open it in Safari, then Share > Add to Home Screen).
+
 ## Features
 
 - **Falling notes**: open a sheet-music PDF, MIDI, MP3, WAV or FLAC; notes fall onto the 88 keys and each key presses and lights up when a note lands. Three looks: Black, Crystal, Your photo.
@@ -47,7 +49,7 @@ In Xcode: pick the *App* target, Signing & Capabilities, sign in with an Apple I
 
 ## Web (Safari / any browser)
 
-`npm run build` in `app/` also produces a web app in `app/dist` (manifest, icons, offline cache). Serve that folder over HTTPS from any static host; on an iPad open the link in Safari and choose Share > Add to Home Screen. After the first load it works offline. No Apple account or app review needed, and a redeploy updates everyone.
+`npm run build` in `app/` also produces a web app in `app/dist` (manifest, icons, offline cache). It is published to GitHub Pages automatically on every push to `main` (`.github/workflows/pages.yml`). To host it elsewhere, serve that folder over HTTPS from any static host; on an iPad open the link in Safari and choose Share > Add to Home Screen. After the first load it works offline. No Apple account or app review needed, and a redeploy updates everyone.
 
 ## Layout
 

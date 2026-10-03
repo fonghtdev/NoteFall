@@ -210,7 +210,7 @@ function barSpec(score: Score, mi: number, first: boolean): BarSpec {
 const naturalWidth = (sp: BarSpec) => sp.mods + sp.lead + sp.gaps.reduce((a, g) => a + gapWidth(g, NATURAL), 0)
 
 /** A mark picked up for moving: a text / dynamic on a note, the tempo or the rehearsal mark of a bar. */
-export type MarkRef = { kind: 'ev'; field: 'dyn' | 'staffText' | 'expr' | 'chord' | 'lyric'; id: number } | { kind: 'tempo' | 'rehearsal'; bar: number }
+export type MarkRef = { kind: 'ev'; field: 'dyn' | 'staffText' | 'expr' | 'chord' | 'lyric' | 'hairpin'; id: number } | { kind: 'tempo' | 'rehearsal'; bar: number }
 export interface RenderOptions { width: number; selected?: Set<number>; selectedMark?: MarkRef }
 
 /** Draw the whole score into `host` (an SVG) and return where things ended up. */
@@ -418,16 +418,17 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
   const MAX_UP = 64 // px a mark may be pushed up: past that a small overlap is the lesser evil
   const maxDown = (si: number) => (si < score.clefs.length - 1 ? 60 : 110) // below the upper staff the other staff starts; below the last one there is the whole gap to the next line
   /** `ink` is the glyph's real extent above / below its baseline, for music-font glyphs whose box (the font's em) is several times taller than what is drawn. */
-  const avoid = (el: SVGGraphicsElement, dir: 1 | -1, si: number, ink?: [number, number]) => {
+  /** Put `el` clear of what is taken; a `fixed` offset is where the user dragged it to, and is kept as it is. */
+  const avoid = (el: SVGGraphicsElement, dir: 1 | -1, si: number, ink?: [number, number], fixed?: number) => {
     const bb = el.getBBox()
     const b = ink ? { x: bb.x, width: bb.width, y: +el.getAttribute('y')! - ink[0], height: ink[0] + ink[1] } : bb
-    let dy = 0
-    for (let k = 0; k < 12; k++) {
+    let dy = fixed ?? 0
+    for (let k = 0; fixed === undefined && k < 12; k++) {
       const hit = taken.find((o) => o.x0 < b.x + b.width + 1 && o.x1 > b.x - 1 && o.y0 < b.y + dy + b.height && o.y1 > b.y + dy)
       if (!hit) break
       dy = dir > 0 ? hit.y1 + 1 - b.y : hit.y0 - 1 - (b.y + b.height)
     }
-    if (dir > 0 ? dy > maxDown(si) : dy < -MAX_UP) dy = 0
+    if (fixed === undefined && (dir > 0 ? dy > maxDown(si) : dy < -MAX_UP)) dy = 0
     if (dy) el.setAttribute('transform', `translate(0 ${dy})`)
     taken.push({ x0: b.x, x1: b.x + b.width, y0: b.y + dy, y1: b.y + b.height + dy })
   }
@@ -446,7 +447,7 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
       t.setAttribute('data-mark', JSON.stringify(dm_)); t.setAttribute('style', 'cursor:grab'); t.setAttribute('pointer-events', 'all'); t.setAttribute('stroke', 'transparent'); t.setAttribute('stroke-width', '8')
       if (isSel(dm_)) t.setAttribute('fill', '#1d6fff')
       svg.appendChild(t)
-      avoid(t, 1, si, [18, 14])
+      avoid(t, 1, si, [18, 14], ev.off?.dyn)
     }
     if (ev.hairpin) {
       const b = noteOf.get(ev.hairpin.end)
@@ -459,7 +460,14 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
         const p = document.createElementNS('http://www.w3.org/2000/svg', 'path')
         p.setAttribute('d', ev.hairpin.type === 'cresc' ? `M${x2} ${yc - h}L${x1} ${yc}L${x2} ${yc + h}` : `M${x1} ${yc - h}L${x2} ${yc}L${x1} ${yc + h}`)
         p.setAttribute('fill', 'none'); p.setAttribute('stroke', '#000'); p.setAttribute('stroke-width', '1.3')
+        const dy = ev.off?.hairpin ?? 0, ref: MarkRef = { kind: 'ev', field: 'hairpin', id: ev.id }
+        if (dy) p.setAttribute('transform', `translate(0 ${dy})`)
+        if (isSel(ref)) p.setAttribute('stroke', '#1d6fff')
         svg.appendChild(p)
+        const grab = p.cloneNode() as SVGPathElement // a wedge is too thin to hit: an invisible, wider copy takes the pointer
+        grab.setAttribute('stroke', 'transparent'); grab.setAttribute('stroke-width', '10'); grab.setAttribute('pointer-events', 'all'); grab.setAttribute('style', 'cursor:grab')
+        grab.setAttribute('data-mark', JSON.stringify(ref))
+        svg.appendChild(grab)
       }
     }
     if (ev.slur !== undefined) {
@@ -474,7 +482,7 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
 
   // 5. the rest of the palette: texts, tempo, rehearsal marks, ottava, pedal, glissando, breath marks
   const NS = 'http://www.w3.org/2000/svg'
-  const put = (t: string, x: number, y: number, o: { size?: number; italic?: boolean; bold?: boolean; font?: string; anchor?: string; mark?: MarkRef; side?: 1 | -1; staff?: number } = {}) => {
+  const put = (t: string, x: number, y: number, o: { size?: number; italic?: boolean; bold?: boolean; font?: string; anchor?: string; mark?: MarkRef; side?: 1 | -1; staff?: number; fixed?: number } = {}) => {
     const e = document.createElementNS(NS, 'text')
     e.textContent = t
     e.setAttribute('x', String(x)); e.setAttribute('y', String(y)); e.setAttribute('text-anchor', o.anchor ?? 'start')
@@ -486,7 +494,7 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
       if (isSel(o.mark)) e.setAttribute('fill', '#1d6fff')
     }
     svg.appendChild(e)
-    if (o.side) avoid(e, o.side, o.staff ?? 0)
+    if (o.side) avoid(e, o.side, o.staff ?? 0, undefined, o.fixed)
     return e
   }
   layout.measures.forEach((dm) => {
@@ -534,10 +542,10 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
       const n = noteOf.get(ev.id)
       if (!n) return
       const st = layout.measures[m].staves[si], x = n.note.getAbsoluteX()
-      if (ev.chord) put(ev.chord, x - 2, st.top - 34, { size: 14, bold: true, font: 'Arial, sans-serif', side: -1, staff: si, mark: { kind: 'ev', field: 'chord', id: ev.id } })
-      if (ev.staffText) put(ev.staffText, x - 2, st.top - 34, { size: 13, bold: true, italic: true, side: -1, staff: si, mark: { kind: 'ev', field: 'staffText', id: ev.id } })
-      if (ev.expr) put(ev.expr, x - 2, st.bottom + 54, { size: 14, bold: true, italic: true, side: 1, staff: si, mark: { kind: 'ev', field: 'expr', id: ev.id } })
-      if (ev.lyric) put(ev.lyric, x + 5, st.bottom + 26, { size: 13, anchor: 'middle', side: 1, staff: si, mark: { kind: 'ev', field: 'lyric', id: ev.id } })
+      if (ev.chord) put(ev.chord, x - 2, st.top - 34, { size: 14, bold: true, font: 'Arial, sans-serif', side: -1, staff: si, fixed: ev.off?.chord, mark: { kind: 'ev', field: 'chord', id: ev.id } })
+      if (ev.staffText) put(ev.staffText, x - 2, st.top - 34, { size: 13, bold: true, italic: true, side: -1, staff: si, fixed: ev.off?.staffText, mark: { kind: 'ev', field: 'staffText', id: ev.id } })
+      if (ev.expr) put(ev.expr, x - 2, st.bottom + 54, { size: 14, bold: true, italic: true, side: 1, staff: si, fixed: ev.off?.expr, mark: { kind: 'ev', field: 'expr', id: ev.id } })
+      if (ev.lyric) put(ev.lyric, x + 5, st.bottom + 26, { size: 13, anchor: 'middle', side: 1, staff: si, fixed: ev.off?.lyric, mark: { kind: 'ev', field: 'lyric', id: ev.id } })
       if (ev.breath) put(ev.breath === 'breath' ? '\uE4CE' : '\uE4D1', x + 20, st.top - 2, { size: 30, font: 'Bravura, serif' })
       if (ev.ottava) {
         const j = chain.findIndex((q) => q.ev.id === ev.ottava!.end)

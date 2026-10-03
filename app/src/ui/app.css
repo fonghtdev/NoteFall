@@ -291,3 +291,6 @@ body { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-are
   .btn.zoomlabel { min-width: 84px; }
 }
 #share-offer { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 100; display: flex; gap: var(--s2); align-items: center; padding: var(--s2); background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--shadow-pop); animation: pop-in var(--t-in) var(--out); }
+
+/* dragging the page with the right / middle button */
+.cmp-page.panning, .cmp-page.panning * { cursor: grabbing !important; user-select: none; }

@@ -6,7 +6,7 @@ import { hitTest, keyAlter, type Hit } from './hit'
 import {
   CLEFS, STEPS, TPQ, addGrace, barTicks, clearGrace, contextAt, copyPrevious, deleteEv, deleteMeasure, diatonic, emptyScore, findEv, flipStem, fromDiatonic, graceStep, midiOf, insertMeasure, ottavaShiftAt, putNote, putRest,
   TUPLETS, makeTuplet, navigationProblems, pruneRefs, setBarline, setBreak, setClef, setJump, setRehearsal, setTempoMark, setText, setTimeSymbol, setVolta, toggleEv, toggleMark, type BarlineKind, type ClefName, type Mark, type Orn, type SpanKind, type TextField,
-  putInTuplet, removeTuplet, setDyn, setKey, setLength, setTime, starts, toggleArt, toggleSpan, toggleTie, transpose, validate, allEventIds, clearMark, copyEvents, moveEv, moveMark, moveTempo, setTempoOffset, pasteClip, type Clip, type Art, type Dyn, type Ev, type Pitch, type Score,
+  putInTuplet, removeTuplet, setDyn, setKey, setLength, setTime, starts, toggleArt, toggleSpan, toggleTie, transpose, validate, allEventIds, clearMark, copyEvents, moveEv, moveMark, moveTempo, setMarkOffset, setTempoOffset, pasteClip, type Clip, type Art, type Dyn, type Ev, type Pitch, type Score,
 } from './model'
 import { toPerformance } from './perform'
 import { DYN_GLYPH, keyName, renderScore, tickAtX, type DrawnEv, type Layout, type MarkRef } from './render'
@@ -25,6 +25,11 @@ const DURATIONS: [string, string, number][] = [
   ['1', 'Móc 4 (1/64)', TPQ / 16], ['2', 'Móc 3 (1/32)', TPQ / 8], ['3', 'Móc kép (1/16)', TPQ / 4], ['4', 'Móc đơn (1/8)', TPQ / 2],
   ['5', 'Đen (1/4)', TPQ], ['6', 'Trắng (1/2)', 2 * TPQ], ['7', 'Tròn (1/1)', 4 * TPQ],
 ]
+/** How far a mark was pushed down (+) or up (-) when it was drawn: by autoplace or by the user's drag. */
+const shiftOf = (el: Element) => +(/translate\(0 (-?[\d.]+)\)/.exec(el.getAttribute('transform') ?? '')?.[1] ?? 0)
+
+/** A pitch as a musician writes it: F♯4, B♭3. */
+const pitchLabel = (p: Pitch) => `${p.step}${p.alter > 0 ? '♯'.repeat(p.alter) : p.alter < 0 ? '♭'.repeat(-p.alter) : ''}${p.octave}`
 const TIME_SIGS = ['2/4', '3/4', '4/4', '5/4', '6/4', '2/2', '3/8', '6/8', '9/8', '12/8']
 
 type Mode = 'select' | 'input'
@@ -38,6 +43,8 @@ export class Composer {
   dur = TPQ
   dotted = false
   voice = 0
+  /** The page being dragged along with the hand (right or middle button held), and where the drag started. */
+  private pan?: { page: HTMLElement; x: number; y: number; left: number; top: number }
   cursor = { m: 0, staff: 0, at: 0 }
   pendingAlter?: number      // accidental chosen before entering the next note
   private lastD = 35
@@ -45,7 +52,7 @@ export class Composer {
   private undoStack: string[] = []
   private redoStack: string[] = []
   private host!: HTMLDivElement
-  private ghost?: SVGEllipseElement
+  private ghost?: SVGGElement
   private status!: HTMLElement
   private playing?: AudioBufferSourceNode
   private ctx?: AudioContext
@@ -255,6 +262,11 @@ export class Composer {
     return best?.ev
   }
 
+  private panTo(e: MouseEvent) {
+    const p = this.pan!
+    p.page.scrollLeft = p.left - (e.clientX - p.x)
+    p.page.scrollTop = p.top - (e.clientY - p.y)
+  }
   private mouseDown(e: Pt) {
     if (e.button !== undefined && e.button !== 0) return
     const el = (e.target as Element).closest?.('[data-mark]')
@@ -285,7 +297,7 @@ export class Composer {
     }
     if (d.kind === 'mark') { // a copy of the mark follows the pointer, the original stays faint where it was
       if (!d.clone) { d.clone = d.el.cloneNode(true) as SVGElement; d.clone.removeAttribute('data-mark'); d.clone.setAttribute('pointer-events', 'none'); d.clone.setAttribute('opacity', '0.75'); d.el.setAttribute('opacity', '0.25'); this.svg().appendChild(d.clone) }
-      d.clone.setAttribute('transform', `translate(${x - d.lx} ${y - d.ly})`)
+      d.clone.setAttribute('transform', `translate(${x - d.lx} ${y - d.ly + shiftOf(d.el)})`)
       return
     }
     this.moveGhost(x, y, d.kind === 'note' ? (e.shiftKey ? this.voice : d.ev.voice) : 0, false)
@@ -363,10 +375,15 @@ export class Composer {
       const hit = hitTest(this.layout, x, y, 0)
       const dm = hit ? this.layout.measures[hit.m] : this.barAt(x, y)
       if (!src || !dm) { this.say('Thả dấu lên một nốt'); return }
+      const shifted = (el ? shiftOf(el) : 0) + (y - ly) // where it will stand, counted from where it would stand by itself
+      const id = mark.id, field = mark.field
+      if (field === 'hairpin') { this.commit((s) => setMarkOffset(s, id, field, shifted)); this.selMark = mark; return } // a wedge only slides up or down: it keeps its two notes
       const to = dm.evs.filter((q) => q.staff === src.staff && !q.rest).reduce<DrawnEv | undefined>((a, q) => (!a || Math.abs(q.x - x) < Math.abs(a.x - x) ? q : a), undefined) // stays on its own staff
       if (!to) { this.say('Không có nốt nào ở đó để gắn dấu'); return }
-      this.commit((s) => { moveMark(s, mark.id, mark.field, to.id) })
-      this.selMark = { kind: 'ev', field: mark.field, id: to.id }
+      const edge = (m: number) => { const st = this.layout.measures[m].staves[src.staff]; return field === 'chord' || field === 'staffText' ? st.top : st.bottom } // the staff line its usual place is measured from
+      const dy = shifted + edge(src.m) - edge(dm.m)                         // (another line has its staves elsewhere on the page)
+      this.commit((s) => { moveMark(s, id, field, to.id, dy) })
+      this.selMark = { kind: 'ev', field, id: to.id }
     } else {
       const dm = this.barAt(x, y)
       if (!dm) { this.say('Thả dấu lên một ô nhịp'); return }
@@ -536,12 +553,19 @@ export class Composer {
     const st = this.layout.measures[hit.m].staves[hit.staff]
     const half = Math.round((st.bottom - y) / (st.spacing / 2))
     if (!this.ghost) {
-      this.ghost = document.createElementNS('http://www.w3.org/2000/svg', 'ellipse')
-      this.ghost.setAttribute('fill', '#1d6fff'); this.ghost.setAttribute('opacity', '0.35'); this.ghost.setAttribute('pointer-events', 'none')
+      this.ghost = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+      this.ghost.setAttribute('fill', '#1d6fff'); this.ghost.setAttribute('stroke', '#1d6fff'); this.ghost.setAttribute('opacity', '0.35'); this.ghost.setAttribute('pointer-events', 'none')
       this.svg().appendChild(this.ghost)
     }
-    this.ghost.setAttribute('rx', small ? '5' : '6.5'); this.ghost.setAttribute('ry', small ? '5' : '5')
-    this.ghost.setAttribute('cx', String(small ? x : hit.ev?.x ?? x)); this.ghost.setAttribute('cy', String(small ? y : st.bottom - (half * st.spacing) / 2))
+    const cx = small ? x : hit.ev?.x ?? x, cy = small ? y : st.bottom - (half * st.spacing) / 2
+    // the ledger lines the note would stand on, so the preview shows how high or low it really is
+    const lines: number[] = []
+    if (!small) { for (let h = -2; h >= half; h -= 2) lines.push(h); for (let h = 10; h <= half; h += 2) lines.push(h) }
+    this.ghost.innerHTML = `<ellipse cx="${cx}" cy="${cy}" rx="${small ? 5 : 6.5}" ry="5" stroke="none"/>` + lines.map((h) => { const ly = st.bottom - (h * st.spacing) / 2; return `<line x1="${cx - 10}" x2="${cx + 10}" y1="${ly}" y2="${ly}" stroke-width="1.4"/>` }).join('')
+    if (!small) {
+      const p = this.pitchAt(hit.m, hit.diatonic - 7 * ottavaShiftAt(this.score, hit.m, hit.staff, this.voice, hit.at))
+      this.say(`Ô ${hit.m + 1} · ${pitchLabel(p)} · ${DURATIONS.find((d) => d[2] === this.dur)?.[1] ?? ''}${this.dotted ? ' chấm' : ''}: bấm để đặt nốt`)
+    }
   }
 
   private pitchAt(m: number, d: number): Pitch {
@@ -924,8 +948,7 @@ export class Composer {
   describe(id: number): string {
     const f = findEv(this.score, id)
     if (!f) return ''
-    const name = (p: Pitch) => `${p.step}${p.alter > 0 ? '♯'.repeat(p.alter) : p.alter < 0 ? '♭'.repeat(-p.alter) : ''}${p.octave}`
-    return `Ô ${f.m + 1} · ${f.ev.pitches.length ? f.ev.pitches.map(name).join(' ') : 'dấu lặng'} · ${f.ev.ticks / TPQ} phách${f.ev.tie ? ' · nối' : ''}`
+    return `Ô ${f.m + 1} · ${f.ev.pitches.length ? f.ev.pitches.map(pitchLabel).join(' ') : 'dấu lặng'} · ${f.ev.ticks / TPQ} phách${f.ev.tie ? ' · nối' : ''}`
   }
 
   /** Open a score file (JSON, MusicXML, MIDI, or a sheet-music PDF). */
@@ -1100,6 +1123,14 @@ export class Composer {
     this.host.addEventListener('click', (e) => { const [x, y] = this.toLogical(e); this.click(x, y, { shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey || e.metaKey }) })
     this.host.addEventListener('mousemove', (e) => this.hover(e))
     page.addEventListener('wheel', (e) => this.wheelZoom(e), { passive: false })
+    // hold the right (or the middle) button and drag: the page follows the hand, like MuseScore, so there is no need for the scroll bars
+    page.addEventListener('contextmenu', (e) => e.preventDefault())
+    page.addEventListener('mousedown', (e) => {
+      if (e.button !== 1 && e.button !== 2) return
+      e.preventDefault()
+      this.pan = { page, x: e.clientX, y: e.clientY, left: page.scrollLeft, top: page.scrollTop }
+      page.classList.add('panning')
+    })
     try { const z = localStorage.getItem('notefall.zoom'); if (z && z !== 'fit' && +z > 0) this.zoom = +z } catch { /* fit */ }
     this.applyZoom()
     new ResizeObserver(() => this.updateZoomLabel()).observe(this.host)
@@ -1108,8 +1139,8 @@ export class Composer {
     window.addEventListener('touchmove', (e) => this.touchMove(e), { passive: false })
     window.addEventListener('touchend', (e) => this.touchEnd(e))
     window.addEventListener('touchcancel', () => { this.pinch = undefined; this.drag = undefined; this.ghost?.remove(); this.ghost = undefined; this.marquee?.remove(); this.marquee = undefined })
-    window.addEventListener('mousemove', (e) => this.mouseMove(e))
-    window.addEventListener('mouseup', (e) => this.mouseUp(e))
+    window.addEventListener('mousemove', (e) => { if (this.pan) this.panTo(e); else this.mouseMove(e) })
+    window.addEventListener('mouseup', (e) => { if (this.pan) { this.pan.page.classList.remove('panning'); this.pan = undefined } else this.mouseUp(e) })
     this.host.addEventListener('mouseleave', () => { this.ghost?.remove(); this.ghost = undefined })
 
     const insp = this.el('aside', 'cmp-insp', body); insp.setAttribute('aria-label', 'Bảng ký hiệu')

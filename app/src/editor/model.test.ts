@@ -282,3 +282,31 @@ describe('navigation', () => {
     expect(navigationProblems(s)).toHaveLength(1)          // al Fine without a Fine
   })
 })
+
+import { clearMark, moveMark, setMarkOffset } from './model'
+describe('dragged marks keep their place', () => {
+  const two = () => {
+    const s = emptyScore(1, { beats: 4, unit: 4 }, 0)
+    const a = putNote(s, { m: 0, staff: 0, voice: 0 }, 0, TPQ, P('C', 0, 5)), b = putNote(s, { m: 0, staff: 0, voice: 0 }, TPQ, TPQ, P('D', 0, 5))
+    findEv(s, a)!.ev.dyn = 'p'
+    return { s, a, b }
+  }
+  it('an offset is stored, rounded, and 0 puts the mark back', () => {
+    const { s, a } = two()
+    setMarkOffset(s, a, 'dyn', 17.26); expect(findEv(s, a)!.ev.off).toEqual({ dyn: 17.3 })
+    setMarkOffset(s, a, 'dyn', 0.2); expect(findEv(s, a)!.ev.off).toBeUndefined()
+  })
+  it('moving a mark to another note takes its offset along, or sets a new one', () => {
+    const { s, a, b } = two()
+    setMarkOffset(s, a, 'dyn', 12)
+    moveMark(s, a, 'dyn', b)
+    expect([findEv(s, a)!.ev.dyn, findEv(s, a)!.ev.off, findEv(s, b)!.ev.dyn, findEv(s, b)!.ev.off?.dyn]).toEqual([undefined, undefined, 'p', 12])
+    moveMark(s, b, 'dyn', b, -8)
+    expect(findEv(s, b)!.ev.off?.dyn).toBe(-8)
+  })
+  it('deleting a mark forgets its offset', () => {
+    const { s, a } = two()
+    setMarkOffset(s, a, 'dyn', 12); clearMark(s, a, 'dyn')
+    expect(findEv(s, a)!.ev.dyn === undefined && findEv(s, a)!.ev.off === undefined).toBe(true)
+  })
+})

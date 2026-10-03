@@ -35,6 +35,7 @@ export interface Ev {
   tup?: Tup         // part of a tuplet: `ticks` is the real length, the written value is ticks*n/m
   dyn?: Dyn         // dynamic marking from this event on
   hairpin?: { type: 'cresc' | 'dim'; end: number } // wedge from this event to the event with id `end`
+  off?: Partial<Record<MarkField, number>> // how far (px, + is down) the user dragged each mark from where it would stand by itself
   slur?: number     // slur from this event to the event with id `end`
   art?: Art[]       // articulations
   hidden?: boolean  // a rest that keeps the bar full but is not printed (as in printed scores)
@@ -719,21 +720,35 @@ export function copyPrevious(s: Score, i: number) {
 }
 
 // ---- moving notes and marks -----------------------------------------------------------------------------
-export type MarkField = 'dyn' | 'staffText' | 'expr' | 'chord' | 'lyric'
-export const MARK_FIELDS: MarkField[] = ['dyn', 'staffText', 'expr', 'chord', 'lyric']
+export type MarkField = 'dyn' | 'staffText' | 'expr' | 'chord' | 'lyric' | 'hairpin'
 
-/** Take a text / dynamic mark off one note and put it on another (what was there is replaced). */
-export function moveMark(s: Score, from: number, field: MarkField, to: number): boolean {
+/** Set how far a mark was dragged vertically from its usual place (0 puts it back). */
+export function setMarkOffset(s: Score, id: number, field: MarkField, dy: number) {
+  const f = findEv(s, id)
+  if (!f) return
+  const off = { ...f.ev.off }
+  if (Math.abs(dy) < 0.5) delete off[field]; else off[field] = Math.round(dy * 10) / 10
+  f.ev.off = Object.keys(off).length ? off : undefined
+}
+
+/** Move a mark (dynamic, text, chord symbol, lyric) to another note; it takes its drag offset along unless `dy` says otherwise. */
+export function moveMark(s: Score, from: number, field: MarkField, to: number, dy?: number): boolean {
   const a = findEv(s, from), b = findEv(s, to)
   if (!a || !b || a.ev[field] === undefined) return false
-  if (from === to) return true
-  ;(b.ev as unknown as Record<string, unknown>)[field] = a.ev[field]
-  a.ev[field] = undefined as never
+  const carried = dy ?? a.ev.off?.[field] ?? 0
+  if (from !== to) {
+    ;(b.ev as unknown as Record<string, unknown>)[field] = a.ev[field]
+    a.ev[field] = undefined as never
+    setMarkOffset(s, from, field, 0)
+  }
+  setMarkOffset(s, to, field, carried)
   return true
 }
 export function clearMark(s: Score, id: number, field: MarkField) {
   const f = findEv(s, id)
-  if (f) f.ev[field] = undefined as never
+  if (!f) return
+  f.ev[field] = undefined as never
+  setMarkOffset(s, id, field, 0)
 }
 
 /**

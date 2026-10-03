@@ -307,6 +307,52 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
           const lyricEl = marks.find((m) => m.textContent === 'la')!
           ok('a lyric on the same note as a dynamic steps below it', !!lyricEl.getAttribute('transform'))
         }
+        { // hold the right (or middle) button and drag: the page follows the hand
+          c.setScore(d.minuet()); c.setZoom(2.5)
+          const page = document.querySelector<HTMLElement>('.cmp-page')!
+          const fire = (type: string, target: EventTarget, x: number, y: number, button: number) => target.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y, button, bubbles: true, cancelable: true }))
+          for (const button of [2, 1]) {
+            page.scrollLeft = 300; page.scrollTop = 200
+            fire('mousedown', page, 500, 400, button); fire('mousemove', window, 420, 360, button); fire('mouseup', window, 420, 360, button)
+            ok(`button ${button} + drag moves the page with the hand (left 80, up 40 = scroll +80, +40)`, page.scrollLeft === 380 && page.scrollTop === 240 && !page.classList.contains('panning'))
+          }
+          ok('the context menu does not open over the page', !fire('contextmenu', page, 500, 400, 2))
+          const sel = c.sel; page.scrollLeft = 300; fire('mousedown', page, 500, 400, 0); fire('mousemove', window, 420, 360, 0); fire('mouseup', window, 420, 360, 0)
+          ok('the left button still does not pan (it selects / drags notes)', page.scrollLeft === 300 && c.sel === sel)
+          c.zoomFit()
+        }
+        { // input mode: the preview note under the mouse says what a click would write and shows the ledger lines it needs
+          c.setScore(d.fromText([{ rh: 'C5:1 r:3', lh: 'r:4' }])); c.setMode('input'); c.key('5')
+          const sheet = document.querySelector<HTMLElement>('.cmp-sheet')!, dm = c.layout.measures[0], st = dm.staves[0]
+          const move = (lx: number, ly: number) => { const r = sheet.getBoundingClientRect(), k = r.width / c.layout.width; sheet.dispatchEvent(new MouseEvent('mousemove', { clientX: r.left + lx * k, clientY: r.top + ly * k, bubbles: true })) }
+          const col = dm.evs[0].x
+          move(col, st.bottom - (4 * st.spacing) / 2) // the middle line of the treble staff: B4, no ledger lines
+          const status = document.querySelector('.cmp-status')!.textContent!
+          ok('the preview says the pitch and length a click would write', status.includes('B4') && status.includes('Đen'))
+          const lines = () => document.querySelectorAll('.cmp-sheet svg g[opacity="0.35"] line').length
+          const none = lines()
+          move(col, st.top - (3 * st.spacing) / 2 - 0.0) // 3 half-steps above the top line: C6 area, two ledger lines
+          ok('a high preview note draws its ledger lines, a note on the staff draws none', none === 0 && lines() >= 1)
+        }
+        { // marks are dragged freely, up and down, like in MuseScore
+          const { findEv } = await import('./editor/model')
+          const sc = d.fromText([{ rh: 'C5:1 D5:1 E5:1 F5:1', lh: 'r:4' }])
+          const [n0, n1] = sc.measures[0].staves[0][0]
+          n0.dyn = 'p'; n0.hairpin = { type: 'cresc', end: n1.id }; n0.chord = 'Am'
+          c.setScore(sc); c.zoomFit()
+          const sheet = document.querySelector<HTMLElement>('.cmp-sheet')!
+          const scale = () => sheet.getBoundingClientRect().width / c.layout.width
+          const centre = (el: Element) => { const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2] }
+          const fire = (type: string, target: EventTarget, x: number, y: number) => target.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true, cancelable: true }))
+          for (const [field, dir] of [['dyn', 1], ['hairpin', 1], ['chord', -1]] as const) {
+            const el = document.querySelector(`.cmp-sheet svg [data-mark*='"${field}"']`)!
+            const [x, y] = centre(el), before = el.getBoundingClientRect().top
+            fire('mousedown', el, x, y); fire('mousemove', window, x, y + dir * 30); fire('mouseup', window, x, y + dir * 30)
+            const now = document.querySelector(`.cmp-sheet svg [data-mark*='"${field}"']`)!, moved = (now.getBoundingClientRect().top - before) / scale()
+            const o = findEv(c.score, n0.id)!.ev
+            ok(`dragging a ${field} 30 px ${dir > 0 ? 'down' : 'up'} sets its offset and keeps it on its note`, Math.abs((o.off?.[field] ?? 0) - dir * 30 / scale()) < 1.5 && Math.abs(Math.abs(moved) - 30 / scale()) < 2 && (field === 'hairpin' ? !!o.hairpin : !!o[field]))
+          }
+        }
         c.setMode('select')
         // marks must be hit by a real pointer: ask the page which element is under the centre of each kind of mark
         c.setScore(d.fromText([{ rh: 'C5:1 D5:1 E5:1 F5:1', lh: 'C3:4' }, { rh: 'G5:4', lh: 'r:4' }], { tempo: 60 }))

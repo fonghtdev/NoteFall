@@ -235,6 +235,18 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
         ok('clicking a pitch that is already there removes it from the chord', note().pitches.map((p) => p.step + p.octave).join(' ') === 'E4 D5')
         c.click(col().x + 5, yOf(1), { ctrl: true })                           // Ctrl: replace instead of stack
         ok('Ctrl+click replaces the note', c.score.measures[0].staves[0][0][1].pitches.length === 1)
+        // crowded bars widen by themselves: chords with seconds and accidentals in sixteenths, many bars
+        c.setScore(d.fromText(Array.from({ length: 6 }, () => ({ rh: 'r:4', lh: 'r:4' }))))
+        c.setMode('input'); c.setDuration(2)
+        for (let m = 0; m < 6; m++) for (let i = 0; i < 8; i++) { c.cursor = { m, staff: 1, at: i * 240 }; c.pendingAlter = i % 3 === 0 ? 1 : undefined; c.letter('C', false); c.cursor = { m, staff: 1, at: i * 240 }; c.letter('D', true); c.letter('E', true) }
+        const slack = c.layout.measures.map((dm) => {
+          const per = new Map<number, { x: number; right: number }>()
+          for (const e of dm.evs.filter((q) => q.staff === 1 && !q.rest)) per.set(Math.round(e.x), { x: e.x, right: Math.max(per.get(Math.round(e.x))?.right ?? 0, e.right) })
+          const cols = [...per.values()].sort((a, b) => a.x - b.x)
+          return Math.min(...cols.slice(1).map((q, i) => q.x - cols[i].x - cols[i].right))
+        })
+        ok('dense chord bars get room: no two columns of notes touch', slack.every((v) => v >= 0))
+        c.setMode('select')
         c.setScore(d.minuet())
       }
       { // preview sound: a second click cancels instead of doubling, and leaving the tab silences it

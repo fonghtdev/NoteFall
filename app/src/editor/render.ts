@@ -2,7 +2,7 @@ import { Accidental, Articulation, Barline, Beam, Curve, Dot, Formatter, Fractio
 import { CLEFS, barTicks, clefAt, contextAt, diatonic, nominalTicks, notationOf, ottavaShifts, starts, type Art, type ClefName, type Ev, type Score } from './model'
 
 /** One drawn event, for hit-testing and selection. */
-export interface DrawnEv { id: number; m: number; staff: number; voice: number; at: number; ticks: number; x: number; rest: boolean; ys: number[] }
+export interface DrawnEv { id: number; m: number; staff: number; voice: number; at: number; ticks: number; x: number; rest: boolean; ys: number[]; left: number; right: number }
 export interface DrawnStaff { top: number; bottom: number; spacing: number; clef: ClefName }
 export interface DrawnMeasure { m: number; x: number; w: number; system: number; staves: DrawnStaff[]; evs: DrawnEv[] }
 export interface Layout { width: number; height: number; measures: DrawnMeasure[]; systems: { y0: number; y1: number; pageBreakAfter?: boolean }[] }
@@ -20,6 +20,15 @@ const MARGIN = 20, STAFF_GAP = 105, SYSTEM_GAP = 60, STAFF_H = 80, TOP_SPACE = 4
 
 const pitchKey = (p: { step: string; alter: number; octave: number }, shift = 0) =>
   `${p.step.toLowerCase()}${p.alter > 0 ? '#'.repeat(p.alter) : p.alter < 0 ? 'b'.repeat(-p.alter) : ''}/${p.octave + shift}`
+
+/** How far a note reaches to the right (head, displaced head, dots) and to the left (accidentals) of its own position. */
+function reach(note: StaveNote | GhostNote): { left: number; right: number } {
+  if (!(note instanceof StaveNote)) return { left: 0, right: 0 }
+  const mods = note.getModifiers()
+  const accs = mods.filter((m) => m instanceof Accidental).length, dots = mods.filter((m) => m instanceof Dot).length
+  const displaced = note.noteHeads.some((h) => h.isDisplaced())
+  return { left: accs * 9, right: 12 + (displaced ? 11 : 0) + (dots ? 5 + 5 * dots : 0) }
+}
 
 /** The only thing in the bar for its voice and no other voice has music: a whole-bar rest stays centred. */
 const wholeBarSolo = (vs: Ev[][], ev: Ev) => vs.every((o) => o.every((e) => e === ev || !e.pitches.length)) && vs[0]?.length === 1
@@ -160,6 +169,39 @@ export interface RenderOptions { width: number; selected?: Set<number>; selected
 
 /** Draw the whole score into `host` (an SVG) and return where things ended up. */
 export function renderScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout {
+  // Draw; if notes of a bar still touch each other (many chords, seconds, accidentals), give that bar more room and draw again.
+  const extra = score.measures.map(() => 1)
+  let layout = drawScore(host, score, opts, extra)
+  for (let pass = 0; pass < 6; pass++) {
+    const tight = crowded(layout)
+    if (!tight.length) break
+    for (const m of tight) extra[m] = Math.min(3, extra[m] * 1.16 + 0.04)
+    layout = drawScore(host, score, opts, extra)
+  }
+  return layout
+}
+
+/** Bars where two neighbouring columns of notes are closer than their heads, dots, displaced heads and accidentals need. */
+function crowded(layout: Layout): number[] {
+  const bad = new Set<number>()
+  for (const dm of layout.measures) {
+    for (let si = 0; si < dm.staves.length; si++) {
+      const cols = new Map<number, { x: number; left: number; right: number }>()
+      for (const e of dm.evs) {
+        if (e.staff !== si || e.rest) continue
+        const key = Math.round(e.x)
+        const c = cols.get(key) ?? { x: e.x, left: 0, right: 0 }
+        c.left = Math.max(c.left, e.left); c.right = Math.max(c.right, e.right)
+        cols.set(key, c)
+      }
+      const xs = [...cols.values()].sort((a, b) => a.x - b.x)
+      for (let i = 1; i < xs.length; i++) if (xs[i].x - xs[i - 1].x < xs[i - 1].right + xs[i].left + 3) bad.add(dm.m)
+    }
+  }
+  return [...bad]
+}
+
+function drawScore(host: HTMLElement, score: Score, opts: RenderOptions, extra: number[]): Layout {
   host.innerHTML = ''
   const selected = opts.selected ?? new Set<number>()
   const isSel = (m: MarkRef) => { const q = opts.selectedMark; return !!q && q.kind === m.kind && ((q.kind === 'ev' && m.kind === 'ev') ? q.id === m.id && q.field === m.field : (q as { bar?: number }).bar === (m as { bar?: number }).bar) }
@@ -171,9 +213,9 @@ export function renderScore(host: HTMLElement, score: Score, opts: RenderOptions
   const systems: { from: number; to: number; mins: number[]; forced?: boolean }[] = []
   let cur: number[] = [], sum = 0, from = 0
   for (let mi = 0; mi < n; mi++) {
-    const w = minWidth(score, mi, cur.length === 0)
+    const w = minWidth(score, mi, cur.length === 0) * extra[mi]
     if (cur.length && sum + w > usable) { systems.push({ from, to: mi - 1, mins: cur }); cur = []; sum = 0; from = mi }
-    cur.push(cur.length === 0 ? w : minWidth(score, mi, false))
+    cur.push(cur.length === 0 ? w : minWidth(score, mi, false) * extra[mi])
     sum += cur[cur.length - 1]
     if (score.measures[mi].break && mi < n - 1) { systems.push({ from, to: mi, mins: cur, forced: true }); cur = []; sum = 0; from = mi + 1 } // the user asked for a new line here
   }
@@ -261,7 +303,7 @@ export function renderScore(host: HTMLElement, score: Score, opts: RenderOptions
       }
       b.order.forEach((o) => {
         const note = b.notes.get(o.ev.id)!
-        dm.evs.push({ id: o.ev.id, m: mi, staff: o.staff, voice: o.voice, at: o.at, ticks: o.ev.ticks, x: note.getAbsoluteX(), rest: o.ev.pitches.length === 0, ys: note instanceof StaveNote ? note.getYs() : [] })
+        dm.evs.push({ id: o.ev.id, m: mi, staff: o.staff, voice: o.voice, at: o.at, ticks: o.ev.ticks, x: note.getAbsoluteX(), rest: o.ev.pitches.length === 0, ys: note instanceof StaveNote ? note.getYs() : [], ...reach(note) })
         noteOf.set(o.ev.id, { note, system: sIdx })
         where.set(o.ev.id, { m: mi, voice: o.voice, index: 0 })
       })

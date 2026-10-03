@@ -5,7 +5,7 @@ import { PianoView } from './ui/pianoView'
 import { Transport } from './ui/transport'
 import { parseMidi } from './core/midi'
 import { transcribe } from './core/basicPitch'
-import { renderNotes } from './core/synth'
+import { VOICES, getPianoVoice, partialAmps, partials, decayOf, PIANO, renderNotes, setPianoVoice, type PianoVoice } from './core/synth'
 import { clean } from './core/postprocess'
 import { end, type Note } from './core/models'
 import { beatTimes, estimateGrid, gridForSignature, quantize, scaleTempo, shiftOffset, type BeatGrid } from './core/beats'
@@ -54,6 +54,7 @@ const isPdf = (name: string) => /\.pdf$/i.test(name)
 // raw = what the transcriber produced; the view shows quantize(raw) if asked. key = cache key (audio only).
 let raw: Note[] = [], shown: Note[] = [], grid: BeatGrid | undefined, key: string | undefined
 let audioBuf: AudioBuffer | undefined, songName = 'notefall'
+let midiNotes: Note[] | undefined // set while a MIDI file is open (its sound is made here, so a change of piano remakes it)
 let score: Score | undefined // set while a sheet-music PDF is open: notes are re-timed from it when the tempo changes
 const ctl = { box: $('beatctl'), bpm: $('bpm'), show: $<HTMLInputElement>('showbeats'), quant: $<HTMLInputElement>('quant') }
 
@@ -195,8 +196,10 @@ export async function loadFile(file: File) {
     }
     score = undefined
     document.body.classList.remove('score'); $('scorectl').hidden = true
+    midiNotes = undefined
     if (isMidi(file.name)) {
       const notes = parseMidi(data)
+      midiNotes = notes
       say('Đang tổng hợp tiếng piano…')
       return show(notes, await renderNotes(notes))
     }
@@ -295,6 +298,7 @@ runBtn.onclick = () => {
 $('met-song').onclick = () => { const bpm = +$<HTMLInputElement>('tempo').value || grid?.bpm; if (bpm) { met.bpm = bpm; applyMet() } }
 drawDots(); applyMet()
 ;(window as unknown as { __metronome: unknown }).__metronome = { playClick, SOUNDS, met }
+;(window as unknown as { __synth: unknown }).__synth = { renderNotes, PIANO, partials, partialAmps, decayOf }
 let lastFrameT = 0
 const syncMetronome = (t: number) => { // called every frame
   if (met.follow && transport.playing) { if (!follower.running) follower.start(); else if (Math.abs(t - lastFrameT) > 0.4) follower.reset() }
@@ -372,6 +376,20 @@ bgDim.oninput = bgBlur.oninput = applySettings
 themeSel.addEventListener('change', () => { if (themeSel.value === 'image' && !view.bgImage) $('bg-file').click() }) // picking "your picture" asks for one
 void cache.load<Blob>('bg:image').then((b) => { if (b) void createImageBitmap(b).then((bmp) => { view.setBackground(bmp) }).catch(() => undefined) })
 
+// the piano the notes are played on
+const pianoSel = $<HTMLSelectElement>('piano')
+for (const [k, label] of Object.entries(VOICES)) pianoSel.add(new Option(label, k))
+try { const v = localStorage.getItem('notefall.piano'); if (v && v in VOICES) setPianoVoice(v as PianoVoice) } catch { /* default */ }
+pianoSel.value = getPianoVoice()
+pianoSel.onchange = async () => {
+  setPianoVoice(pianoSel.value as PianoVoice)
+  try { localStorage.setItem('notefall.piano', pianoSel.value) } catch { /* best effort */ }
+  const t = transport.now(), was = transport.playing
+  if (score) await showScore()
+  else if (midiNotes) { say('Đang tổng hợp tiếng piano…'); show(midiNotes, await renderNotes(midiNotes)) }
+  else return
+  transport.seek(t); if (was) { transport.play(); setPlayState() }
+}
 graceSel.onchange = () => { applySettings(); if (score) void showScore() } // grace notes are part of the sound: rebuild the notes
 applySettings()
 refresh()

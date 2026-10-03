@@ -1,4 +1,5 @@
 import './ui/app.css'
+import { handleStaleChunk } from './ui/stale'
 import { paintIcons } from './ui/icons'
 import { popover } from './ui/popover'
 import { PianoView } from './ui/pianoView'
@@ -44,6 +45,10 @@ const setPlayState = () => {
 const fmt = (t: number) => `${Math.floor(Math.max(0, t) / 60)}:${String(Math.floor(Math.max(0, t) % 60)).padStart(2, '0')}`
 /** Fill the track of a range input up to its thumb. */
 const fill = (el: HTMLInputElement) => el.style.setProperty('--fill', `${((+el.value - +el.min) / (+el.max - +el.min || 1)) * 100}%`)
+
+window.addEventListener('vite:preloadError', (e) => { // (preventDefault would make the failed import resolve to undefined, so only when the page is about to reload anyway)
+  if (handleStaleChunk({ say: (t) => say(t, 'error'), reload: () => location.reload(), storage: sessionStorage, now: Date.now() })) e.preventDefault()
+})
 
 // bump when transcription settings change, so stale cached notes are never reused
 const CACHE_V = ':v2'

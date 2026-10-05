@@ -368,10 +368,34 @@ export function setLength(s: Score, id: number, ticks: number) {
   overwrite(s, f, f.at, len, f.ev.pitches.length ? [ev] : restsFor(s, f.at, len, bar))
 }
 
-export function toggleTie(s: Score, id: number) {
+/**
+ * Tie a note to the one after it, like MuseScore: a tied note is untied; otherwise the next note of the same voice (in the next bar if need be)
+ * is tied to it, and when there is only a rest (or nothing) there, a note of the same pitch and length is written there.
+ * Returns the id of the note at the other end of the tie, or undefined when nothing was done (no note, or the next note has other pitches).
+ */
+export function toggleTie(s: Score, id: number): number | undefined {
   const f = findEv(s, id)
-  if (f && f.ev.pitches.length) f.ev.tie = !f.ev.tie
+  if (!f || !f.ev.pitches.length) return undefined
+  if (f.ev.tie) { f.ev.tie = false; return id }
+  const here = voiceOf(s, f)
+  let loc: Loc = f, at = f.at + f.ev.ticks, next = here[f.index + 1]
+  if (!next) {
+    if (f.m + 1 >= s.measures.length) insertMeasures(s, f.m + 1, 1)
+    loc = { m: f.m + 1, staff: f.staff, voice: f.voice }; at = 0; next = voiceOf(s, loc)[0]
+  }
+  if (next.pitches.length) {
+    if (!sameMidi(next.pitches, f.ev.pitches)) return undefined
+    f.ev.tie = true
+    return next.id
+  }
+  const bar = barTicks(contextAt(s, loc.m).time)
+  const copy: Ev = { id: newId(s), ticks: Math.min(f.ev.ticks, bar - at), pitches: f.ev.pitches.map((p) => ({ ...p })) }
+  overwrite(s, loc, at, copy.ticks, [copy])
+  findEv(s, id)!.ev.tie = true // (re-found: the overwrite may have rebuilt the voice)
+  return copy.id
 }
+
+const sameMidi = (a: Pitch[], b: Pitch[]) => a.length === b.length && a.every((p, i) => midiOf(p) === midiOf(b[i]))
 
 export function insertMeasure(s: Score, after: number) { insertMeasures(s, after + 1, 1) }
 

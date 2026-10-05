@@ -90,6 +90,32 @@ describe('editing', () => {
     expect(findEv(s, id)!.ev.tie).toBe(true)
   })
 
+  it('tie writes the next note when there is only a rest, and ties on to an existing equal one', () => {
+    const s = emptyScore(1)
+    const id = putNote(s, L, 0, TPQ, P('C', 4))
+    const next = toggleTie(s, id)!
+    expect(shape(s)).toBe('C4:1 C4:1 r:2')
+    expect(findEv(s, id)!.ev.tie).toBe(true)
+    expect(findEv(s, next)!.at).toBe(TPQ)
+    toggleTie(s, id)                                   // again: untied, the written note stays
+    expect(findEv(s, id)!.ev.tie).toBe(false)
+    expect(toggleTie(s, id)).toBe(next)                // now it just ties to the note that is there
+    expect(shape(s)).toBe('C4:1 C4:1 r:2')
+  })
+
+  it('tie goes over the barline, adds a bar at the end, and leaves a different next note alone', () => {
+    const s = emptyScore(1)
+    const id = putNote(s, L, 3 * TPQ, TPQ, P('G', 4))
+    const to = toggleTie(s, id)!
+    expect(s.measures).toHaveLength(2)
+    expect(findEv(s, to)).toMatchObject({ m: 1, at: 0 })
+    const t = emptyScore(1)
+    const a = putNote(t, L, 0, TPQ, P('C', 4)), b = putNote(t, L, TPQ, TPQ, P('D', 4))
+    expect(toggleTie(t, a)).toBeUndefined()
+    expect(findEv(t, a)!.ev.tie).toBeFalsy()
+    expect(findEv(t, b)!.ev.pitches[0]).toEqual(P('D', 4))
+  })
+
   it('time signature change re-bars the music and keeps the notes', () => {
     const s = emptyScore(3)
     putNote(s, { m: 1, staff: 0, voice: 0 }, 0, TPQ, P('C', 4))

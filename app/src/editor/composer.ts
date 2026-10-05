@@ -461,6 +461,7 @@ export class Composer {
 
   // ---- touch (iPad): one finger on a note or mark drags it, on empty space it scrolls, two fingers pinch to zoom -----------------
   private pinch?: { d0: number; z0: number }
+  private penDown = false
   private asPt = (t: Touch, e: TouchEvent): Pt => ({ clientX: t.clientX, clientY: t.clientY, button: 0, shiftKey: false, target: t.target ?? e.target, preventDefault: () => {} })
   private touchStart(e: TouchEvent) {
     if (e.touches.length >= 2) { // pinch
@@ -470,11 +471,17 @@ export class Composer {
       e.preventDefault()
       return
     }
-    this.mouseDown(this.asPt(e.touches[0], e))
+    const t0 = e.touches[0]
+    if (this.mode === 'input' && (t0 as Touch & { touchType?: string }).touchType === 'stylus' && !this.pickNote(...this.toLogical(t0))) { // pencil down in input mode: preview the note, it lands when the pencil lifts
+      this.penDown = true; this.moveGhost(...this.toLogical(t0), this.voice); e.preventDefault()
+      return
+    }
+    this.mouseDown(this.asPt(t0, e))
     if (this.drag?.kind === 'marquee') this.drag = undefined // (empty space: let the finger scroll)
     if (this.drag) e.preventDefault() // a note or a mark is picked up: the page must not scroll with it
   }
   private touchMove(e: TouchEvent) {
+    if (this.penDown && e.touches.length) { this.moveGhost(...this.toLogical(e.touches[0]), this.voice); e.preventDefault(); return }
     if (this.pinch && e.touches.length >= 2) {
       const [a, b] = [e.touches[0], e.touches[1]]
       this.setZoom(this.pinch.z0 * (Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) / this.pinch.d0), { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 })
@@ -486,6 +493,11 @@ export class Composer {
     if (this.drag?.moved) e.preventDefault()
   }
   private touchEnd(e: TouchEvent) {
+    if (this.penDown && e.changedTouches.length) {
+      this.penDown = false; this.ghost?.remove(); this.ghost = undefined
+      const [x, y] = this.toLogical(e.changedTouches[0]); this.click(x, y, {})
+      return
+    }
     if (this.pinch) { if (e.touches.length < 2) this.pinch = undefined; return }
     const d = this.drag
     if (!d || !e.changedTouches.length) return
@@ -924,7 +936,14 @@ export class Composer {
     this.commit((s) => ids.forEach((id) => toggleArt(s, id, a)))
   }
 
-  tie() { if (this.sel !== undefined) { const id = this.sel; this.commit((s) => toggleTie(s, id)) } }
+  tie() {
+    if (this.sel === undefined) { this.say('Chọn một nốt trước'); return }
+    const id = this.sel
+    let to: number | undefined
+    this.commit((s) => { to = toggleTie(s, id) })
+    if (to === undefined) this.say('Không nối được: nốt sau có cao độ khác (dùng Luyến thay cho Nối)')
+    else if (to !== id) { this.sel = to; this.range = []; this.refresh() } // the tie ends on the next note, which is now the one to tie on from
+  }
 
   del() {
     if (this.sel === undefined) return
@@ -1224,7 +1243,8 @@ export class Composer {
     this.host.addEventListener('touchstart', (e) => this.touchStart(e), { passive: false })
     window.addEventListener('touchmove', (e) => this.touchMove(e), { passive: false })
     window.addEventListener('touchend', (e) => this.touchEnd(e))
-    window.addEventListener('touchcancel', () => { this.pinch = undefined; this.drag = undefined; this.ghost?.remove(); this.ghost = undefined; this.marquee?.remove(); this.marquee = undefined })
+    this.host.addEventListener('pointermove', (e) => { if (e.pointerType === 'pen') this.hover(e) }) // an Apple Pencil that hovers over the screen shows the note before it touches
+    window.addEventListener('touchcancel', () => { this.penDown = false; this.pinch = undefined; this.drag = undefined; this.ghost?.remove(); this.ghost = undefined; this.marquee?.remove(); this.marquee = undefined })
     window.addEventListener('mousemove', (e) => { if (this.pan) this.panTo(e); else this.mouseMove(e) })
     window.addEventListener('mouseup', (e) => { if (this.pan) { this.pan.page.classList.remove('panning'); this.pan = undefined } else this.mouseUp(e) })
     this.host.addEventListener('mouseleave', () => { this.ghost?.remove(); this.ghost = undefined })

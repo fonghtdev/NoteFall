@@ -69,5 +69,13 @@ CLAUDE.md                  notes for Claude Code: commands, conventions, decisio
 ## Known limits
 
 - The piano tone cannot match a real instrument without a recording of it.
-- Reading a sheet-music PDF is recognition: it can be wrong on very complex scores or blurry scans; a bar that does not add up to the right number of beats is flagged.
+- Reading a sheet-music PDF is recognition: it can be wrong on very complex scores; a bar that does not add up to the right number of beats is flagged. It reads PDFs that hold the notation as vector drawing (MuseScore, LilyPond / Mutopia). A scan or a photo has no notes inside to read, and the app says so; PDFs from other engravers (Sibelius, Finale, Dorico) are untested.
+
+## A scanned PDF
+
+Run an optical music recognition tool once, then open its MusicXML in NoteFall (Composer > Open):
+
+1. Download [Audiveris](https://github.com/Audiveris/audiveris/releases) (free, Mac / Windows / Linux).
+2. `Audiveris -batch -transcribe -export -output out "score.pdf"` (or open the PDF in its window and use Book > Export).
+3. Open the `.mxl` / `.xml` files it writes (one per movement). Expect to fix rhythms by hand on dense pages: a 18-page Beethoven sonata scan took about 4 minutes and came out right in key, time signature and bar count, with some rhythm errors.
 - Not tried on real hardware: the Windows and Intel Mac installers; on a real iPad, sound, video export, file sharing and performance are unchecked.

@@ -1,3 +1,5 @@
+import { smuflOfName } from './glyphNames'
+
 // Turns a pdf.js page into plain geometry: glyphs (music-font characters), stroked line segments, filled polygons.
 // All coordinates are PDF user space (origin bottom-left, y up).
 
@@ -16,13 +18,25 @@ const compose = (o: M, i: M): M => [
 ]
 const apply = (m: M, x: number, y: number): [number, number] => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]]
 
+type FontNames = Record<string, { name: string; diffs: Record<number, string> }>
+async function fontNames(page: any, ol: any, OPS: Record<string, number>): Promise<FontNames> {
+  const out: FontNames = {}
+  const used = new Set<string>(ol.fnArray.flatMap((op: number, i: number) => (op === OPS.setFont ? [ol.argsArray[i][0] as string] : [])))
+  for (const id of used) {
+    const f: any = await Promise.race([new Promise((res) => page.commonObjs?.get(id, res)), new Promise((res) => setTimeout(res, 1500))]) // (a font that never loads must not hold the page up)
+    if (f?.differences && Object.keys(f.differences).length) out[id] = { name: f.name ?? '', diffs: f.differences }
+  }
+  return out
+}
+
 /** `OPS` is pdf.js's operator table (passed in so this file works with both the browser and Node builds). */
 export async function extractPrims(page: any, OPS: Record<string, number>): Promise<PagePrims> {
   const [x0, y0, x1, y1] = page.view as number[]
   const ol = await page.getOperatorList()
+  const fonts = await fontNames(page, ol, OPS) // glyph names per font, to read music fonts whose character codes differ from file to file
   const out: PagePrims = { width: x1 - x0, height: y1 - y0, glyphs: [], segs: [], polys: [], curves: [] }
 
-  let ctm = I, stack: M[] = [], tm = I, lx = 0, ly = 0, font = '', fontSize = 1, lineW = 1, charSp = 0 // (lx, ly): where the text line has been moved to (Td) since the last text matrix
+  let ctm = I, stack: M[] = [], tm = I, lx = 0, ly = 0, font = '', fontSize = 1, lineW = 1, charSp = 0, leading = 0 // (lx, ly): where the text line has been moved to (Td) since the last text matrix
   for (let i = 0; i < ol.fnArray.length; i++) {
     const op = ol.fnArray[i], a = ol.argsArray[i]
     if (op === OPS.save) stack.push(ctm)
@@ -32,6 +46,8 @@ export async function extractPrims(page: any, OPS: Record<string, number>): Prom
     else if (op === OPS.setCharSpacing) charSp = a[0]
     else if (op === OPS.beginText) { tm = I; lx = ly = 0 }
     else if (op === OPS.moveText) { lx += a[0]; ly += a[1] } // MuseScore 4 places every symbol with Td
+    else if (op === OPS.setLeading) leading = a[0] // LilyPond stacks the notes of a chord with a line feed (T*) of this height
+    else if (op === OPS.nextLine) ly -= leading
     else if (op === OPS.setFont) { font = a[0]; fontSize = typeof a[1] === 'number' && a[1] ? a[1] : 1 } // some writers keep the size here, others fold it into the text matrix
     else if (op === OPS.setTextMatrix) { tm = Array.from(typeof a[0] === 'number' ? a : a[0]) as M; lx = ly = 0 } // some pdf.js builds nest the matrix
     else if (op === OPS.showText) {
@@ -40,7 +56,8 @@ export async function extractPrims(page: any, OPS: Record<string, number>): Prom
         const w = ((g.width ?? 0) / 1000) * fontSize
         if (g.unicode && !g.isSpace) {
           const [x, y] = apply(ctm, ...apply(tm, lx + adv, ly))
-          out.glyphs.push({ font, code: g.unicode.codePointAt(0)!, x, y, size: Math.abs(fontSize * tm[0] * ctm[0]), w: w * Math.abs(tm[0] * ctm[0]) })
+          const named = fonts[font] && smuflOfName(fonts[font].diffs[g.originalCharCode], fonts[font].name)
+          out.glyphs.push({ font, code: named ?? g.unicode.codePointAt(0)!, x, y, size: Math.abs(fontSize * tm[0] * ctm[0]), w: w * Math.abs(tm[0] * ctm[0]) })
         }
         adv += w + charSp
       }

@@ -59,24 +59,34 @@ interface Event { x: number; heads: Head[]; rest?: Glyph; dur: number; dir?: 'up
 const isMusic = (g: Glyph) => g.code >= 0xf000 && g.code <= 0xf1ff
 
 // ---- staves --------------------------------------------------------------------------------------------------
-function findStaves(p: PagePrims): Staff[] {
+export function findStaves(p: PagePrims): Staff[] {
   // Some exporters (MuseScore 4) draw a staff line as one piece per bar: join the pieces that lie on the same height and touch
   const rows = p.segs.filter((s) => Math.abs(s.y1 - s.y2) < 0.01 && Math.abs(s.x2 - s.x1) > 5).map((s) => ({ y: s.y1, x0: Math.min(s.x1, s.x2), x1: Math.max(s.x1, s.x2) })).sort((a, b) => a.y - b.y || a.x0 - b.x0)
   const ys: { y: number; x0: number; x1: number }[] = []
   for (const r of rows) {
     const last = ys[ys.length - 1]
-    if (last && Math.abs(last.y - r.y) < 0.05 && r.x0 <= last.x1 + 1.5) last.x1 = Math.max(last.x1, r.x1)
+    if (last && Math.abs(last.y - r.y) < 0.05 && r.x0 <= last.x1 + 1.5) { last.x0 = Math.min(last.x0, r.x0); last.x1 = Math.max(last.x1, r.x1) }
     else ys.push({ ...r })
   }
   for (let i = ys.length - 1; i >= 0; i--) if (ys[i].x1 - ys[i].x0 <= 100) ys.splice(i, 1)
   ys.sort((a, b) => b.y - a.y)
+  // five lines an equal gap apart; another long line may lie between them (a slur or a beam drawn as a stroke), so the lines are picked out, not taken in a row
   const staves: Staff[] = []
-  for (let i = 0; i + 4 < ys.length;) {
-    const run = ys.slice(i, i + 5), gap = run[0].y - run[1].y
-    if (gap > 2 && run.every((l, k) => k === 0 || Math.abs(run[k - 1].y - l.y - gap) < gap * 0.08)) {
+  const used = new Set<number>()
+  const near = (y: number, tol: number, from: number) => { for (let k = from; k < ys.length; k++) if (!used.has(k) && Math.abs(ys[k].y - y) < tol) return k; return -1 }
+  for (let i = 0; i < ys.length; i++) {
+    if (used.has(i)) continue
+    for (let j = i + 1; j < ys.length; j++) {
+      const gap = ys[i].y - ys[j].y
+      if (gap > 30) break
+      if (gap <= 2 || used.has(j)) continue
+      const rest = [2, 3, 4].map((n) => near(ys[i].y - n * gap, gap * 0.08, j + 1))
+      if (rest.some((k) => k < 0)) continue
+      const run = [i, j, ...rest].map((k) => ys[k])
+      run.forEach((_, n) => used.add([i, j, ...rest][n]))
       staves.push({ top: run[0].y, bottom: run[4].y, sp: (run[0].y - run[4].y) / 4, x0: Math.min(...run.map((l) => l.x0)), x1: Math.max(...run.map((l) => l.x1)) })
-      i += 5
-    } else i++
+      break
+    }
   }
   return staves
 }

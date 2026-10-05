@@ -363,3 +363,22 @@ describe('inserting and removing several bars', () => {
     toggleKeep(s, 0, 2); expect(s.measures.map((m) => !!m.keep)).toEqual([false, false, false, false])
   })
 })
+
+import { joinScores } from './model'
+describe('joining the movements of a piece', () => {
+  it('puts each one after the other with its own key and time, and keeps the marks pointing at the right notes', () => {
+    const a = emptyScore(1), b = emptyScore(1, { beats: 3, unit: 4 }, -2)
+    putNote(a, L, 0, TPQ, P('C', 4))
+    const x = putNote(b, L, 0, TPQ, P('D', 4)), y = putNote(b, L, TPQ, TPQ, P('E', 4))
+    findEv(b, x)!.ev.slur = y
+    const j = joinScores([a, b])
+    expect(j.measures).toHaveLength(2)
+    expect(j.measures[1]).toMatchObject({ time: { beats: 3, unit: 4 }, key: -2 })
+    expect(j.measures[0].barline).toBe('final')
+    const ids = j.measures.flatMap((m) => m.staves[0][0].map((e) => e.id))
+    expect(new Set(ids).size).toBe(ids.length)                                  // no id used twice
+    const from = j.measures[1].staves[0][0][0]
+    expect(findEv(j, from.slur!)!.ev.pitches[0]).toEqual(P('E', 4))             // the slur still ends on the E
+    expect(validate(j)).toEqual([])
+  })
+})

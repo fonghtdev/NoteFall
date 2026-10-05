@@ -13,7 +13,8 @@ import { end, type Note } from './core/models'
 import { beatTimes, estimateGrid, gridForSignature, quantize, scaleTempo, shiftOffset, type BeatGrid } from './core/beats'
 import { DEFAULT_CLICK, Follower, Practice, SOUNDS, playClick, type ClickSettings, type ClickSound, type ClickSource } from './core/metronome'
 import * as cache from './core/cache'
-import { readPdfScore } from './core/score/pdf'
+import { readPdfScore, ScanPdfError } from './core/score/pdf'
+import { scanPdf } from './editor/scan'
 import { scoreClicks, tempoRatios, toNotes, unroll } from './core/score/playback'
 import { setGraceBeats } from './core/score/realize'
 import type { Score } from './core/score/omr'
@@ -252,10 +253,21 @@ export async function loadFile(file: File) {
     }
     show(notes, audio, await cache.load<BeatGrid>(k + CACHE_V + ':grid'), k)
   } catch (e) {
+    if (e instanceof ScanPdfError) return await playScan(file, e)
     say(`Lỗi: ${e instanceof Error ? e.message : e}`, 'error')
   } finally {
     progress.hidden = true
   }
+}
+
+/** A scanned PDF: Audiveris reads it (desktop app), then it plays like any score. */
+async function playScan(file: File, why: ScanPdfError) {
+  try {
+    const r = await scanPdf(file, why.pages)
+    if (!r) return say(`Lỗi: ${why.message}`, 'error')
+    await playComposed(r.score)
+    say(`Đã mở ${file.name} · ⚠ ${r.warnings[0]}`)
+  } catch (e) { say(`Không nhận dạng được: ${e instanceof Error ? e.message : e}`, 'error') }
 }
 
 $('open').onclick = $('empty-open').onclick = () => $('file').click()

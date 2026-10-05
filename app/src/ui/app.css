@@ -320,3 +320,12 @@ dialog.dlg .body.fonts { display: grid; grid-template-columns: 1fr; gap: var(--s
 .fonts .font-info { display: grid; gap: 2px; min-width: 0; }
 .fonts .hint { color: var(--text-3); font-size: 12px; margin: 0; }
 .fonts #fonts-status.warn { color: var(--danger); }
+
+/* scanned sheet music being read (editor/scan.ts) */
+.scanbar { position: fixed; left: 50%; top: 76px; transform: translateX(-50%); z-index: 50; display: grid; grid-template-columns: 1fr auto; gap: 6px 14px; align-items: center; width: min(460px, calc(100vw - 32px)); padding: 12px 14px; border-radius: 14px; background: var(--surface); border: 1px solid var(--surface-3); color: var(--text); box-shadow: 0 12px 40px rgb(0 0 0 / 0.45); font-size: 13px; }
+.scanbar progress { grid-column: 1 / -1; width: 100%; height: 4px; appearance: none; border: 0; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
+.scanbar progress::-webkit-progress-bar { background: var(--surface-2); }
+.scanbar progress::-webkit-progress-value { background: var(--accent); }
+.scanbar progress:indeterminate { background: linear-gradient(90deg, transparent, var(--accent), transparent); background-size: 40% 100%; background-repeat: no-repeat; animation: slide 1.2s linear infinite; }
+.scanbar small { color: var(--text-3); }
+.scanbar button { grid-row: 3; grid-column: 2; }

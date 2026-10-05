@@ -27,6 +27,7 @@
     "files": [
       "main.js",
       "preload.cjs",
+      "omr.cjs",
       "dist/**"
     ],
     "mac": {

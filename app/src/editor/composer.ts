@@ -10,6 +10,8 @@ import {
 } from './model'
 import { toPerformance } from './perform'
 import { DYN_GLYPH, keyName, renderScore, tickAtX, type DrawnEv, type Layout, type MarkRef } from './render'
+import { ScanPdfError } from '../core/score/pdf'
+import { scanPdf } from './scan'
 import { exportMidi, exportMusicXml, exportPdf, importFileFull, saveJson } from './io'
 
 /** What the mouse code needs of an event, so a touch can stand in for it. */
@@ -1062,7 +1064,20 @@ export class Composer {
       const { score, warnings } = await importFileFull(f)
       this.setScore(score)
       this.say(`Đã mở ${f.name}` + (warnings.length ? ` · ⚠ ${warnings[0]}${warnings.length > 1 ? ` (+${warnings.length - 1})` : ''}` : ''), warnings.length > 0)
-    } catch (e) { this.say(`Không mở được: ${e instanceof Error ? e.message : e}`, true) }
+    } catch (e) {
+      if (e instanceof ScanPdfError) return this.openScan(f, e)
+      this.say(`Không mở được: ${e instanceof Error ? e.message : e}`, true)
+    }
+  }
+
+  /** A scanned PDF: read it with Audiveris when this is the desktop app, else say why it cannot be read. */
+  private async openScan(f: File, why: ScanPdfError) {
+    try {
+      const r = await scanPdf(f, why.pages)
+      if (!r) return this.say(`Không mở được: ${why.message}`, true)
+      this.setScore(r.score)
+      this.say(`Đã mở ${f.name} · ⚠ ${r.warnings[0]}`, true)
+    } catch (e) { this.say(`Không nhận dạng được: ${e instanceof Error ? e.message : e}`, true) }
   }
 
   /** Export the engraved score as PDF (the tab must be visible so the SVG is laid out). */

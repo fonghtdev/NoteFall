@@ -15,6 +15,8 @@ if (process.env.NOTEFALL_FRESH) app.setPath('userData', require('os').tmpdir() +
 // Print the window that asked: it already has the music font loaded, a separate window would not.
 ipcMain.handle('print-pdf', (e) => e.sender.printToPDF({ pageSize: 'A4', printBackground: true, preferCSSPageSize: true }))
 
+require('./omr.cjs').register()
+
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.json': 'application/json', '.wasm': 'application/wasm', '.woff2': 'font/woff2', '.woff': 'font/woff', '.svg': 'image/svg+xml',
@@ -40,7 +42,7 @@ app.whenReady().then(() => {
   })
   const selftest = !!process.env.NOTEFALL_SELFTEST
   const win = new BrowserWindow({
-    width: +(process.env.NOTEFALL_SIZE || '1280x780').split('x')[0], height: +(process.env.NOTEFALL_SIZE || '1280x780').split('x')[1], minWidth: 960, minHeight: 600, show: !(selftest || process.env.NOTEFALL_JS), backgroundColor: '#080a1c',
+    width: +(process.env.NOTEFALL_SIZE || '1280x780').split('x')[0], height: +(process.env.NOTEFALL_SIZE || '1280x780').split('x')[1], minWidth: 960, minHeight: 600, show: !(selftest || process.env.NOTEFALL_JS) || !!process.env.NOTEFALL_SHOW, backgroundColor: '#080a1c',
     webPreferences: { autoplayPolicy: 'no-user-gesture-required', backgroundThrottling: false, preload: path.join(__dirname, 'preload.cjs') },
   })
   win.setMenuBarVisibility(false)

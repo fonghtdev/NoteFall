@@ -73,9 +73,6 @@ CLAUDE.md                  notes for Claude Code: commands, conventions, decisio
 
 ## A scanned PDF
 
-Run an optical music recognition tool once, then open its MusicXML in NoteFall (Composer > Open):
+In the Mac and Windows app, opening a scanned or photographed PDF reads it with [Audiveris](https://github.com/Audiveris/audiveris) (free, open-source optical music recognition). The first time, the app asks before downloading it (about 85 MB, once, into its data folder). Then a panel shows the page being read and a Cancel button. A page takes from a few seconds to about a minute, so a long score takes minutes; the result is a draft: expect wrong notes and rhythms on dense pages. An 18-page Beethoven sonata came out right in key, time signature and bar count, with rhythm errors. The pieces of a work with several movements are joined into one score.
 
-1. Download [Audiveris](https://github.com/Audiveris/audiveris/releases) (free, Mac / Windows / Linux).
-2. `Audiveris -batch -transcribe -export -output out "score.pdf"` (or open the PDF in its window and use Book > Export).
-3. Open the `.mxl` / `.xml` files it writes (one per movement). Expect to fix rhythms by hand on dense pages: a 18-page Beethoven sonata scan took about 4 minutes and came out right in key, time signature and bar count, with some rhythm errors.
-- Not tried on real hardware: the Windows and Intel Mac installers; on a real iPad, sound, video export, file sharing and performance are unchecked.
+On the web and on an iPad there is no Audiveris: read the scan with it on a computer, then open the MusicXML it writes.

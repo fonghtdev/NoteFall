@@ -922,3 +922,24 @@ export function pasteClip(s: Score, clip: Clip, dest: { m: number; at: number; s
 
 /** Every event of the score, in reading order (for Select all). */
 export const allEventIds = (s: Score) => s.measures.flatMap((m) => m.staves.flatMap((vs) => vs.flatMap((v) => v.map((e) => e.id))))
+
+/** One score from several (the movements of a sonata): each one starts where the one before ended, with its own key, time signature and tempo. */
+export function joinScores(parts: Score[]): Score {
+  const [first, ...rest] = structuredClone(parts)
+  for (const p of rest) {
+    const off = first.nextId
+    for (const m of p.measures) for (const st of m.staves) for (const v of st) for (const e of v) {
+      e.id += off
+      if (e.slur !== undefined) e.slur += off
+      if (e.hairpin) e.hairpin.end += off
+      if (e.ottava) e.ottava.end += off
+      if (e.pedal) e.pedal.end += off
+    }
+    first.nextId += p.nextId
+    const last = first.measures[first.measures.length - 1]
+    if (last && !last.endRepeat) last.barline = 'final'
+    p.measures[0] = { ...p.measures[0], time: p.time, key: p.key, tempo: p.tempo, clefs: p.clefs }
+    first.measures.push(...p.measures)
+  }
+  return first
+}

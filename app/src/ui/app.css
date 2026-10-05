@@ -317,6 +317,7 @@ dialog.dlg .body.fonts { display: grid; grid-template-columns: 1fr; gap: var(--s
 .fonts section { display: grid; gap: var(--s2); }
 .fonts .font-row { display: grid; grid-template-columns: 1fr auto auto auto; align-items: center; gap: var(--s2); padding: var(--s2) 0; border-bottom: 1px solid var(--line); }
 .fonts .font-row .field { max-width: 14rem; }
+.fonts .font-pick { display: grid; gap: var(--s1); }
 .fonts .font-info { display: grid; gap: 2px; min-width: 0; }
 .fonts .hint { color: var(--text-3); font-size: 12px; margin: 0; }
 .fonts #fonts-status.warn { color: var(--danger); }

@@ -31,7 +31,7 @@ describe('metronome beats', () => {
 })
 
 import { afterEach, beforeEach, vi } from 'vitest'
-import { DEFAULT_CLICK, Follower, type ClickSource } from './metronome'
+import { DEFAULT_CLICK, Follower, type ClickSource, listSource } from './metronome'
 
 describe('Follower', () => {
   beforeEach(() => { vi.useFakeTimers() })
@@ -66,5 +66,16 @@ describe('Follower', () => {
     const f = new Follower(ctx, () => 0, () => undefined, () => DEFAULT_CLICK, undefined, () => { n++ })
     f.start(); vi.advanceTimersByTime(300); f.stop(); vi.advanceTimersByTime(300)
     expect(n).toBe(0); expect(f.running).toBe(false)
+  })
+})
+
+describe('listSource', () => {
+  const list = [{ t: 0, accent: true }, { t: 0.5, accent: false }, { t: 1, accent: false }, { t: 1.5, accent: true }]
+  it('gives the clicks after `from` up to and including `to`', () => {
+    const src = listSource(list)
+    expect(src(0, 1).map((c) => c.t)).toEqual([0.5, 1])   // not the one at `from`, the one at `to` yes
+    expect(src(1, 5).map((c) => c.t)).toEqual([1.5])
+    expect(src(2, 3)).toEqual([])
+    expect(src(-1, 0).map((c) => c.t)).toEqual([0])
   })
 })

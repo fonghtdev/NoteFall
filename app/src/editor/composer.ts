@@ -1,7 +1,8 @@
 import { icon, type IconName } from '../ui/icons'
 import { popover } from '../ui/popover'
 import { renderNotes } from '../core/synth'
-import { tempoRatios, toNotes, unroll } from '../core/score/playback'
+import { Follower, listSource, type ClickSettings } from '../core/metronome'
+import { scoreClicks, tempoRatios, toNotes, unroll } from '../core/score/playback'
 import { hitTest, keyAlter, type Hit } from './hit'
 import {
   CLEFS, STEPS, TPQ, addGrace, barTicks, clearGrace, contextAt, copyPrevious, deleteEv, deleteMeasure, diatonic, emptyScore, findEv, flipStem, fromDiatonic, graceStep, midiOf, insertMeasure, ottavaShiftAt, putNote, putRest,
@@ -17,7 +18,11 @@ import { exportMidi, exportMusicXml, exportPdf, importFileFull, saveJson } from 
 /** What the mouse code needs of an event, so a touch can stand in for it. */
 interface Pt { clientX: number; clientY: number; button?: number; shiftKey?: boolean; target: EventTarget | null; preventDefault(): void }
 
-export interface ComposerHooks { toFalling(score: Score): void | Promise<void> }
+export interface ComposerHooks {
+  toFalling(score: Score): void | Promise<void>
+  piano: { options(): { value: string; label: string }[]; value(): string; set(v: string): void }  // the sound the notes are played on
+  click(): ClickSettings                                                                           // how the metronome sounds
+}
 
 const MIN_ZOOM = 0.35, MAX_ZOOM = 3.5
 const ZOOM_STEPS = [0.35, 0.5, 0.65, 0.8, 0.9, 1, 1.15, 1.3, 1.5, 1.75, 2, 2.5, 3, 3.5]
@@ -60,6 +65,8 @@ export class Composer {
   private status!: HTMLElement
   private playing?: AudioBufferSourceNode
   private ctx?: AudioContext
+  private metOn = ((): boolean => { try { return localStorage.getItem('notefall.cmp.met') === '1' } catch { return false } })()
+  private clicks?: Follower  // the metronome of the preview that is playing
   private btns = new Map<string, HTMLButtonElement>()
   selMark?: MarkRef                  // a text / dynamic / tempo / rehearsal mark picked up (click it; drag it; Delete removes it)
   sysRange?: [number, number]        // a whole line (system) picked by clicking beside its bars: add / remove bar act on it
@@ -1090,7 +1097,28 @@ export class Composer {
   stop() {
     const p = this.playing
     this.playing = undefined; this.starting = false
+    this.clicks?.stop(); this.clicks = undefined
     try { p?.stop() } catch { /* already stopped */ }
+    this.syncToolbar()
+  }
+
+  /** One entry per piano the app can play (the built-in tones and the SoundFonts), the one in use ticked. */
+  private fillPianoMenu(menu: HTMLElement) {
+    menu.replaceChildren()
+    const now = this.hooks.piano.value()
+    for (const o of this.hooks.piano.options()) {
+      const b = this.el('button', '', menu); b.type = 'button'; b.setAttribute('role', 'menuitemradio'); b.setAttribute('aria-checked', String(o.value === now))
+      b.textContent = (o.value === now ? '✓  ' : '') + o.label
+      b.onclick = () => { this.hooks.piano.set(o.value); this.say(`Tiếng đàn: ${o.label}`); menu.hidden = true }
+    }
+  }
+
+  /** The metronome clicks along with the preview; switching it while the preview plays takes effect at once. */
+  private toggleMetronome() {
+    this.metOn = !this.metOn
+    try { localStorage.setItem('notefall.cmp.met', this.metOn ? '1' : '0') } catch { /* best effort */ }
+    if (this.metOn) { this.clicks?.reset(); this.clicks?.start() } else this.clicks?.stop()
+    this.say(this.metOn ? 'Metronome: bật khi nghe thử' : 'Metronome: tắt')
     this.syncToolbar()
   }
 
@@ -1113,9 +1141,13 @@ export class Composer {
     const src = this.ctx.createBufferSource()
     src.buffer = buf
     src.connect(this.ctx.destination)
-    src.onended = () => { if (this.playing === src) { this.playing = undefined; this.syncToolbar() } }
+    src.onended = () => { if (this.playing === src) { this.clicks?.stop(); this.clicks = undefined; this.playing = undefined; this.syncToolbar() } }
     src.start()
     this.playing = src
+    const ctx = this.ctx, t0 = ctx.currentTime
+    const clicks = listSource(scoreClicks(perf, true, this.score.tempo, tempoRatios(perf))) // the same repeats and tempo changes the notes were made with
+    this.clicks = new Follower(ctx, () => ctx.currentTime - t0, () => clicks, () => this.hooks.click())
+    if (this.metOn) this.clicks.start()
     this.syncToolbar()
   }
 
@@ -1195,6 +1227,11 @@ export class Composer {
     }
 
     this.el('span', 'spacer', top)
+    const pianoWrap = this.el('div', 'pop-anchor', top)
+    const pianoMenu = this.el('div', 'popover menu', pianoWrap); pianoMenu.setAttribute('role', 'menu')
+    const pianoBtn = this.btn(pianoWrap, 'piano', 'Tiếng đàn', 'Chọn tiếng đàn khi nghe thử (dùng chung với màn Nốt rơi)', () => this.fillPianoMenu(pianoMenu), { cls: '', html: `${icon('music')}Tiếng đàn${icon('chevron')}` })
+    popover(pianoBtn, pianoMenu)
+    this.btn(top, 'met', 'Metronome', 'Gõ nhịp khi nghe thử. Tiếng và âm lượng chỉnh ở màn Nốt rơi', () => this.toggleMetronome(), { cls: '', html: `${icon('metronome')}Metronome` })
     this.btn(top, 'play', 'Nghe thử', 'Nghe bản soạn (Space)', () => void this.togglePlay(), { cls: '', html: `${icon('play')}Nghe thử` })
     this.btn(top, 'falling', 'Xem nốt rơi', 'Chuyển bản soạn sang màn hình nốt rơi', () => void this.hooks.toFalling(this.score), { cls: 'primary', html: `Xem nốt rơi${icon('bars')}` })
     const zoomBar = this.group(top); zoomBar.setAttribute('role', 'group'); zoomBar.setAttribute('aria-label', 'Phóng to / thu nhỏ')
@@ -1428,7 +1465,7 @@ export class Composer {
     DURATIONS.forEach(([, , t]) => set(`d${t}`, t === this.dur))
     for (let v = 0; v < 4; v++) set(`v${v}`, v === this.voice)
     const on = !!this.playing || this.starting
-    set('play', on)
+    set('play', on); set('met', this.metOn)
     const b = this.btns.get('play'); if (b) { b.innerHTML = on ? `${icon('pause')}Dừng` : `${icon('play')}Nghe thử`; b.classList.toggle('on', on) }
     set('sharp', this.pendingAlter === 1); set('flat', this.pendingAlter === -1); set('natural', this.pendingAlter === 0)
     const ctx = contextAt(this.score, Math.min(this.cursor.m, this.score.measures.length - 1))

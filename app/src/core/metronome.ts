@@ -55,6 +55,15 @@ export function playClick(ctx: AudioContext, when: number, accent: boolean, st: 
 
 export type ClickSource = (from: number, to: number) => { t: number; accent: boolean }[]
 
+/** The clicks of a sorted list (as `scoreClicks` makes it) that fall in (from, to]. */
+export const listSource = (list: { t: number; accent: boolean }[]): ClickSource => (from, to) => {
+  let lo = 0, hi = list.length
+  while (lo < hi) { const m = (lo + hi) >> 1; list[m].t <= from ? (lo = m + 1) : (hi = m) }
+  const out = []
+  for (let i = lo; i < list.length && list[i].t <= to; i++) out.push(list[i])
+  return out
+}
+
 /** Clicks along the song: while the song plays, sound every beat the source reports, in step with the playback clock. */
 export class Follower {
   private timer?: ReturnType<typeof setInterval>

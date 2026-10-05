@@ -11,7 +11,7 @@ import { VOICES, getPianoVoice, partialAmps, partials, decayOf, PIANO, renderNot
 import { clean } from './core/postprocess'
 import { end, type Note } from './core/models'
 import { beatTimes, estimateGrid, gridForSignature, quantize, scaleTempo, shiftOffset, type BeatGrid } from './core/beats'
-import { DEFAULT_CLICK, Follower, Practice, SOUNDS, playClick, type ClickSettings, type ClickSound, type ClickSource } from './core/metronome'
+import { DEFAULT_CLICK, Follower, Practice, listSource, SOUNDS, playClick, type ClickSettings, type ClickSound, type ClickSource } from './core/metronome'
 import * as cache from './core/cache'
 import { readPdfScore, ScanPdfError } from './core/score/pdf'
 import { scanPdf } from './editor/scan'
@@ -136,13 +136,7 @@ async function showScore() {
   document.body.classList.add('score'); $('scorectl').hidden = false
   show(notes, audio, gridForSignature(bpm, score.beatsPerBar, score.beatUnit))
   const list = scoreClicks(score, repeats, bpm, ratios)
-  clickSource = (a, b) => { // the clicks between a and b (the list is sorted)
-    let lo = 0, hi = list.length
-    while (lo < hi) { const m = (lo + hi) >> 1; list[m].t <= a ? (lo = m + 1) : (hi = m) }
-    const out = []
-    for (let i = lo; i < list.length && list[i].t <= b; i++) out.push(list[i])
-    return out
-  }
+  clickSource = listSource(list)
   const barLen0 = score.measures[0]?.length
   if (ratios.length || score.measures.some((m) => m.length !== barLen0)) { grid = undefined; refresh() } // tempo or time signature changes along the way: one fixed beat grid would drift, so the beat lines are left out
   const bad = score.measures.filter((m) => m.suspect)
@@ -206,7 +200,16 @@ async function playComposed(sc: import('./editor/model').Score) {
   await showScore()
 }
 
-const composer = new Composer($('composer'), { toFalling: playComposed })
+const composer = new Composer($('composer'), {
+  toFalling: playComposed,
+  // the piano and the metronome are the ones of the falling view: one choice for the whole app
+  piano: {
+    options: () => [...pianoSel.options].map((o) => ({ value: o.value, label: o.textContent ?? o.value })),
+    value: getPianoVoice,
+    set: (v) => { pianoSel.value = v; pianoSel.dispatchEvent(new Event('change')) },
+  },
+  click: () => met,
+})
 // commands from the macOS menu. A key press that already did the job (the page saw it too) is not done twice.
 let lastKeyAt = 0
 document.addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && /^(z|a|\+|=|-|_|0)$/i.test(e.key)) lastKeyAt = performance.now() }, true)

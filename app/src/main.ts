@@ -24,7 +24,7 @@ import { Composer } from './editor/composer'
 import { minuet } from './editor/demo'
 import { toPerformance } from './editor/perform'
 import { scoreFromOmr } from './editor/importScore'
-import { scoreFromNotes } from './editor/io'
+import { exportMusicXml, scoreFromNotes } from './editor/io'
 import { keyName } from './editor/render'
 import { initFontsDialog } from './ui/fonts'
 import { fontLabel, listFonts, loadSoundFont } from './core/soundfonts'
@@ -116,6 +116,7 @@ export function show(notes: Note[], audio?: AudioBuffer, g?: BeatGrid, k?: strin
   seek.max = String(duration)
   seek.value = String(-transport.lead)
   playBtn.disabled = editBtn.disabled = notes.length === 0
+  $('xmlbtn').hidden = !score // only sheet music is read exactly enough to be worth saving as notation
   exportBtn.disabled = exportOpen.disabled = notes.length === 0 || noWebCodecs
   if (noWebCodecs) exportOpen.title = 'Xuất video cần WebCodecs (iPad / trình duyệt này chưa có)'
   setPlayState()
@@ -189,6 +190,7 @@ function fillComposerFromSong(force: boolean) {
   filledFrom = { id, edits: composer.editCount }
 }
 /** The button forces it (it replaces what is there); opening the tab does it only for an empty or untouched composer. */
+$('xmlbtn').onclick = () => { const r = songAsScore(); if (r) exportMusicXml(r.score) }
 $('editbtn').onclick = () => { fillComposerFromSong(true); openTab('composer') }
 
 /** Show a composed score in the falling view. */
@@ -270,7 +272,7 @@ export async function loadFile(file: File) {
 async function playScan(file: File, why: ScanPdfError) {
   try {
     const r = await scanPdf(file, why.pages)
-    if (!r) return say(`Lỗi: ${why.message}`, 'error')
+    if (!r) return say(`Lỗi: ${why.message} Bản scan chỉ đọc được trong app NoteFall trên máy tính (Mac / Windows).`, 'error')
     await playComposed(r.score)
     say(`Đã mở ${file.name} · ⚠ ${r.warnings[0]}`)
   } catch (e) { say(`Không nhận dạng được: ${e instanceof Error ? e.message : e}`, 'error') }

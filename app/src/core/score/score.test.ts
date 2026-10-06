@@ -152,3 +152,20 @@ describe('ties', () => {
     expect(unroll(readScore([prims(false)])).map((n) => n.duration)).toEqual([1, 1, 1, 1])
   })
 })
+
+import { locate, playedBars, quartersAt, secondsAt } from './playback'
+describe('where the playback is', () => {
+  const changes = [{ at: 4, ratio: 2 }]                       // twice as fast from the 5th quarter on
+  it('quartersAt undoes secondsAt, through a tempo change', () => {
+    for (const q of [0, 1.5, 4, 5, 9.25]) expect(quartersAt(secondsAt(q, 120, changes), 120, changes)).toBeCloseTo(q, 9)
+  })
+  it('names the bar and the place in it, repeats played twice', () => {
+    const bars = [{ bar: 0, q0: 0, length: 4 }, { bar: 1, q0: 4, length: 4 }, { bar: 0, q0: 8, length: 4 }, { bar: 1, q0: 12, length: 4 }] // |: 0 1 :|
+    expect(locate(bars, 0)).toEqual({ bar: 0, quarter: 0, next: 1 })
+    expect(locate(bars, 5.5)).toEqual({ bar: 1, quarter: 1.5, next: 0 })      // after bar 1 the repeat goes back to bar 0
+    expect(locate(bars, 8)).toEqual({ bar: 0, quarter: 0, next: 1 })      // the second time round
+    expect(locate(bars, 15.9)?.quarter).toBeCloseTo(3.9, 9)
+    expect(locate(bars, 15.9)?.next).toBeUndefined()           // the last bar has none after it
+    expect(locate(bars, 16)).toBeUndefined()                     // after the end
+  })
+})

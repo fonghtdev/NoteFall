@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest'
-import { addFont, listFonts, loadSoundFont, removeFont, setPreset } from './soundfonts'
+import { addFont, fontLabel, listFonts, loadSoundFont, removeFont, setPreset } from './soundfonts'
 import { tinySf2 } from './sf2.fixture'
 
 describe('installed SoundFonts', () => {
@@ -22,5 +22,21 @@ describe('installed SoundFonts', () => {
     expect((await loadSoundFont('a1'))?.preset).toBe(0) // (there is only one instrument: the choice is held inside what exists)
     await removeFont('a1')
     expect(listFonts()).toEqual([]); expect(await loadSoundFont('a1')).toBeUndefined()
+  })
+  it('lists the instrument that plays by its own name, not that of the library', async () => {
+    await addFont(tinySf2(), 'tiny.sf2', 'a1')
+    const name = listFonts()[0].presetName!
+    expect(name).toBeTruthy()
+    expect(fontLabel(listFonts()[0])).toBe(name)
+    setPreset('a1', 0, 'Xylophone')
+    expect(fontLabel(listFonts()[0])).toBe('Xylophone')
+  })
+  it('a library installed before names were kept learns its name when it is loaded', async () => {
+    await addFont(tinySf2(), 'tiny.sf2', 'a1')
+    const real = listFonts()[0].presetName
+    localStorage.setItem('notefall.fonts', JSON.stringify(listFonts().map(({ presetName: _, ...old }) => old)))
+    expect(fontLabel(listFonts()[0])).toBe('Tiny test')
+    await loadSoundFont('a1')
+    expect(listFonts()[0].presetName).toBe(real)
   })
 })

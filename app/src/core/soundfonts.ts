@@ -2,7 +2,7 @@ import * as cache from './cache'
 import { defaultPreset, parseSf2, type SoundFont } from './sf2'
 
 /** The SoundFont libraries the user installed: their bytes live in IndexedDB, the list (and which preset each one plays) in localStorage. */
-export interface FontInfo { id: string; name: string; size: number; preset: number }
+export interface FontInfo { id: string; name: string; size: number; preset: number; presetName?: string } // presetName: what the preset is called, so the pickers can say which instrument plays
 const LIST = 'notefall.fonts'
 const bytesKey = (id: string) => `sf2:${id}`
 
@@ -16,12 +16,12 @@ export async function addFont(buf: ArrayBuffer, fileName: string, id = `f${Date.
   const font = parseSf2(buf) // throws for anything that is not a SoundFont
   await cache.save(bytesKey(id), buf)
   parsed.set(id, font)
-  const info: FontInfo = { id, name: font.name && font.name !== 'SoundFont' ? font.name : fileName.replace(/\.sf2$/i, ''), size: buf.byteLength, preset: defaultPreset(font) }
+  const info: FontInfo = { id, name: font.name && font.name !== 'SoundFont' ? font.name : fileName.replace(/\.sf2$/i, ''), size: buf.byteLength, preset: defaultPreset(font), presetName: font.presets[defaultPreset(font)]?.name }
   saveList([...listFonts().filter((f) => f.id !== id), info])
   return info
 }
 export async function removeFont(id: string) { parsed.delete(id); saveList(listFonts().filter((f) => f.id !== id)); await cache.remove(bytesKey(id)) }
-export function setPreset(id: string, preset: number) { saveList(listFonts().map((f) => (f.id === id ? { ...f, preset } : f))) }
+export function setPreset(id: string, preset: number, presetName?: string) { saveList(listFonts().map((f) => (f.id === id ? { ...f, preset, presetName } : f))) }
 
 /** The library and the preset it plays (undefined if its bytes are gone: the browser cleared its storage). */
 export async function loadSoundFont(id: string): Promise<{ font: SoundFont; preset: number } | undefined> {
@@ -34,8 +34,14 @@ export async function loadSoundFont(id: string): Promise<{ font: SoundFont; pres
     try { font = parseSf2(buf) } catch { return undefined }
     parsed.set(id, font)
   }
-  return { font, preset: Math.min(info.preset, font.presets.length - 1) }
+  const preset = Math.min(info.preset, font.presets.length - 1)
+  const name = font.presets[preset]?.name
+  if (name !== info.presetName) setPreset(id, info.preset, name) // (a library installed before the name was kept)
+  return { font, preset }
 }
+
+/** How a library shows in a list: the instrument that plays (its own name says nothing the person needs), the library's name until that is known. */
+export const fontLabel = (f: FontInfo) => f.presetName ?? f.name
 
 /** Free libraries that are known to download from a public address (only fetched when the user asks). */
 export interface CatalogEntry { id: string; name: string; size: number; url: string; note: string }

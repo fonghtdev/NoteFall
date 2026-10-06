@@ -7,7 +7,7 @@ import { PianoView } from './ui/pianoView'
 import { Transport } from './ui/transport'
 import { parseMidi } from './core/midi'
 import { transcribe } from './core/basicPitch'
-import { VOICES, getPianoVoice, partialAmps, partials, decayOf, PIANO, renderNotes, setPianoVoice, type PianoVoice } from './core/synth'
+import { PIANO_CHANGED, PIANO_DEFAULT, PIANO_LAST, VOICES, startVoice, getPianoVoice, partialAmps, partials, decayOf, PIANO, renderNotes, setPianoVoice, type PianoVoice } from './core/synth'
 import { clean } from './core/postprocess'
 import { end, type Note } from './core/models'
 import { beatTimes, estimateGrid, gridForSignature, quantize, scaleTempo, shiftOffset, type BeatGrid } from './core/beats'
@@ -27,7 +27,7 @@ import { scoreFromOmr } from './editor/importScore'
 import { scoreFromNotes } from './editor/io'
 import { keyName } from './editor/render'
 import { initFontsDialog } from './ui/fonts'
-import { listFonts } from './core/soundfonts'
+import { fontLabel, listFonts, loadSoundFont } from './core/soundfonts'
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 const view = new PianoView($('view') as HTMLCanvasElement, $('gl') as HTMLCanvasElement)
@@ -207,6 +207,9 @@ const composer = new Composer($('composer'), {
     options: () => [...pianoSel.options].map((o) => ({ value: o.value, label: o.textContent ?? o.value })),
     value: getPianoVoice,
     set: (v) => { pianoSel.value = v; pianoSel.dispatchEvent(new Event('change')) },
+    openLibrary: () => $('btn-fonts').click(),
+    isDefault: () => isPianoDefault(),
+    setDefault: (on) => setPianoDefault(on),
   },
   click: () => met,
 })
@@ -375,6 +378,13 @@ document.addEventListener('keydown', (e) => { // Space plays / pauses the fallin
   const t = e.target as HTMLElement
   if (e.key === ' ' && !$('falling').hidden && !playBtn.disabled && !/^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(t.tagName)) { e.preventDefault(); playBtn.click() }
 })
+document.addEventListener('keydown', (e) => { // the arrows jump 5 seconds back / forward, like a video player
+  if ((e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
+  if ($('falling').hidden || playBtn.disabled || /^(INPUT|SELECT|TEXTAREA)$/.test((e.target as HTMLElement).tagName)) return
+  e.preventDefault()
+  transport.seek(transport.now() + (e.key === 'ArrowLeft' ? -5 : 5))
+  seek.value = String(transport.now()); fill(seek)
+})
 // settings, remembered between runs (best-effort: storage may be unavailable)
 const bgDim = $<HTMLInputElement>('bg-dim'), bgBlur = $<HTMLInputElement>('bg-blur'), graceSel = $<HTMLSelectElement>('grace'), speed = $<HTMLInputElement>('speed'), sparks = $<HTMLInputElement>('sparks'), glass = $<HTMLInputElement>('glass'), themeSel = $<HTMLSelectElement>('theme')
 for (const id of ['black', 'crystal', 'image']) themeSel.add(new Option(THEMES[id].name, id)) // black / crystal / your own picture
@@ -437,12 +447,28 @@ const pianoSel = $<HTMLSelectElement>('piano')
 const fillPiano = () => {
   pianoSel.replaceChildren()
   for (const [k, label] of Object.entries(VOICES)) pianoSel.add(new Option(label, k))
-  for (const f of listFonts()) pianoSel.add(new Option(f.name, `sf2:${f.id}`))
+  for (const f of listFonts()) pianoSel.add(new Option(fontLabel(f), `sf2:${f.id}`))
   if (![...pianoSel.options].some((o) => o.value === getPianoVoice())) setPianoVoice('crystal') // its library is gone
   pianoSel.value = getPianoVoice()
+  window.dispatchEvent(new Event(PIANO_CHANGED))
 }
-try { const v = localStorage.getItem('notefall.piano'); if (v && (v in VOICES || listFonts().some((f) => `sf2:${f.id}` === v))) setPianoVoice(v as PianoVoice) } catch { /* default */ }
+try { const v = startVoice((k) => localStorage.getItem(k), (v) => v in VOICES || listFonts().some((f) => `sf2:${f.id}` === v)); if (v) setPianoVoice(v) } catch { /* default */ }
 fillPiano()
+{ // a library installed before the instrument's name was kept learns it now (the one in use is read when it plays anyway)
+  const inUse = getPianoVoice()
+  if (inUse.startsWith('sf2:') && !listFonts().find((f) => `sf2:${f.id}` === inUse)?.presetName) setTimeout(() => void loadSoundFont(inUse.slice(4)).then(fillPiano), 1500)
+}
+/** The tick "default": the piano the app opens with, whatever was used last. It stands for the piano in use now, so choosing another one unticks it. */
+const isPianoDefault = () => { try { return localStorage.getItem(PIANO_DEFAULT) === getPianoVoice() } catch { return false } }
+const setPianoDefault = (on: boolean) => {
+  try { on ? localStorage.setItem(PIANO_DEFAULT, getPianoVoice()) : localStorage.removeItem(PIANO_DEFAULT) } catch { /* best effort */ }
+  window.dispatchEvent(new Event(PIANO_CHANGED))
+}
+const defaultTick = $<HTMLInputElement>('piano-default')
+defaultTick.onchange = () => setPianoDefault(defaultTick.checked)
+const paintDefault = () => { defaultTick.checked = isPianoDefault() }
+window.addEventListener(PIANO_CHANGED, paintDefault)
+paintDefault() // (the list was filled before this listener existed)
 /** Make the sound again with the chosen piano, keeping the place in the song. */
 const remakePiano = async () => {
   const t = transport.now(), was = transport.playing
@@ -453,11 +479,12 @@ const remakePiano = async () => {
 }
 pianoSel.onchange = async () => {
   setPianoVoice(pianoSel.value as PianoVoice)
-  try { localStorage.setItem('notefall.piano', pianoSel.value) } catch { /* best effort */ }
+  try { localStorage.setItem(PIANO_LAST, pianoSel.value) } catch { /* best effort */ }
+  window.dispatchEvent(new Event(PIANO_CHANGED))
   await remakePiano()
 }
 initFontsDialog((use, remake) => {
-  if (use) { setPianoVoice(use as PianoVoice); try { localStorage.setItem('notefall.piano', use) } catch { /* best effort */ } }
+  if (use) { setPianoVoice(use as PianoVoice); try { localStorage.setItem(PIANO_LAST, use) } catch { /* best effort */ } }
   fillPiano()
   if (remake) void remakePiano()
 }, getPianoVoice)

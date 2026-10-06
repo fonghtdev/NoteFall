@@ -178,7 +178,7 @@ body.score .grid-only { display: none !important; }
 .cmp-tools .btn { min-width: 34px; }
 .cmp-body { flex: 1; min-height: 0; display: flex; }
 .cmp-page { flex: 1; min-width: 0; overflow: auto; padding: var(--s5); background: var(--canvas); }
-.cmp-sheet { margin: 0 auto; flex: none; background: var(--paper); border-radius: 4px; box-shadow: 0 8px 32px rgba(4, 6, 22, 0.55); cursor: crosshair; }
+.cmp-sheet { position: relative; margin: 0 auto; flex: none; background: var(--paper); border-radius: 4px; box-shadow: 0 8px 32px rgba(4, 6, 22, 0.55); cursor: crosshair; }
 .cmp-insp { width: 292px; flex: none; overflow-y: auto; background: var(--surface); border-left: 1px solid var(--line); }
 .cmp-insp details { border-bottom: 1px solid var(--line); }
 .cmp-insp summary { list-style: none; display: flex; align-items: center; justify-content: space-between; height: 38px; padding: 0 var(--s4); cursor: pointer; color: var(--text-2); font-weight: 600; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; user-select: none; }
@@ -330,3 +330,8 @@ dialog.dlg .body.fonts { display: grid; grid-template-columns: 1fr; gap: var(--s
 .scanbar progress:indeterminate { background: linear-gradient(90deg, transparent, var(--accent), transparent); background-size: 40% 100%; background-repeat: no-repeat; animation: slide 1.2s linear infinite; }
 .scanbar small { color: var(--text-3); }
 .scanbar button { grid-row: 3; grid-column: 2; }
+.cmp-top .pname { display: inline-block; max-width: 14ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+
+/* the bar that runs across the score while the preview plays: drag it, or click the score, to go on from another place (editor/composer.ts) */
+.cmp-playhead { position: absolute; left: 0; top: 0; width: 16px; cursor: ew-resize; touch-action: none; will-change: transform; background: linear-gradient(rgb(118 83 250 / 0.9), rgb(118 83 250 / 0.9)) center / 2.5px 100% no-repeat; }
+.cmp-playhead::after { content: ''; position: absolute; top: -6px; left: 50%; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: #7653fa; box-shadow: 0 0 0 2px #fff; }

@@ -31,7 +31,7 @@ export function initFontsDialog(changed: (use?: string, remake?: boolean) => voi
     info.append(el('strong', '', f.name), el('span', 'hint', mb(f.size)))
     const sel = el('select', 'field'); sel.setAttribute('aria-label', `Tiếng đàn trong ${f.name}`)
     const pick = el('div', 'font-pick'), search = el('input', 'field'); search.type = 'search'; search.placeholder = 'Tìm tiếng đàn…'; search.setAttribute('aria-label', `Tìm tiếng đàn trong ${f.name}`)
-    let names: string[] = [], chosen = 0
+    let names: string[] = [], plainNames: string[] = [], chosen = 0
     const list = () => { // only the instruments that match the search; the one in use stays in view while the search is empty
       const hits = filterPresets(names, search.value)
       sel.replaceChildren(...(hits.length ? hits.map((i) => new Option(names[i], String(i))) : [new Option('Không có tiếng đàn nào khớp', '')]))
@@ -40,13 +40,14 @@ export function initFontsDialog(changed: (use?: string, remake?: boolean) => voi
     }
     void loadSoundFont(f.id).then((lib) => {
       if (!lib) { sel.replaceChildren(new Option('(file đã mất, hãy nạp lại)', '')); sel.disabled = true; return }
+      plainNames = lib.font.presets.map((p) => p.name)
       names = lib.font.presets.map((p) => `${p.name}${p.bank ? ` (ngân hàng ${p.bank})` : ''}`)
       chosen = lib.preset
       list()
       if (names.length >= SEARCH_FROM) pick.prepend(search)
     })
     search.oninput = list
-    sel.onchange = () => { chosen = +sel.value; setPreset(f.id, chosen); changed(undefined, current() === `sf2:${f.id}`) }
+    sel.onchange = () => { chosen = +sel.value; setPreset(f.id, chosen, plainNames[chosen]); changed(undefined, current() === `sf2:${f.id}`) }
     pick.append(sel)
     const use = el('button', 'btn sm primary', 'Dùng'); use.type = 'button'; use.onclick = () => { changed(`sf2:${f.id}`, true); dlg.close() }
     const del = el('button', 'btn sm ghost', 'Xoá'); del.type = 'button'

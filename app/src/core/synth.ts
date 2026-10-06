@@ -19,6 +19,14 @@ import { loadSoundFont } from './soundfonts'
 export type PianoVoice = 'crystal' | 'simple' | `sf2:${string}` // 'sf2:<id>' plays an installed SoundFont (see soundfonts.ts)
 export const VOICES: Record<'crystal' | 'simple', string> = { crystal: 'Piano cơ (Crystal)', simple: 'Đơn giản' }
 let current: PianoVoice = 'crystal'
+/** Fired on `window` when the piano in use, or the list of pianos, changed: every place that shows it repaints. */
+export const PIANO_CHANGED = 'notefall-piano'
+/** Where the piano last used and the piano ticked as default are kept (localStorage). */
+export const PIANO_LAST = 'notefall.piano', PIANO_DEFAULT = 'notefall.pianoDefault'
+/** The piano to start with: the one ticked as the default, else the one used last, whichever still exists. */
+export function startVoice(read: (key: string) => string | null, exists: (voice: string) => boolean): PianoVoice | undefined {
+  for (const k of [PIANO_DEFAULT, PIANO_LAST]) { const v = read(k); if (v && exists(v)) return v as PianoVoice }
+}
 export const setPianoVoice = (v: PianoVoice) => { current = v }
 export const getPianoVoice = () => current
 

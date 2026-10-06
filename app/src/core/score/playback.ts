@@ -83,6 +83,28 @@ export function secondsAt(q: number, bpm: number, changes: { at: number; ratio: 
   return t + ((q - from) * k) / ratio
 }
 
+/** Seconds -> quarter notes: the other way round of `secondsAt`. */
+export function quartersAt(t: number, bpm: number, changes: { at: number; ratio: number }[] = []): number {
+  const k = 60 / bpm
+  let from = 0, ratio = 1, rest = t
+  for (const c of changes) { const span = ((c.at - from) * k) / ratio; if (rest < span) break; rest -= span; from = c.at; ratio = c.ratio }
+  return from + (rest * ratio) / k
+}
+
+/** The bars in the order they are played (repeats and jumps included), each with where it starts, in quarter notes of the played piece. */
+export function playedBars(score: Score, repeats = true): { bar: number; q0: number; length: number }[] {
+  let at = 0
+  return playOrder(score.measures, repeats).map((bar) => { const b = { bar, q0: at, length: score.measures[bar].length }; at += b.length; return b })
+}
+
+/** Which bar, and how many quarter notes into it, the played piece is at `q` quarter notes from its start (undefined after the end); `next` is the bar that follows in the played order. */
+export function locate(bars: { bar: number; q0: number; length: number }[], q: number): { bar: number; quarter: number; next?: number } | undefined {
+  let lo = 0, hi = bars.length
+  while (lo < hi) { const m = (lo + hi) >> 1; bars[m].q0 + bars[m].length <= q ? (lo = m + 1) : (hi = m) }
+  const b = bars[lo]
+  return b && q >= b.q0 ? { bar: b.bar, quarter: q - b.q0, next: bars[lo + 1]?.bar } : undefined
+}
+
 /** Metronome clicks for a whole piece in played order (repeats and jumps included), in seconds. The first click of every bar is the accent. */
 export function scoreClicks(score: Score, repeats: boolean, bpm: number, changes: { at: number; ratio: number }[] = []): { t: number; accent: boolean }[] {
   const out: { t: number; accent: boolean }[] = []

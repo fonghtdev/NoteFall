@@ -22,9 +22,10 @@ const MARGIN = 20, STAFF_GAP = 105, SYSTEM_GAP = 60, STAFF_H = 80, TOP_SPACE = 4
 const pitchKey = (p: { step: string; alter: number; octave: number }, shift = 0) =>
   `${p.step.toLowerCase()}${p.alter > 0 ? '#'.repeat(p.alter) : p.alter < 0 ? 'b'.repeat(-p.alter) : ''}/${p.octave + shift}`
 
-/** Where a tick of a bar stands on the page (between the columns of notes, as far along as the time has gone). */
-export function xAtTick(dm: DrawnMeasure, at: number): number {
+/** Where a tick of a bar stands on the page (between the columns of notes, as far along as the time has gone). With `end` (the bar's length in ticks, and the page position the bar runs on to) the last note does not stop where it stands but moves on, so a bar moving along does not jump. */
+export function xAtTick(dm: DrawnMeasure, at: number, end?: { at: number; x: number }): number {
   const cols = columnsOf(dm)
+  if (end) cols.push(end)
   if (at <= cols[0].at) return cols[0].x
   for (let i = 1; i < cols.length; i++) if (at <= cols[i].at) { const a = cols[i - 1], b = cols[i]; return a.x + ((b.x - a.x) * (at - a.at)) / (b.at - a.at || 1) }
   return cols[cols.length - 1].x

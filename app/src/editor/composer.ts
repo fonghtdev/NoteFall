@@ -1,8 +1,8 @@
 import { icon, type IconName } from '../ui/icons'
 import { popover } from '../ui/popover'
-import { renderNotes } from '../core/synth'
+import { PIANO_CHANGED, renderNotes } from '../core/synth'
 import { Follower, listSource, type ClickSettings } from '../core/metronome'
-import { scoreClicks, tempoRatios, toNotes, unroll } from '../core/score/playback'
+import { locate, playedBars, quartersAt, scoreClicks, secondsAt, tempoRatios, toNotes, unroll } from '../core/score/playback'
 import { hitTest, keyAlter, type Hit } from './hit'
 import {
   CLEFS, STEPS, TPQ, addGrace, barTicks, clearGrace, contextAt, copyPrevious, deleteEv, deleteMeasure, diatonic, emptyScore, findEv, flipStem, fromDiatonic, graceStep, midiOf, insertMeasure, ottavaShiftAt, putNote, putRest,
@@ -10,7 +10,7 @@ import {
   putInTuplet, removeTuplet, setDyn, setKey, setLength, setTime, starts, toggleArt, toggleSpan, toggleTie, transpose, validate, allEventIds, clearMark, copyEvents, moveEv, moveMark, moveTempo, setMarkOffset, setStaffGap, insertMeasures, deleteMeasures, toggleKeep, STAFF_GAP_MAX, STAFF_GAP_MIN, setTempoOffset, pasteClip, type Clip, type Art, type Dyn, type Ev, type Pitch, type Score,
 } from './model'
 import { toPerformance } from './perform'
-import { DYN_GLYPH, keyName, renderScore, tickAtX, type DrawnEv, type Layout, type MarkRef } from './render'
+import { DYN_GLYPH, keyName, renderScore, tickAtX, xAtTick, type DrawnEv, type Layout, type MarkRef } from './render'
 import { ScanPdfError } from '../core/score/pdf'
 import { scanPdf } from './scan'
 import { exportMidi, exportMusicXml, exportPdf, importFileFull, saveJson } from './io'
@@ -20,7 +20,7 @@ interface Pt { clientX: number; clientY: number; button?: number; shiftKey?: boo
 
 export interface ComposerHooks {
   toFalling(score: Score): void | Promise<void>
-  piano: { options(): { value: string; label: string }[]; value(): string; set(v: string): void }  // the sound the notes are played on
+  piano: { options(): { value: string; label: string }[]; value(): string; set(v: string): void; openLibrary(): void; isDefault(): boolean; setDefault(on: boolean): void }  // the sound the notes are played on
   click(): ClickSettings                                                                           // how the metronome sounds
 }
 
@@ -67,6 +67,11 @@ export class Composer {
   private ctx?: AudioContext
   private metOn = ((): boolean => { try { return localStorage.getItem('notefall.cmp.met') === '1' } catch { return false } })()
   private clicks?: Follower  // the metronome of the preview that is playing
+  private playhead?: { frame: number; el: HTMLElement }  // the bar that runs across the score while the preview plays
+  private buf?: AudioBuffer        // the sound of the preview that is playing
+  private t0 = 0                   // audio-clock time at which second 0 of `buf` is (or would be) heard: moves when the person jumps to another place
+  private plan?: { bars: ReturnType<typeof playedBars>; bpm: number; changes: { at: number; ratio: number }[]; end: number }  // where each bar sits in the sound
+  private scrub?: { sec: number }  // while the person drags the bar: the second it is held at (the sound waits until it is let go)
   private btns = new Map<string, HTMLButtonElement>()
   selMark?: MarkRef                  // a text / dynamic / tempo / rehearsal mark picked up (click it; drag it; Delete removes it)
   sysRange?: [number, number]        // a whole line (system) picked by clicking beside its bars: add / remove bar act on it
@@ -262,6 +267,7 @@ export class Composer {
       return
     }
     this.sysRange = undefined
+    if (this.playing && this.mode === 'select') this.seekToScore(hit.m, hit.at / TPQ) // (the click still selects, as usual)
     this.cursor = { m: hit.m, staff: hit.staff, at: hit.at }
     if (this.mode === 'input' && !mods.alt) {
       // clicking on a note's own column stacks the pitch onto it (Ctrl / Cmd + click replaces the note instead)
@@ -1097,9 +1103,126 @@ export class Composer {
   stop() {
     const p = this.playing
     this.playing = undefined; this.starting = false
-    this.clicks?.stop(); this.clicks = undefined
+    this.clicks?.stop(); this.clicks = undefined; this.stopPlayhead()
     try { p?.stop() } catch { /* already stopped */ }
     this.syncToolbar()
+  }
+
+  /** Start the preview's sound from second `sec` of it (the one that played before, if any, is cut off by the caller). */
+  private playFrom(sec: number) {
+    const ctx = this.ctx!, src = ctx.createBufferSource()
+    src.buffer = this.buf!
+    src.connect(ctx.destination)
+    src.onended = () => { if (this.playing === src) this.finish() }
+    this.playing = src
+    src.start(0, sec)
+    this.t0 = ctx.currentTime - sec
+  }
+
+  private finish() {
+    this.clicks?.stop(); this.clicks = undefined; this.stopPlayhead(); this.playing = undefined; this.syncToolbar()
+  }
+
+  /** What is being heard now, in seconds of the sound: the audio clock's own report of what is leaving the speakers (the plain clock runs ahead of it by the output delay). */
+  private heard(): number {
+    const ctx = this.ctx!, ts = ctx.getOutputTimestamp?.()
+    const now = ts && ts.contextTime ? ts.contextTime + (performance.now() - (ts.performanceTime ?? 0)) / 1000 : ctx.currentTime - (ctx.outputLatency || 0)
+    return now - this.t0
+  }
+
+  /** Jump the preview to second `sec`: the sound, the metronome and the bar on the page all follow. */
+  private seekTo(sec: number) {
+    if (!this.playing || !this.buf || !this.plan) return
+    const old = this.playing
+    this.playFrom(Math.max(0, Math.min(sec, this.plan.end)))
+    old.onended = null
+    try { old.stop() } catch { /* already over */ }
+    this.clicks?.reset()
+  }
+
+  /** The second at which bar `bar` is `quarter` quarter notes in; when a repeat plays the bar twice, the time nearest to second `from`. */
+  private timeOf(bar: number, quarter: number, from: number): number | undefined {
+    const plan = this.plan
+    const times = plan?.bars.filter((b) => b.bar === bar)
+    if (!plan || !times?.length) return undefined
+    const here = quartersAt(from, plan.bpm, plan.changes)
+    const best = times.reduce((a, b) => (Math.abs(b.q0 - here) < Math.abs(a.q0 - here) ? b : a))
+    return secondsAt(best.q0 + quarter, plan.bpm, plan.changes)
+  }
+
+  /** While the preview plays, a click on the score jumps to that place. */
+  private seekToScore(bar: number, quarter: number) {
+    const t = this.timeOf(bar, quarter, Math.max(0, this.heard()))
+    if (t !== undefined) this.seekTo(t)
+  }
+
+  /** Drag the bar to where the music should go on from: the sound waits while it is held, and goes on from there when it is let go. */
+  private dragPlayhead(el: HTMLElement) {
+    const secondAt = (e: PointerEvent) => {
+      const [x, y] = this.toLogical(e), dm = this.barAt(x, y)
+      return dm ? this.timeOf(dm.m, tickAtX(dm, x, barTicks(contextAt(this.score, dm.m).time)) / TPQ, this.scrub?.sec ?? 0) : undefined
+    }
+    el.onpointerdown = (e) => {
+      if (!this.playing || !this.plan) return
+      e.preventDefault(); e.stopPropagation(); el.setPointerCapture(e.pointerId)
+      const held = this.playing
+      held.onended = null
+      try { held.stop() } catch { /* already over */ }
+      this.clicks?.stop()
+      this.scrub = { sec: Math.max(0, this.heard()) }
+    }
+    el.onpointermove = (e) => {
+      const t = this.scrub && secondAt(e)
+      if (this.scrub && t !== undefined) this.scrub.sec = Math.max(0, Math.min(t, this.plan!.end))
+    }
+    const drop = () => {
+      const held = this.scrub
+      this.scrub = undefined
+      if (!held) return
+      this.playFrom(held.sec)
+      this.clicks?.reset()
+      if (this.metOn) this.clicks?.start()
+    }
+    el.onpointerup = el.onpointercancel = drop
+    el.onclick = (e) => e.stopPropagation() // (letting go over the page must not also click it)
+    el.ontouchstart = (e) => e.stopPropagation()
+  }
+
+  /**
+   * A vertical bar that runs across the score in step with the preview (like MuseScore's playback cursor), with a strip to jump about.
+   * The bar is an element of its own moved with `transform` (no redrawing of the page), and it moves on continuously from one bar to the next.
+   */
+  private followPlayback() {
+    this.stopPlayhead()
+    const plan = this.plan!
+    const el = document.createElement('div')
+    el.className = 'cmp-playhead'
+    this.dragPlayhead(el)
+    const run = { frame: 0, el }
+    let system = -1
+    const tick = () => {
+      const seconds = this.scrub ? this.scrub.sec : Math.max(0, this.heard())
+      const at = locate(plan.bars, quartersAt(seconds, plan.bpm, plan.changes))
+      const dm = seconds <= plan.end && at && this.layout.measures.find((d) => d.m === at.bar)
+      if (dm && at) {
+        const next = at.next === undefined ? undefined : this.layout.measures.find((d) => d.m === at.next)
+        const end = { at: barTicks(contextAt(this.score, at.bar).time), x: next && next.system === dm.system && next.x > dm.x ? xAtTick(next, 0) : dm.x + dm.w - 6 }
+        const x = xAtTick(dm, at.quarter * TPQ, end), k = this.host.clientWidth / this.layout.width
+        const top = dm.staves[0].top - 8, bottom = dm.staves[dm.staves.length - 1].bottom + 8
+        el.style.height = `${(bottom - top) * k}px`
+        el.style.transform = `translate3d(${x * k - 8}px, ${top * k}px, 0)`
+        if (el.parentNode !== this.host) this.host.appendChild(el) // (editing redraws the page and clears it: put the bar back)
+        if (dm.system !== system) { system = dm.system; el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' }) }
+      } else el.remove()
+      run.frame = requestAnimationFrame(tick)
+    }
+    this.playhead = run
+    tick()
+  }
+  private stopPlayhead() {
+    this.scrub = undefined
+    if (!this.playhead) return
+    cancelAnimationFrame(this.playhead.frame); this.playhead.el.remove(); this.playhead = undefined
   }
 
   /** One entry per piano the app can play (the built-in tones and the SoundFonts), the one in use ticked. */
@@ -1111,6 +1234,21 @@ export class Composer {
       b.textContent = (o.value === now ? '✓  ' : '') + o.label
       b.onclick = () => { this.hooks.piano.set(o.value); this.say(`Tiếng đàn: ${o.label}`); menu.hidden = true }
     }
+    menu.append(document.createElement('hr'))
+    const tick = this.hooks.piano.isDefault()
+    const def = this.el('button', '', menu); def.type = 'button'; def.setAttribute('role', 'menuitemcheckbox'); def.setAttribute('aria-checked', String(tick))
+    def.textContent = `${tick ? '✓  ' : ''}Mặc định khi mở app`
+    def.onclick = () => { this.hooks.piano.setDefault(!tick); this.say(tick ? 'Đã bỏ tiếng đàn mặc định' : 'Tiếng đàn này sẽ là mặc định khi mở app'); menu.hidden = true }
+    const lib = this.el('button', '', menu); lib.type = 'button'; lib.setAttribute('role', 'menuitem'); lib.textContent = 'Thư viện đàn…'
+    lib.onclick = () => { menu.hidden = true; this.hooks.piano.openLibrary() }
+  }
+
+  /** The button names the piano in use, so both screens show the same thing (the page tells when it changes). */
+  private paintPiano(btn: HTMLElement) {
+    const now = this.hooks.piano.value(), name = this.hooks.piano.options().find((o) => o.value === now)?.label ?? ''
+    btn.innerHTML = `${icon('music')}<span class="pname"></span>${icon('chevron')}`
+    btn.querySelector('.pname')!.textContent = name
+    btn.title = `Tiếng đàn: ${name}. Bấm để đổi (dùng chung với màn Nốt rơi)`
   }
 
   /** The metronome clicks along with the preview; switching it while the preview plays takes effect at once. */
@@ -1138,16 +1276,15 @@ export class Composer {
     } catch (e) { this.starting = false; this.say('Không phát được: ' + (e as Error).message); this.syncToolbar(); return }
     if (!this.starting) return // cancelled while rendering
     this.starting = false
-    const src = this.ctx.createBufferSource()
-    src.buffer = buf
-    src.connect(this.ctx.destination)
-    src.onended = () => { if (this.playing === src) { this.clicks?.stop(); this.clicks = undefined; this.playing = undefined; this.syncToolbar() } }
-    src.start()
-    this.playing = src
-    const ctx = this.ctx, t0 = ctx.currentTime
-    const clicks = listSource(scoreClicks(perf, true, this.score.tempo, tempoRatios(perf))) // the same repeats and tempo changes the notes were made with
-    this.clicks = new Follower(ctx, () => ctx.currentTime - t0, () => clicks, () => this.hooks.click())
+    this.buf = buf
+    const ratios = tempoRatios(perf)
+    this.plan = { bars: playedBars(perf), bpm: this.score.tempo, changes: ratios, end: Math.max(...notes.map((n) => n.start + n.duration)) }
+    this.playFrom(0)
+    const ctx = this.ctx
+    const clicks = listSource(scoreClicks(perf, true, this.score.tempo, ratios)) // the same repeats and tempo changes the notes were made with
+    this.clicks = new Follower(ctx, () => ctx.currentTime - this.t0, () => clicks, () => this.hooks.click())
     if (this.metOn) this.clicks.start()
+    this.followPlayback()
     this.syncToolbar()
   }
 
@@ -1231,6 +1368,7 @@ export class Composer {
     const pianoMenu = this.el('div', 'popover menu', pianoWrap); pianoMenu.setAttribute('role', 'menu')
     const pianoBtn = this.btn(pianoWrap, 'piano', 'Tiếng đàn', 'Chọn tiếng đàn khi nghe thử (dùng chung với màn Nốt rơi)', () => this.fillPianoMenu(pianoMenu), { cls: '', html: `${icon('music')}Tiếng đàn${icon('chevron')}` })
     popover(pianoBtn, pianoMenu)
+    window.addEventListener(PIANO_CHANGED, () => this.paintPiano(pianoBtn))
     this.btn(top, 'met', 'Metronome', 'Gõ nhịp khi nghe thử. Tiếng và âm lượng chỉnh ở màn Nốt rơi', () => this.toggleMetronome(), { cls: '', html: `${icon('metronome')}Metronome` })
     this.btn(top, 'play', 'Nghe thử', 'Nghe bản soạn (Space)', () => void this.togglePlay(), { cls: '', html: `${icon('play')}Nghe thử` })
     this.btn(top, 'falling', 'Xem nốt rơi', 'Chuyển bản soạn sang màn hình nốt rơi', () => void this.hooks.toFalling(this.score), { cls: 'primary', html: `Xem nốt rơi${icon('bars')}` })

@@ -35,3 +35,21 @@ describe('horizontal spacing', () => {
     expect(leadOf([])).toBe(0)
   })
 })
+
+import { xAtTick } from './render'
+import type { DrawnMeasure } from './render'
+describe('the playback bar position', () => {
+  const ev = (at: number, x: number) => ({ id: at, m: 0, staff: 0, voice: 0, at, ticks: 960, x, rest: false, ys: [], left: 0, right: 0 })
+  const dm = { m: 0, x: 100, w: 300, system: 0, staves: [], evs: [ev(0, 150), ev(960, 250), ev(1920, 300)] } as DrawnMeasure
+  it('is on a note at its tick and evenly between notes', () => {
+    expect(xAtTick(dm, 0)).toBe(150)
+    expect(xAtTick(dm, 480)).toBe(200)
+    expect(xAtTick(dm, 1920)).toBe(300)
+  })
+  it('after the last note it moves on to where the next bar starts, so it never jumps at a barline', () => {
+    const end = { at: 3840, x: 440 }                               // the next bar's first note
+    expect(xAtTick(dm, 2880, end)).toBe(370)                       // halfway from the last note (300) to 440
+    expect(xAtTick(dm, 3840, end)).toBe(440)
+    expect(xAtTick(dm, 1920, end)).toBe(300)                       // the notes themselves stay where they are
+  })
+})

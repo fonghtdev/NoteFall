@@ -37,6 +37,14 @@ describe('composer keys behave like MuseScore', () => {
     const c = typed('5', 'c', 'Escape'); select(c, 0); c.addGraceNote('acc'); keys(c, 'n'); c.cursor = { m: 0, staff: 0, at: 0 }; keys(c, 'e')
     expect(bar(c, 0)).toBe('E5:q[g] r:q r:h')
   })
+  it('a grace note is picked up by the pointer in either mode (entering notes too), as notes are', () => {
+    const c = typed('5', 'c', 'Escape'); select(c, 0); c.addGraceNote('acc'); c.selGrace = undefined; keys(c, 'n')
+    const id = c.score.measures[0].staves[0][0][0].id, g = c.layout.graces[0], inner = c as unknown as { toLogical(): number[]; mouseDown(e: object): void }
+    expect(g).toMatchObject({ id, i: 0 })
+    inner.toLogical = () => [g.x - 2, g.y - 3] // a little off the head, as a finger lands
+    inner.mouseDown({ clientX: 0, clientY: 0, target: c.host, preventDefault() {} })
+    expect(c.selGrace).toEqual({ id, i: 0 })
+  })
   it('Delete on a picked grace note takes only that grace note', () => {
     const c = typed('5', 'c', 'Escape'); select(c, 0); c.addGraceNote('acc'); c.addGraceNote('app') // the second one is picked
     keys(c, 'Delete'); expect(bar(c, 0)).toBe('C5:q[g] r:q r:h'); expect(c.score.measures[0].staves[0][0][0].graces).toHaveLength(1)

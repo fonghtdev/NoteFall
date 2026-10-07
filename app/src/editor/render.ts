@@ -6,7 +6,7 @@ import { CLEFS, barTicks, clefAt, contextAt, diatonic, nominalTicks, notationOf,
 export interface DrawnEv { id: number; m: number; staff: number; voice: number; at: number; ticks: number; x: number; rest: boolean; ys: number[]; left: number; right: number }
 export interface DrawnStaff { top: number; bottom: number; spacing: number; clef: ClefName }
 export interface DrawnMeasure { m: number; x: number; w: number; system: number; staves: DrawnStaff[]; evs: DrawnEv[] }
-export interface Layout { width: number; height: number; measures: DrawnMeasure[]; systems: { y0: number; y1: number; pageBreakAfter?: boolean }[] }
+export interface Layout { width: number; height: number; measures: DrawnMeasure[]; systems: { y0: number; y1: number; pageBreakAfter?: boolean }[]; graces: { id: number; i: number; x: number; y: number }[] }
 
 const FIFTHS = ['Cb', 'Gb', 'Db', 'Ab', 'Eb', 'Bb', 'F', 'C', 'G', 'D', 'A', 'E', 'B', 'F#', 'C#']
 export const keyName = (fifths: number) => FIFTHS[fifths + 7]
@@ -287,7 +287,7 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
   text(score.title, opts.width / 2, 36, 26, 'middle', 'bold')
   if (score.composer) text(score.composer, opts.width - MARGIN, 58, 14, 'end')
 
-  const layout: Layout = { width: opts.width, height, measures: [], systems: [] }
+  const layout: Layout = { width: opts.width, height, measures: [], systems: [], graces: [] }
   const noteOf = new Map<number, { note: StaveNote | GhostNote; system: number }>()
   const where = new Map<number, { m: number; voice: number; index: number }>()
 
@@ -350,8 +350,9 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
         v.draw(ctx, staves[o.staff])
       })
       b.notes.forEach((note, id) => { const g = (note as unknown as { getSVGElement?: () => SVGElement | undefined }).getSVGElement?.(); g?.setAttribute('data-ev', String(id)) }) // lets the page fade a note while it is being dragged
-      b.graces.forEach((gns, id) => gns.forEach((gn, i) => { // a click on a grace note picks that grace note ('all': the page itself takes no pointer)
-        const g = gn.getSVGElement(); g?.setAttribute('data-grace', `${id}:${i}`); g?.setAttribute('pointer-events', 'all'); g?.setAttribute('style', 'cursor:pointer')
+      b.graces.forEach((gns, id) => gns.forEach((gn, i) => { // a pointer near a grace note picks that grace note
+        const g = gn.getSVGElement(); g?.setAttribute('data-grace', `${id}:${i}`); g?.setAttribute('style', 'cursor:pointer')
+        layout.graces.push({ id, i, x: gn.getAbsoluteX(), y: gn.getYs()[0] }) // where its head is, so a pointer near it picks it (the head itself is a few px wide)
       }))
       b.beams.forEach((bm) => bm.setContext(ctx).draw())
       b.tuplets.forEach((tp) => tp.setContext(ctx).draw())

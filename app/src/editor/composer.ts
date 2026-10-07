@@ -76,7 +76,7 @@ export class Composer {
   private btns = new Map<string, HTMLButtonElement>()
   selMark?: MarkRef                  // a text / dynamic / tempo / rehearsal mark picked up (click it; drag it; Delete removes it)
   sysRange?: [number, number]        // a whole line (system) picked by clicking beside its bars: add / remove bar act on it
-  private drag?: { kind: 'note'; ev: DrawnEv; sx: number; sy: number; moved: boolean } | { kind: 'mark'; mark: MarkRef; sx: number; sy: number; moved: boolean; el: SVGGraphicsElement; lx: number; ly: number; clone?: SVGElement } | { kind: 'marquee'; sx: number; sy: number; moved: boolean; x0: number; y0: number } | { kind: 'gap'; sys: number; sx: number; sy: number; moved: boolean; y0: number; base: number } | { kind: 'grace'; id: number; i: number; sx: number; sy: number; moved: boolean; el: SVGGraphicsElement; lx: number; ly: number; clone?: SVGElement }
+  private drag?: { kind: 'note'; ev: DrawnEv; sx: number; sy: number; moved: boolean } | { kind: 'mark'; mark: MarkRef; sx: number; sy: number; moved: boolean; el: SVGGraphicsElement; lx: number; ly: number; clone?: SVGElement } | { kind: 'marquee'; sx: number; sy: number; moved: boolean; x0: number; y0: number } | { kind: 'gap'; sys: number; sx: number; sy: number; moved: boolean; y0: number; base: number } | { kind: 'grace'; id: number; i: number; sx: number; sy: number; moved: boolean; el?: SVGGraphicsElement; lx: number; ly: number; clone?: SVGElement }
   private suppressClick = false
   private clip?: Clip
   private zoom: number | 'fit' = 'fit'   // the page is drawn LOGICAL_WIDTH wide; 'fit' = as wide as the window allows, a number = that many times LOGICAL_WIDTH px
@@ -303,6 +303,16 @@ export class Composer {
 
   // ---- picking up and moving notes and marks -------------------------------------------------------------
   /** The note whose head lies under the pointer (any voice), for dragging. */
+  /** The grace note whose head is near a point, as near as a note's head would have to be, and nearer than any note. */
+  private graceAt(x: number, y: number) {
+    const sp = this.layout.measures[0]?.staves[0]?.spacing ?? 10
+    const near = this.layout.graces.map((g) => ({ g, dx: Math.abs(g.x + 3.5 - x), dy: Math.abs(g.y - y) })).filter((q) => q.dx < 8 && q.dy < 0.9 * sp)
+    const best = near.sort((a, b) => Math.hypot(a.dx, a.dy) - Math.hypot(b.dx, b.dy))[0]
+    const note = this.pickNote(x, y)
+    if (!best || (note && Math.hypot(note.x + 5 - x, Math.min(...note.ys.map((hy) => Math.abs(hy - y)))) < Math.hypot(best.dx, best.dy))) return undefined
+    return best.g
+  }
+
   private pickNote(x: number, y: number): DrawnEv | undefined {
     let best: { ev: DrawnEv; d: number } | undefined
     for (const dm of this.layout.measures) {
@@ -341,11 +351,10 @@ export class Composer {
       this.drag = { kind: 'gap', sys, sx: e.clientX, sy: e.clientY, moved: false, y0: ly, base: dm.staves[1].top - dm.staves[0].top }
       e.preventDefault(); return
     }
-    const gr = (e.target as Element).closest?.('[data-grace]')
-    if (gr && this.mode === 'select') { // a grace note: picked at once, and dragged like a note
-      const [id, i] = gr.getAttribute('data-grace')!.split(':').map(Number), [lx, ly] = this.toLogical(e)
-      this.pickGrace(id, i)
-      this.drag = { kind: 'grace', id, i, sx: e.clientX, sy: e.clientY, moved: false, el: this.svg().querySelector<SVGGraphicsElement>(`[data-grace="${id}:${i}"]`)!, lx, ly }
+    const [lx, ly] = this.toLogical(e), gr = this.graceAt(lx, ly)
+    if (gr) { // a grace note: picked at once, and dragged like a note (in either mode, as notes are)
+      this.pickGrace(gr.id, gr.i)
+      this.drag = { kind: 'grace', id: gr.id, i: gr.i, sx: e.clientX, sy: e.clientY, moved: false, el: this.svg()?.querySelector<SVGGraphicsElement>(`[data-grace="${gr.id}:${gr.i}"]`) ?? undefined, lx, ly }
       this.suppressClick = true; e.preventDefault(); return
     }
     const el = (e.target as Element).closest?.('[data-mark]')
@@ -382,6 +391,7 @@ export class Composer {
       return
     }
     if (d.kind === 'mark' || d.kind === 'grace') { // a copy follows the pointer, the original stays faint where it was
+      if (!d.el) return
       if (!d.clone) { d.clone = d.el.cloneNode(true) as SVGElement; d.clone.removeAttribute('data-mark'); d.clone.removeAttribute('data-grace'); d.clone.setAttribute('pointer-events', 'none'); d.clone.setAttribute('opacity', '0.75'); d.el.setAttribute('opacity', '0.25'); this.svg().appendChild(d.clone) }
       d.clone.setAttribute('transform', `translate(${x - d.lx} ${y - d.ly + (d.kind === 'mark' ? shiftOf(d.el) : 0)})`)
       return

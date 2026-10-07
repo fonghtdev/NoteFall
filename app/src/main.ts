@@ -351,7 +351,7 @@ $('met-tap').onclick = () => {
 }
 runBtn.onclick = () => {
   if (practice.running) { stopPractice(); return }
-  if (transport.playing) { transport.pause(); setPlayState() } // one thing at a time
+  if (transport.playing) { setFollow(true); say('Metronome: gõ theo bài đang phát'); return } // the song keeps playing, the clicks follow it
   met.follow = false; drawDots(); applyMet(); practice.start(); applyMet()
 }
 $('met-song').onclick = () => { const bpm = +$<HTMLInputElement>('tempo').value || grid?.bpm; if (bpm) { met.bpm = bpm; applyMet() } }
@@ -364,7 +364,7 @@ let lastFrameT = 0
 const syncMetronome = (t: number) => { // called every frame
   if (met.follow && transport.playing) { if (!follower.running) follower.start(); else if (Math.abs(t - lastFrameT) > 0.4) follower.reset() }
   else if (follower.running) follower.stop()
-  if (transport.playing && practice.running) stopPractice() // the song started: the practice click gives way
+  if (transport.playing && practice.running) setFollow(true) // the song started: the practice click hands over to clicks along the song (its own tempo would drift from the music)
   lastFrameT = t
 }
 

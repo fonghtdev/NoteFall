@@ -1,9 +1,9 @@
 import { TPQ } from './model'
 
-/** One column of notes in a bar: where it sits in time and how far its ink reaches to the left and right of its x (heads, accidentals, dots, ledger lines). */
-export interface Col { tick: number; left: number; right: number }
-/** The room after a column (up to the next one or the barline): never less than `min`, a spring that wants `stretch` times the room of a quarter note. */
-export interface Gap { min: number; stretch: number }
+/** One column of notes in a bar: where it sits in time, how far its ink reaches to the left and right of its x (heads, accidentals, dots, ledger lines), and the grace notes in front of it. */
+export interface Col { tick: number; left: number; right: number; grace?: number }
+/** The room after a column (up to the next one or the barline): never less than `min`, a spring that wants `stretch` times the room of a quarter note, plus `fixed` px that neither stretch nor squeeze (the next column's grace notes, like MuseScore). */
+export interface Gap { min: number; stretch: number; fixed?: number }
 
 const PAD = 2          // px of air between two columns of ink
 const END_PAD = 9      // px between the last column's ink and the barline
@@ -19,15 +19,15 @@ export function gapsOf(cols: Col[], barTicks: number): Gap[] {
   if (!cols.length) return [{ min: 40, stretch: stretchOf(barTicks) }]
   return cols.map((c, i) => {
     const next = cols[i + 1]
-    return { min: next ? c.right + next.left + PAD : c.right + END_PAD, stretch: stretchOf((next?.tick ?? barTicks) - c.tick) }
+    return { min: next ? c.right + next.left + PAD : c.right + END_PAD, stretch: stretchOf((next?.tick ?? barTicks) - c.tick), ...(next?.grace && { fixed: next.grace }) }
   })
 }
 
 /** The space before a bar's first column. */
-export const leadOf = (cols: Col[]) => (cols.length ? cols[0].left + LEAD_PAD : 0)
+export const leadOf = (cols: Col[]) => (cols.length ? cols[0].left + (cols[0].grace ?? 0) + LEAD_PAD : 0)
 
 /** Width of a gap when the whole line pulls with `force` (px per unit of stretch): at NATURAL it is the natural width, above it the line is stretched, below it squeezed, never past `min`. */
-export const gapWidth = (g: Gap, force: number) => Math.max(g.min, force * g.stretch)
+export const gapWidth = (g: Gap, force: number) => Math.max(g.min, force * g.stretch) + (g.fixed ?? 0)
 
 /**
  * Find the force that makes the gaps of a whole line add up to `target` (the way a row of springs settles under one pull).

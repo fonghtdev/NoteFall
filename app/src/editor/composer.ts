@@ -5,12 +5,12 @@ import { Follower, listSource, type ClickSettings } from '../core/metronome'
 import { locate, playedBars, quartersAt, scoreClicks, secondsAt, tempoRatios, toNotes, unroll } from '../core/score/playback'
 import { hitTest, keyAlter, type Hit } from './hit'
 import {
-  CLEFS, STEPS, TPQ, addGrace, barTicks, clearGrace, contextAt, copyPrevious, deleteEv, deleteMeasure, diatonic, emptyScore, findEv, flipStem, fromDiatonic, graceStep, midiOf, insertMeasure, ottavaShiftAt, putNote, putRest,
+  CLEFS, STEPS, TPQ, addGrace, barTicks, clearGrace, contextAt, copyPrevious, deleteEv, deleteMeasure, diatonic, emptyScore, findEv, flipStem, fromDiatonic, graceStep, midiOf, setGraceAlter, transposeGrace, insertMeasure, ottavaShiftAt, putNote, putRest,
   TUPLETS, makeTuplet, navigationProblems, pruneRefs, setBarline, setBreak, setClef, setJump, setRehearsal, setTempoMark, setText, setTimeSymbol, setVolta, toggleEv, toggleMark, type BarlineKind, type ClefName, type Mark, type Orn, type SpanKind, type TextField,
   putInTuplet, removeTuplet, setDyn, setKey, setLength, setTime, starts, toggleArt, toggleSpan, toggleTie, transpose, validate, allEventIds, clearMark, copyEvents, moveEv, moveMark, moveTempo, setMarkOffset, setStaffGap, insertMeasures, deleteMeasures, toggleKeep, STAFF_GAP_MAX, STAFF_GAP_MIN, setTempoOffset, pasteClip, type Clip, type Art, type Dyn, type Ev, type Pitch, type Score,
 } from './model'
 import { toPerformance } from './perform'
-import { DYN_GLYPH, keyName, renderScore, tickAtX, xAtTick, type DrawnEv, type Layout, type MarkRef } from './render'
+import { DYN_GLYPH, keyName, renderScore, tickAtX, xAtTick, type DrawnEv, type GraceRef, type Layout, type MarkRef } from './render'
 import { ScanPdfError } from '../core/score/pdf'
 import { scanPdf } from './scan'
 import { exportMidi, exportMusicXml, exportPdf, importFileFull, saveJson } from './io'
@@ -46,6 +46,7 @@ export class Composer {
   score: Score
   layout!: Layout
   sel?: number               // selected event id (the one the keyboard moves)
+  selGrace?: GraceRef        // a grace note picked on the page: the arrows and accidentals act on it instead of its main note
   range: number[] = []       // all selected events (Shift+click extends), in score order
   mode: Mode = 'select'
   dur = TPQ
@@ -92,6 +93,7 @@ export class Composer {
     document.addEventListener('cut', (e) => { if (this.visible && !inField(e.target)) { e.preventDefault(); this.cut() } })
     document.addEventListener('paste', (e) => { if (this.visible && !inField(e.target)) { e.preventDefault(); const t = e.clipboardData?.getData('text/plain') ?? ''; if (!this.clip && t.startsWith('notefall-clip:')) { try { this.clip = JSON.parse(t.slice(14)) as Clip } catch { /* not ours */ } } this.paste() } })
     this.refresh()
+    void document.fonts?.ready.then(() => this.refresh()) // the first drawing may have measured with a stand-in font
   }
 
   // ---- state helpers -----------------------------------------------------------------------------------
@@ -100,6 +102,9 @@ export class Composer {
   get visible() { return !this.root.hidden }
 
   /** What a mark applies to: the whole selection, or the single selected event. */
+  /** The picked grace note, while its main note is still the selected one. */
+  private grace(): GraceRef | undefined { return this.selGrace && this.selGrace.id === this.sel && this.range.length === 0 ? this.selGrace : undefined }
+
   targets(): number[] { return this.range.length ? this.range : this.sel === undefined ? [] : [this.sel] }
 
   /** The bars the navigation buttons act on: those of the selected notes, otherwise the bar of the cursor. */
@@ -180,7 +185,7 @@ export class Composer {
   // ---- drawing -----------------------------------------------------------------------------------------
   refresh() {
     const keep = this.root.querySelector('.cmp-page')?.scrollTop ?? 0
-    this.layout = renderScore(this.host, this.score, { width: LOGICAL_WIDTH, selected: new Set(this.targets()), selectedMark: this.selMark })
+    this.layout = renderScore(this.host, this.score, { width: LOGICAL_WIDTH, selected: new Set(this.grace() ? [] : this.targets()), selectedMark: this.selMark, selectedGrace: this.grace() })
     const page = this.root.querySelector('.cmp-page')
     if (page) page.scrollTop = keep
     this.drawBarHighlight()
@@ -249,6 +254,7 @@ export class Composer {
   click(x: number, y: number, mods: { shift?: boolean; alt?: boolean; ctrl?: boolean } = {}) {
     if (this.suppressClick) { this.suppressClick = false; return }
     this.selMark = undefined
+    this.selGrace = undefined
     const hit = hitTest(this.layout, x, y, this.voice)
     if (!hit) { // beside the bars but on a line: pick the whole line, so + / − bar know which one you mean
       const sys = this.layout.systems.findIndex((q) => y >= q.y0 && y <= q.y1)
@@ -323,6 +329,8 @@ export class Composer {
       this.drag = { kind: 'gap', sys, sx: e.clientX, sy: e.clientY, moved: false, y0: ly, base: dm.staves[1].top - dm.staves[0].top }
       e.preventDefault(); return
     }
+    const gr = (e.target as Element).closest?.('[data-grace]')
+    if (gr && this.mode === 'select') { const [id, i] = gr.getAttribute('data-grace')!.split(':').map(Number); this.pickGrace(id, i); this.suppressClick = true; e.preventDefault(); return }
     const el = (e.target as Element).closest?.('[data-mark]')
     if (el) { const [lx, ly] = this.toLogical(e); this.drag = { kind: 'mark', mark: JSON.parse(el.getAttribute('data-mark')!) as MarkRef, sx: e.clientX, sy: e.clientY, moved: false, el: el as SVGGraphicsElement, lx, ly }; this.suppressClick = true; e.preventDefault(); return }
     const [x, y] = this.toLogical(e)
@@ -823,8 +831,22 @@ export class Composer {
     if (key === 'arp' && !ids.some((id) => (findEv(this.score, id)?.ev.pitches.length ?? 0) > 1)) this.say('Rải hợp âm cần một hợp âm (từ 2 nốt trở lên)')
   }
   flip() { const ids = this.targets(); if (ids.length) this.commit((s) => ids.forEach((id) => flipStem(s, id))); else this.say('Chọn một nốt trước') }
-  grace(kind: 'acc' | 'app') { const ids = this.targets(); if (!ids.length) { this.say('Chọn nốt chính trước'); return } this.commit((s) => addGrace(s, ids[0], kind)) }
-  graceMove(dir: 1 | -1) { const ids = this.targets(); if (ids.length) this.commit((s) => graceStep(s, ids[0], dir)) }
+  addGraceNote(kind: 'acc' | 'app') {
+    const ids = this.targets()
+    if (!ids.length) { this.say('Chọn nốt chính trước'); return }
+    this.commit((s) => addGrace(s, ids[0], kind))
+    const n = findEv(this.score, ids[0])?.ev.graces?.length
+    if (n) this.pickGrace(ids[0], n - 1) // the new grace note is picked, ready to be moved
+  }
+  graceMove(dir: 1 | -1) { const ids = this.targets(), g = this.grace(); if (ids.length) this.commit((s) => graceStep(s, ids[0], dir, g?.i)) }
+  /** Pick one grace note: ↑ ↓ move it, the accidental buttons and + / − change it. */
+  pickGrace(id: number, i: number) {
+    const g = findEv(this.score, id)?.ev.graces?.[i]
+    if (!g) return
+    this.sel = id; this.range = []; this.selGrace = { id, i }
+    this.refresh()
+    this.say(`Nốt láy ${pitchLabel(g)} · ↑ ↓ đổi cao độ, + − hoặc nút dấu hoá để thêm ♯ ♭`)
+  }
   graceClear() { const ids = this.targets(); if (ids.length) this.commit((s) => ids.forEach((id) => clearGrace(s, id))) }
 
   /** The bar the palettes act on: the first selected bar, otherwise the cursor's. */
@@ -972,8 +994,8 @@ export class Composer {
   private vertical(dir: number, amount: number, alt: boolean) {
     if (alt) { this.cursor.staff = Math.max(0, Math.min(this.score.clefs.length - 1, this.cursor.staff - dir)); this.refresh(); return }
     if (this.sel === undefined) return
-    const id = this.sel
-    this.commit((s) => transpose(s, id, dir * amount))
+    const id = this.sel, g = this.grace()
+    this.commit((s) => (g ? transposeGrace(s, id, g.i, dir * amount) : transpose(s, id, dir * amount)))
   }
 
   /** Ctrl+Alt+1-4: the voice new notes go into. */
@@ -1051,6 +1073,8 @@ export class Composer {
   }
 
   accidental(alter: number) {
+    const g = this.grace()
+    if (g) { this.commit((s) => setGraceAlter(s, g.id, g.i, alter)); return }
     if (this.sel !== undefined) {
       const id = this.sel
       const f = findEv(this.score, id)
@@ -1468,8 +1492,8 @@ export class Composer {
     ;([[1, '\uE220'], [2, '\uE221'], [3, '\uE222']] as const).forEach(([n, gl]) => this.pal(g, `trem${n}`, gl, `Tremolo ${n} vạch`, `Tremolo ${n} vạch: nốt lặp 1/${8 * 2 ** (n - 1)}`, () => this.evMark('trem', n)))
 
     const gr = P('Nốt láy', 'Grace notes'); g = grid(gr)
-    this.pal(g, 'acc', 'Láy ngắn ⁄', 'Acciaccatura', 'Nốt láy ngắn có gạch chéo, thêm trước nốt đang chọn', () => this.grace('acc'), true)
-    this.pal(g, 'app', 'Láy dài', 'Appoggiatura', 'Nốt láy không gạch, thêm trước nốt đang chọn', () => this.grace('app'), true)
+    this.pal(g, 'acc', 'Láy ngắn ⁄', 'Acciaccatura', 'Nốt láy ngắn có gạch chéo, thêm trước nốt đang chọn', () => this.addGraceNote('acc'), true)
+    this.pal(g, 'app', 'Láy dài', 'Appoggiatura', 'Nốt láy không gạch, thêm trước nốt đang chọn', () => this.addGraceNote('app'), true)
     this.pal(g, 'gup', 'Láy ↑', 'Nâng nốt láy', 'Nâng nốt láy cuối lên một bậc', () => this.graceMove(1), true)
     this.pal(g, 'gdn', 'Láy ↓', 'Hạ nốt láy', 'Hạ nốt láy cuối xuống một bậc', () => this.graceMove(-1), true)
     this.pal(g, 'gclr', 'Bỏ láy', 'Xoá nốt láy', 'Xoá nốt láy của nốt đang chọn', () => this.graceClear(), true)

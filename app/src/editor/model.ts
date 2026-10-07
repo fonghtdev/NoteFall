@@ -668,15 +668,24 @@ export function addGrace(s: Score, id: number, kind: 'acc' | 'app') {
   f.ev.graces = [...(f.ev.graces ?? []), g].slice(0, 4)
   f.ev.graceKind = kind
 }
-/** Move the last grace note up or down by a diatonic step. */
-export function graceStep(s: Score, id: number, dir: 1 | -1) {
+/** Move grace note `i` (default: the last) up or down by a diatonic step. */
+export function graceStep(s: Score, id: number, dir: 1 | -1, i?: number) {
   const f = findEv(s, id)
   if (!f?.ev.graces?.length) return
   const { key } = contextAt(s, f.m)
-  const g = f.ev.graces[f.ev.graces.length - 1]
-  const n = fromDiatonic(diatonic(g) + dir)
+  const at = i ?? f.ev.graces.length - 1, n = fromDiatonic(diatonic(f.ev.graces[at]) + dir)
   n.alter = keyAlterFor(key, n.step)
-  f.ev.graces[f.ev.graces.length - 1] = n
+  f.ev.graces[at] = n
+}
+/** Move grace note `i` by semitones, spelled for the key (the arrow keys on a picked grace note). */
+export function transposeGrace(s: Score, id: number, i: number, semitones: number) {
+  const f = findEv(s, id), g = f?.ev.graces?.[i]
+  if (f && g) f.ev.graces![i] = spell(midiOf(g) + semitones, contextAt(s, f.m).key)
+}
+/** Give grace note `i` an accidental; asking for the one it already has puts back what the key says. */
+export function setGraceAlter(s: Score, id: number, i: number, alter: number) {
+  const f = findEv(s, id), g = f?.ev.graces?.[i]
+  if (f && g) f.ev.graces![i] = { ...g, alter: g.alter === alter ? keyAlterFor(contextAt(s, f.m).key, g.step) : alter }
 }
 export function clearGrace(s: Score, id: number) {
   const f = findEv(s, id)

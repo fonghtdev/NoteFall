@@ -48,27 +48,31 @@ function columnsOf(dm: DrawnMeasure): { at: number; x: number }[] {
   return cols
 }
 
-/** How far a note reaches to the right (head, displaced head, dots) and to the left (accidentals) of its own position. */
-function reach(note: StaveNote | GhostNote): { left: number; right: number } {
-  if (!(note instanceof StaveNote)) return { left: 0, right: 0 }
+/** How far a note reaches to the right (head, displaced head, dots) and to the left (accidentals, grace notes) of its own position. */
+function reach(note: StaveNote | GhostNote): { left: number; right: number; grace: number } {
+  if (!(note instanceof StaveNote)) return { left: 0, right: 0, grace: 0 }
   const mods = note.getModifiers()
+  const graces = mods.filter((m): m is GraceNoteGroup => m instanceof GraceNoteGroup).reduce((w, g) => (g.preFormat(), w + g.getWidth() + 4), 0) // (4: VexFlow's gap between the group and its note)
   const accs = mods.filter((m) => m instanceof Accidental).length, dots = mods.filter((m) => m instanceof Dot).length
   const displaced = note.noteHeads.some((h) => h.isDisplaced())
   // ledger lines run past the head on both sides, and two neighbours with ledger lines would fuse into one long line
   const ledger = note.getKeyProps().some((k) => k.line < 1 || k.line > 5) ? 4 : 0
-  return { left: accs * 9 + ledger, right: 11 + (displaced ? 11 : 0) + (dots ? 5 + 5 * dots : 0) + ledger }
+  return { grace: graces, left: accs * 9 + ledger, right: 11 + (displaced ? 11 : 0) + (dots ? 5 + 5 * dots : 0) + ledger }
 }
+
+/** All the ink of a note to its left and right, grace notes included. */
+const ink = (note: StaveNote | GhostNote) => { const r = reach(note); return { left: r.left + r.grace, right: r.right } }
 
 /** The only thing in the bar for its voice and no other voice has music: a whole-bar rest stays centred. */
 const wholeBarSolo = (vs: Ev[][], ev: Ev) => vs.every((o) => o.every((e) => e === ev || !e.pitches.length)) && vs[0]?.length === 1
 
-interface Built { notes: Map<number, StaveNote | GhostNote>; voices: Voice[]; beams: Beam[]; tuplets: Tuplet[]; order: { ev: Ev; voice: number; staff: number; at: number }[] }
+interface Built { notes: Map<number, StaveNote | GhostNote>; graces: Map<number, GraceNote[]>; voices: Voice[]; beams: Beam[]; tuplets: Tuplet[]; order: { ev: Ev; voice: number; staff: number; at: number }[] }
 
-function build(score: Score, mi: number, staves: Stave[], selected: Set<number>, shifts: Map<number, number> = new Map()): Built {
+function build(score: Score, mi: number, staves: Stave[], selected: Set<number>, shifts: Map<number, number> = new Map(), grace?: GraceRef): Built {
   const { time, key } = contextAt(score, mi)
   const m = score.measures[mi]
   const bar = barTicks(time)
-  const out: Built = { notes: new Map(), voices: [], beams: [], tuplets: [], order: [] }
+  const out: Built = { notes: new Map(), graces: new Map(), voices: [], beams: [], tuplets: [], order: [] }
   const groups = time.unit === 8 && time.beats % 3 === 0 ? new Fraction(3, 8) : new Fraction(1, 4)
 
   m.staves.forEach((vs, si) => {
@@ -127,7 +131,9 @@ function build(score: Score, mi: number, staves: Stave[], selected: Set<number>,
         if (ev.trem && !rest) n.addModifier(new Tremolo(ev.trem), 0)
         if (ev.graces?.length && !rest) {
           const gns = ev.graces.map((g) => new GraceNote({ keys: [pitchKey(g, sh)], duration: '8', clef, slash: ev.graceKind === 'acc' }))
+          if (grace?.id === ev.id) gns[grace.i]?.setStyle({ fillStyle: '#1d6fff', strokeStyle: '#1d6fff' })
           n.addModifier(new GraceNoteGroup(gns, true), 0)
+          out.graces.set(ev.id, gns)
         }
         if (selected.has(ev.id)) n.setStyle({ fillStyle: '#1d6fff', strokeStyle: '#1d6fff' })
         out.notes.set(ev.id, n)
@@ -183,6 +189,7 @@ const modifierStave = (score: Score, mi: number, first: boolean, x: number, y: n
 /** What a bar asks of the page: room for its clef / key / time, and its columns of notes with the springs between them. */
 interface BarSpec { mods: number; lead: number; cols: Col[]; gaps: Gap[] }
 const specCache = new Map<string, BarSpec>()
+const fontsReady = () => typeof document === 'undefined' || !document.fonts || document.fonts.status === 'loaded'
 function barSpec(score: Score, mi: number, first: boolean): BarSpec {
   // the same bar in the same surroundings always asks the same: remember it (editing one bar then costs one bar, not sixty)
   const ctx = contextAt(score, mi)
@@ -197,13 +204,13 @@ function barSpec(score: Score, mi: number, first: boolean): BarSpec {
   for (const o of b.order) {
     if (!o.ev.pitches.length && o.ev.ticks >= bar) continue // a rest for the whole bar sits in the middle, whatever the columns do
     const r = reach(b.notes.get(o.ev.id)!), c = at.get(o.at) ?? { tick: o.at, left: 0, right: 0 }
-    c.left = Math.max(c.left, r.left); c.right = Math.max(c.right, r.right); at.set(o.at, c)
+    c.left = Math.max(c.left, r.left); c.right = Math.max(c.right, r.right); if (r.grace) c.grace = Math.max(c.grace ?? 0, r.grace); at.set(o.at, c)
   }
   const cols = [...at.values()].sort((p, q) => p.tick - q.tick)
   const k = score.measures[mi].stretch ?? 1 // the user's wider / narrower bar
-  const spec = { mods, lead: leadOf(cols), cols, gaps: gapsOf(cols, bar).map((g) => ({ min: g.min, stretch: g.stretch * k })) }
+  const spec = { mods, lead: leadOf(cols), cols, gaps: gapsOf(cols, bar).map((g) => ({ ...g, stretch: g.stretch * k })) }
   if (specCache.size > 3000) specCache.clear()
-  specCache.set(key, spec)
+  if (fontsReady()) specCache.set(key, spec) // measured with a stand-in font (Bravura still loading) a grace-note group comes out twice as wide: never remember that
   renderStats.widthMs += performance.now() - t0
   return spec
 }
@@ -212,7 +219,9 @@ const naturalWidth = (sp: BarSpec) => sp.mods + sp.lead + sp.gaps.reduce((a, g) 
 
 /** A mark picked up for moving: a text / dynamic on a note, the tempo or the rehearsal mark of a bar. */
 export type MarkRef = { kind: 'ev'; field: 'dyn' | 'staffText' | 'expr' | 'chord' | 'lyric' | 'hairpin'; id: number } | { kind: 'tempo' | 'rehearsal'; bar: number }
-export interface RenderOptions { width: number; selected?: Set<number>; selectedMark?: MarkRef }
+/** One grace note: the event it belongs to and its place among that event's grace notes. */
+export interface GraceRef { id: number; i: number }
+export interface RenderOptions { width: number; selected?: Set<number>; selectedMark?: MarkRef; selectedGrace?: GraceRef }
 
 /** Draw the whole score into `host` (an SVG) and return where things ended up. */
 /** How long the last render took, for tuning. */
@@ -315,7 +324,7 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
       })
       rowStaves.push(staves)
 
-      const b = build(score, mi, staves, selected, shifts)
+      const b = build(score, mi, staves, selected, shifts, opts.selectedGrace)
       const f = new Formatter()
       score.clefs.forEach((_, si) => {
         const vs = b.voices.filter((v) => b.order.find((o) => b.notes.get(o.ev.id) === v.getTickables()[0])?.staff === si)
@@ -341,6 +350,9 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
         v.draw(ctx, staves[o.staff])
       })
       b.notes.forEach((note, id) => { const g = (note as unknown as { getSVGElement?: () => SVGElement | undefined }).getSVGElement?.(); g?.setAttribute('data-ev', String(id)) }) // lets the page fade a note while it is being dragged
+      b.graces.forEach((gns, id) => gns.forEach((gn, i) => { // a click on a grace note picks that grace note ('all': the page itself takes no pointer)
+        const g = gn.getSVGElement(); g?.setAttribute('data-grace', `${id}:${i}`); g?.setAttribute('pointer-events', 'all'); g?.setAttribute('style', 'cursor:pointer')
+      }))
       b.beams.forEach((bm) => bm.setContext(ctx).draw())
       b.tuplets.forEach((tp) => tp.setContext(ctx).draw())
 
@@ -351,7 +363,7 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
       }
       b.order.forEach((o) => {
         const note = b.notes.get(o.ev.id)!
-        dm.evs.push({ id: o.ev.id, m: mi, staff: o.staff, voice: o.voice, at: o.at, ticks: o.ev.ticks, x: note.getAbsoluteX(), rest: o.ev.pitches.length === 0, ys: note instanceof StaveNote ? note.getYs() : [], ...reach(note) })
+        dm.evs.push({ id: o.ev.id, m: mi, staff: o.staff, voice: o.voice, at: o.at, ticks: o.ev.ticks, x: note.getAbsoluteX(), rest: o.ev.pitches.length === 0, ys: note instanceof StaveNote ? note.getYs() : [], ...ink(note) })
         noteOf.set(o.ev.id, { note, system: sIdx })
         where.set(o.ev.id, { m: mi, voice: o.voice, index: 0 })
       })
@@ -422,7 +434,7 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
   // (measured from the heads, stem and reach of each note: the boxes the browser reports for music-font glyphs are the font's em, several times taller than the ink)
   noteOf.forEach(({ note }) => {
     if (!(note instanceof StaveNote) || !note.getKeyProps().length || note.isRest()) return
-    const ys = note.getYs(), x = note.getAbsoluteX(), r = reach(note)
+    const ys = note.getYs(), x = note.getAbsoluteX(), r = ink(note)
     let y0 = Math.min(...ys) - 6, y1 = Math.max(...ys) + 6 // head, ledger lines, an articulation dot beside it
     if (note.hasStem()) { const e = note.getStemExtents(); y0 = Math.min(y0, e.topY - 3); y1 = Math.max(y1, e.baseY + 3) }
     taken.push({ x0: x - r.left, x1: x + r.right, y0, y1 })

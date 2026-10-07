@@ -42,7 +42,7 @@ describe('composer keys behave like MuseScore', () => {
     const id = c.score.measures[0].staves[0][0][0].id, g = c.layout.graces[0], inner = c as unknown as { toLogical(): number[]; mouseDown(e: object): void }
     expect(g).toMatchObject({ id, i: 0 })
     inner.toLogical = () => [g.x - 2, g.y - 3] // a little off the head, as a finger lands
-    inner.mouseDown({ clientX: 0, clientY: 0, target: null, preventDefault() {} })
+    inner.mouseDown({ clientX: 0, clientY: 0, target: document.body, preventDefault() {} })
     expect(c.selGrace).toEqual({ id, i: 0 })
   })
   it('Delete on a picked grace note takes only that grace note', () => {

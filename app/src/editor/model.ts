@@ -295,23 +295,41 @@ function overwrite(s: Score, l: Loc, at: number, ticks: number, content: Ev[]) {
   s.measures[l.m].staves[l.staff][l.voice] = final
 }
 
-/** Put a note (or add it to the chord that already starts here with the same length). Returns the new event's id. */
+/**
+ * Put a note (or add it to the chord that already starts here with the same length, and to the notes it is tied on to). Returns the new event's id.
+ * A note that replaces another one keeps its grace notes, as in MuseScore.
+ */
 export function putNote(s: Score, l: Loc, at: number, ticks: number, pitch: Pitch, addToChord = false): number {
   const events = voiceOf(s, l)
   const idx = starts(events).indexOf(at)
-  if (addToChord && idx >= 0 && events[idx].pitches.length && events[idx].ticks === ticks) {
-    const e = events[idx]
-    if (!e.pitches.some((p) => midiOf(p) === midiOf(pitch))) {
-      e.pitches.push(pitch)
-      e.pitches.sort((a, b) => midiOf(a) - midiOf(b))
+  const old = idx >= 0 ? events[idx] : undefined
+  if (addToChord && old?.pitches.length && old.ticks === ticks) {
+    for (let f = findEv(s, old.id); f?.ev.pitches.length; f = f.ev.tie ? tiedNext(s, f) : undefined) {
+      if (!f.ev.pitches.some((p) => midiOf(p) === midiOf(pitch))) f.ev.pitches = [...f.ev.pitches, { ...pitch }].sort((a, b) => midiOf(a) - midiOf(b))
     }
-    return e.id
+    return old.id
   }
-  const bar = barTicks(contextAt(s, l.m).time)
-  const len = Math.min(ticks, bar - at)
-  const ev: Ev = { id: newId(s), ticks: len, pitches: [pitch] }
+  return writeChord(s, l, at, ticks, [pitch], old?.graces ? { graces: old.graces, graceKind: old.graceKind } : {}).id
+}
+
+/** The event after `f` in its voice (the first one of the next bar after the last one of a bar). */
+export function tiedNext(s: Score, f: Loc & { index: number }): (Loc & { index: number; at: number; ev: Ev }) | undefined {
+  const here = voiceOf(s, f)
+  const ev = here[f.index + 1] ?? (f.m + 1 < s.measures.length ? voiceOf(s, { ...f, m: f.m + 1 })[0] : undefined)
+  return ev && findEv(s, ev.id)
+}
+
+/** Write a note or chord over whatever is there. Longer than what is left of the bar, it goes on in the next bars, tied (bars are added at the end of the piece), as in MuseScore. */
+function writeChord(s: Score, l: Loc, at: number, ticks: number, pitches: Pitch[], keep: Partial<Ev>): Ev {
+  const len = Math.min(ticks, barTicks(contextAt(s, l.m).time) - at)
+  const ev: Ev = { id: newId(s), ...keep, ticks: len, pitches: pitches.map((p) => ({ ...p })), tup: undefined }
+  if (ticks > len) ev.tie = true
   overwrite(s, l, at, len, [ev])
-  return ev.id
+  if (ticks > len) {
+    if (l.m + 1 >= s.measures.length) insertMeasures(s, s.measures.length, 1)
+    writeChord(s, { ...l, m: l.m + 1 }, 0, ticks - len, pitches, {})
+  }
+  return ev
 }
 
 /** Replace what is at [at, at+ticks) with a rest. */
@@ -352,6 +370,26 @@ export function transpose(s: Score, id: number, semitones: number) {
   f.ev.pitches = f.ev.pitches.map((p) => spell(midiOf(p) + semitones, key))
 }
 
+/** Alt+Shift+↑/↓: every pitch one step up or down the scale of the key. */
+export function stepDiatonic(s: Score, id: number, dir: 1 | -1) {
+  const f = findEv(s, id)
+  if (!f) return
+  const { key } = contextAt(s, f.m)
+  f.ev.pitches = f.ev.pitches.map((p) => { const n = fromDiatonic(diatonic(p) + dir); return { ...n, alter: keyAlterFor(key, n.step) } })
+}
+
+/** J: the next way of writing the same sounds (C♯ → D♭ → B𝄪 → C♯), as MuseScore cycles them. */
+export function respell(s: Score, id: number) {
+  const f = findEv(s, id)
+  if (!f) return
+  f.ev.pitches = f.ev.pitches.map((p) => {
+    const m = midiOf(p), d = diatonic(p)
+    const ways = [d - 2, d - 1, d, d + 1, d + 2].map((x) => { const n = fromDiatonic(x); return { ...n, alter: m - midiOf({ ...n, alter: 0 }) } }).filter((n) => Math.abs(n.alter) <= 2)
+    ways.sort((a, b) => Math.abs(a.alter) - Math.abs(b.alter) || diatonic(a) - diatonic(b))
+    return ways[(ways.findIndex((n) => n.step === p.step && n.octave === p.octave) + 1) % ways.length]
+  })
+}
+
 export function setAlter(s: Score, id: number, alter: number) {
   const f = findEv(s, id)
   if (!f) return
@@ -363,9 +401,9 @@ export function setLength(s: Score, id: number, ticks: number) {
   const f = findEv(s, id)
   if (!f) return
   const bar = barTicks(contextAt(s, f.m).time)
+  if (f.ev.pitches.length) { writeChord(s, f, f.at, ticks, f.ev.pitches, f.ev); return } // (a re-timed note leaves its tuplet)
   const len = Math.min(ticks, bar - f.at)
-  const ev: Ev = { ...f.ev, pitches: [...f.ev.pitches], ticks: len, tup: undefined } // a re-timed note leaves its tuplet
-  overwrite(s, f, f.at, len, f.ev.pitches.length ? [ev] : restsFor(s, f.at, len, bar))
+  overwrite(s, f, f.at, len, restsFor(s, f.at, len, bar))
 }
 
 /**
@@ -686,6 +724,26 @@ export function transposeGrace(s: Score, id: number, i: number, semitones: numbe
 export function setGraceAlter(s: Score, id: number, i: number, alter: number) {
   const f = findEv(s, id), g = f?.ev.graces?.[i]
   if (f && g) f.ev.graces![i] = { ...g, alter: g.alter === alter ? keyAlterFor(contextAt(s, f.m).key, g.step) : alter }
+}
+/** Drag a grace note: `steps` up or down the scale, and onto the note `to` (itself, or another note). Returns its place among `to`'s grace notes, or undefined when it cannot go there. */
+export function moveGrace(s: Score, id: number, i: number, to: number, steps: number): number | undefined {
+  const f = findEv(s, id), g = f?.ev.graces?.[i], t = findEv(s, to)
+  if (!f || !g || !t?.ev.pitches.length || (to !== id && (t.ev.graces?.length ?? 0) >= 4)) return undefined
+  const n = steps ? { ...fromDiatonic(diatonic(g) + steps), alter: 0 } : g
+  if (steps) n.alter = keyAlterFor(contextAt(s, t.m).key, n.step)
+  if (to === id) { f.ev.graces![i] = n; return i }
+  const kind = f.ev.graceKind
+  removeGrace(s, id, i)
+  t.ev.graces = [...(t.ev.graces ?? []), n]
+  t.ev.graceKind ??= kind
+  return t.ev.graces.length - 1
+}
+/** Delete one grace note (Delete on a picked grace note); the main note stays. */
+export function removeGrace(s: Score, id: number, i: number) {
+  const f = findEv(s, id)
+  if (!f?.ev.graces) return
+  f.ev.graces.splice(i, 1)
+  if (!f.ev.graces.length) clearGrace(s, id)
 }
 export function clearGrace(s: Score, id: number) {
   const f = findEv(s, id)

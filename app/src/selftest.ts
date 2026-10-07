@@ -273,7 +273,7 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
           const lens = () => evs().map((e) => e.ticks).join()
           const fresh = () => { c.setScore(d.fromText(Array.from({ length: 3 }, () => ({ rh: 'r:4', lh: 'r:4' })))); c.setMode('input'); c.cursor = { m: 0, staff: 0, at: 0 }; c.sel = undefined }
           fresh(); c.key('5'); c.key('C'); c.key('w'); c.key('E'); c.key('q'); c.key('q'); c.key('G')
-          ok('W doubles and Q halves the length for the next notes: quarter, half, eighth', lens().startsWith('960,1920,480') && names().startsWith('C4 E4 G4'))
+          ok('W doubles and Q halves the length for the next notes: quarter, half, eighth (the first C on a treble staff is C5, as in MuseScore)', lens().startsWith('960,1920,480') && names().startsWith('C5 E5 G5'))
           c.setScore(d.fromText([{ rh: 'C5:1 r:3', lh: 'r:4' }])); c.setMode('select'); c.sel = evs()[0].id
           c.key('3', { altKey: true, code: 'Digit3' })
           ok('Alt+3 adds a third above', names().startsWith('C5+E5 r'))

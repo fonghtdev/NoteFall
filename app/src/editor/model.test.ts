@@ -56,10 +56,14 @@ describe('editing', () => {
     expect(validate(s)).toEqual([])
   })
 
-  it('a note longer than the bar is clamped', () => {
+  it('a note longer than the bar goes on in the next bar, tied (a bar is added at the end), like MuseScore', () => {
     const s = emptyScore(1)
     putNote(s, L, 3 * TPQ, 4 * TPQ, P('C', 4))
     expect(shape(s)).toBe('r:2 r:1 C4:1')
+    expect(s.measures).toHaveLength(2)
+    expect(s.measures[0].staves[0][0][2].tie).toBe(true)
+    expect(s.measures[1].staves[0][0].map((e) => [e.pitches.length, e.ticks / TPQ])).toEqual([[1, 3], [0, 1]])
+    expect(validate(s)).toEqual([])
   })
 
   it('adds notes to a chord only when length and start agree', () => {

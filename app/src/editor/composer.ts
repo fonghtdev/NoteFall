@@ -5,9 +5,9 @@ import { Follower, listSource, type ClickSettings } from '../core/metronome'
 import { locate, playedBars, quartersAt, scoreClicks, secondsAt, tempoRatios, toNotes, unroll } from '../core/score/playback'
 import { hitTest, keyAlter, type Hit } from './hit'
 import {
-  CLEFS, STEPS, TPQ, addGrace, barTicks, clearGrace, contextAt, copyPrevious, deleteEv, deleteMeasure, diatonic, emptyScore, findEv, flipStem, fromDiatonic, graceStep, midiOf, setGraceAlter, transposeGrace, insertMeasure, ottavaShiftAt, putNote, putRest,
+  CLEFS, STEPS, TPQ, addGrace, barTicks, clearGrace, contextAt, copyPrevious, deleteEv, deleteMeasure, diatonic, emptyScore, findEv, flipStem, fromDiatonic, graceStep, midiOf, moveGrace, removeGrace, respell, setGraceAlter, stepDiatonic, tiedNext, transposeGrace, insertMeasure, ottavaShiftAt, putNote, putRest,
   TUPLETS, makeTuplet, navigationProblems, pruneRefs, setBarline, setBreak, setClef, setJump, setRehearsal, setTempoMark, setText, setTimeSymbol, setVolta, toggleEv, toggleMark, type BarlineKind, type ClefName, type Mark, type Orn, type SpanKind, type TextField,
-  putInTuplet, removeTuplet, setDyn, setKey, setLength, setTime, starts, toggleArt, toggleSpan, toggleTie, transpose, validate, allEventIds, clearMark, copyEvents, moveEv, moveMark, moveTempo, setMarkOffset, setStaffGap, insertMeasures, deleteMeasures, toggleKeep, STAFF_GAP_MAX, STAFF_GAP_MIN, setTempoOffset, pasteClip, type Clip, type Art, type Dyn, type Ev, type Pitch, type Score,
+  putInTuplet, removeTuplet, setDyn, setKey, setLength, setTime, starts, toggleArt, toggleSpan, toggleTie, clefAt, transpose, validate, allEventIds, clearMark, copyEvents, moveEv, moveMark, moveTempo, setMarkOffset, setStaffGap, insertMeasures, deleteMeasures, toggleKeep, STAFF_GAP_MAX, STAFF_GAP_MIN, setTempoOffset, pasteClip, type Clip, type Art, type Dyn, type Ev, type Pitch, type Score,
 } from './model'
 import { toPerformance } from './perform'
 import { DYN_GLYPH, keyName, renderScore, tickAtX, xAtTick, type DrawnEv, type GraceRef, type Layout, type MarkRef } from './render'
@@ -76,7 +76,7 @@ export class Composer {
   private btns = new Map<string, HTMLButtonElement>()
   selMark?: MarkRef                  // a text / dynamic / tempo / rehearsal mark picked up (click it; drag it; Delete removes it)
   sysRange?: [number, number]        // a whole line (system) picked by clicking beside its bars: add / remove bar act on it
-  private drag?: { kind: 'note'; ev: DrawnEv; sx: number; sy: number; moved: boolean } | { kind: 'mark'; mark: MarkRef; sx: number; sy: number; moved: boolean; el: SVGGraphicsElement; lx: number; ly: number; clone?: SVGElement } | { kind: 'marquee'; sx: number; sy: number; moved: boolean; x0: number; y0: number } | { kind: 'gap'; sys: number; sx: number; sy: number; moved: boolean; y0: number; base: number }
+  private drag?: { kind: 'note'; ev: DrawnEv; sx: number; sy: number; moved: boolean } | { kind: 'mark'; mark: MarkRef; sx: number; sy: number; moved: boolean; el: SVGGraphicsElement; lx: number; ly: number; clone?: SVGElement } | { kind: 'marquee'; sx: number; sy: number; moved: boolean; x0: number; y0: number } | { kind: 'gap'; sys: number; sx: number; sy: number; moved: boolean; y0: number; base: number } | { kind: 'grace'; id: number; i: number; sx: number; sy: number; moved: boolean; el: SVGGraphicsElement; lx: number; ly: number; clone?: SVGElement }
   private suppressClick = false
   private clip?: Clip
   private zoom: number | 'fit' = 'fit'   // the page is drawn LOGICAL_WIDTH wide; 'fit' = as wide as the window allows, a number = that many times LOGICAL_WIDTH px
@@ -136,6 +136,18 @@ export class Composer {
     const all = this.voiceEvents(a.staff, a.voice).map((e) => e.id)
     const i = all.indexOf(this.sel!), j = all.indexOf(id)
     this.range = all.slice(Math.min(i, j), Math.max(i, j) + 1)
+  }
+
+  /** Shift+←/→: the selection grows or shrinks by one note at its moving end (the note first picked stays). */
+  private extendSelection(dir: 1 | -1) {
+    const a = this.sel !== undefined ? findEv(this.score, this.sel) : undefined
+    if (!a) return
+    const all = this.voiceEvents(a.staff, a.voice).map((e) => e.id)
+    const end = this.range.length ? (this.range[0] === this.sel ? this.range[this.range.length - 1] : this.range[0]) : this.sel!
+    const next = all[all.indexOf(end) + dir]
+    if (next === undefined) return
+    this.selectRange(next)
+    this.refresh()
   }
 
   /** Run an edit as one undo step. */
@@ -330,7 +342,12 @@ export class Composer {
       e.preventDefault(); return
     }
     const gr = (e.target as Element).closest?.('[data-grace]')
-    if (gr && this.mode === 'select') { const [id, i] = gr.getAttribute('data-grace')!.split(':').map(Number); this.pickGrace(id, i); this.suppressClick = true; e.preventDefault(); return }
+    if (gr && this.mode === 'select') { // a grace note: picked at once, and dragged like a note
+      const [id, i] = gr.getAttribute('data-grace')!.split(':').map(Number), [lx, ly] = this.toLogical(e)
+      this.pickGrace(id, i)
+      this.drag = { kind: 'grace', id, i, sx: e.clientX, sy: e.clientY, moved: false, el: this.svg().querySelector<SVGGraphicsElement>(`[data-grace="${id}:${i}"]`)!, lx, ly }
+      this.suppressClick = true; e.preventDefault(); return
+    }
     const el = (e.target as Element).closest?.('[data-mark]')
     if (el) { const [lx, ly] = this.toLogical(e); this.drag = { kind: 'mark', mark: JSON.parse(el.getAttribute('data-mark')!) as MarkRef, sx: e.clientX, sy: e.clientY, moved: false, el: el as SVGGraphicsElement, lx, ly }; this.suppressClick = true; e.preventDefault(); return }
     const [x, y] = this.toLogical(e)
@@ -364,9 +381,9 @@ export class Composer {
       this.ghost.innerHTML = `<line x1="20" x2="${this.layout.width - 20}" y1="${ly}" y2="${ly}" stroke="#1d6fff" stroke-width="1.5" stroke-dasharray="6 4"/><text x="${this.layout.width - 24}" y="${ly - 6}" text-anchor="end" font-size="12" fill="#1d6fff">${gap - d.base >= 0 ? '+' : '−'}${Math.abs(Math.round(gap - d.base))} px</text>`
       return
     }
-    if (d.kind === 'mark') { // a copy of the mark follows the pointer, the original stays faint where it was
-      if (!d.clone) { d.clone = d.el.cloneNode(true) as SVGElement; d.clone.removeAttribute('data-mark'); d.clone.setAttribute('pointer-events', 'none'); d.clone.setAttribute('opacity', '0.75'); d.el.setAttribute('opacity', '0.25'); this.svg().appendChild(d.clone) }
-      d.clone.setAttribute('transform', `translate(${x - d.lx} ${y - d.ly + shiftOf(d.el)})`)
+    if (d.kind === 'mark' || d.kind === 'grace') { // a copy follows the pointer, the original stays faint where it was
+      if (!d.clone) { d.clone = d.el.cloneNode(true) as SVGElement; d.clone.removeAttribute('data-mark'); d.clone.removeAttribute('data-grace'); d.clone.setAttribute('pointer-events', 'none'); d.clone.setAttribute('opacity', '0.75'); d.el.setAttribute('opacity', '0.25'); this.svg().appendChild(d.clone) }
+      d.clone.setAttribute('transform', `translate(${x - d.lx} ${y - d.ly + (d.kind === 'mark' ? shiftOf(d.el) : 0)})`)
       return
     }
     this.moveGhost(x, y, d.kind === 'note' ? (e.shiftKey ? this.voice : d.ev.voice) : 0, false)
@@ -398,6 +415,7 @@ export class Composer {
     const [x, y] = this.toLogical(e)
     if (d.kind === 'gap') { this.setGap(d.sys, this.dragGap(d, y) - GAP_USUAL); setTimeout(() => { this.suppressClick = false }, 0); return }
     if (d.kind === 'note') this.dropNote(d.ev, d.sy, x, y, !!e.shiftKey)
+    else if (d.kind === 'grace') { d.clone?.remove(); this.dropGrace(d.id, d.i, x, y, y - d.ly) }
     else { d.clone?.remove(); this.dropMark(d.mark, x, y, d.el, d.lx, d.ly) }
     setTimeout(() => { this.suppressClick = false }, 0)
   }
@@ -424,6 +442,20 @@ export class Composer {
     this.cursor = { m: dest.m, staff: dest.staff, at: dest.at }
     this.refresh()
     this.say(shift && voice !== ev.voice ? `Đã chuyển nốt sang giọng ${voice + 1}` : this.describe(ev.id))
+  }
+
+  /** A dragged grace note lands: `dy` (page units, + is down) becomes steps of the scale, and it goes to the main note just after `x` on its staff. */
+  private dropGrace(id: number, i: number, x: number, y: number, dy: number) {
+    const src = findEv(this.score, id), dm = src && this.barAt(x, y)
+    if (!src || !dm) { this.refresh(); return }
+    const st = this.layout.measures[src.m].staves[src.staff], steps = -Math.round(dy / (st.spacing / 2))
+    // a grace note stands between the note before and its own note: it goes to the first note at or after the drop point on that line (the last one if dropped after them all)
+    const line = this.layout.measures.filter((q) => q.system === dm.system).flatMap((q) => q.evs).filter((q) => q.staff === src.staff && !q.rest).sort((p, q) => p.x - q.x)
+    const to = (line.find((q) => q.x >= x) ?? line[line.length - 1])?.id ?? id
+    let at: number | undefined
+    this.commit((s) => { at = moveGrace(s, id, i, to, steps) })
+    if (at === undefined) { this.say('Nốt này đã có đủ 4 nốt láy'); this.refresh(); return }
+    this.pickGrace(to, at)
   }
 
   /** The bar under a point, also above the first staff of a line (where tempo and rehearsal marks stand). */
@@ -700,17 +732,18 @@ export class Composer {
     }
     const ticks = this.ticks
     let id = 0
-    let end = at
+    let end = { m, at }
     this.commit((s) => {
       const where = chord && this.lastPlaced ? this.lastPlaced : { m, staff, voice, at, ticks }
       id = putNote(s, where, where.at, where.ticks, p, chord && !!this.lastPlaced)
-      const f = findEv(s, id)
-      end = where.at + (f?.ev.ticks ?? ticks)
+      let f = findEv(s, id)
       if (!chord || !this.lastPlaced) this.lastPlaced = { m, staff, voice, at, ticks: f?.ev.ticks ?? ticks }
+      while (f?.ev.tie) f = tiedNext(s, f) // a note that went on over the barline: the cursor goes after its last piece
+      if (f) end = { m: f.m, at: f.at + f.ev.ticks }
     })
     this.lastD = diatonic(p)
     this.sel = id
-    if (!chord) this.advance(m, staff, end)
+    if (!chord) this.advance(end.m, staff, end.at)
     this.refresh()
   }
 
@@ -736,7 +769,7 @@ export class Composer {
     else if (mod && (k === '+' || k === '=')) this.zoomIn()
     else if (mod && (k === '-' || k === '_')) this.zoomOut()
     else if (mod && k === '0') this.zoomFit()
-    else if (mod && k === '3') this.tuplet()
+    else if (mod && !e.altKey && /^[2-6]$/.test(digit)) this.tuplet(TUPLETS.findIndex((t) => t.n === +digit))
     else if (mod && k.toLowerCase() === 'c') this.copy()
     else if (mod && k.toLowerCase() === 'x') this.cut()
     else if (mod && k.toLowerCase() === 'v') this.paste()
@@ -752,12 +785,14 @@ export class Composer {
     else if (k === '.') { this.dotted = !this.dotted; this.afterToolChange() }
     else if (/^[a-gA-G]$/.test(k)) this.letter(k.toUpperCase(), e.shiftKey)
     else if (k.toLowerCase() === 'n') this.setMode(this.mode === 'input' ? 'select' : 'input')
-    else if (k.toLowerCase() === 'r') this.rest()
+    else if (k.toLowerCase() === 'r') this.repeatSelection()
     else if (k.toLowerCase() === 't') this.tie()
     else if (k.toLowerCase() === 's') this.slur()
     else if (k.toLowerCase() === 'x') this.flip()
-    else if (k === 'ArrowUp' || k === 'ArrowDown') this.vertical(k === 'ArrowUp' ? 1 : -1, e.shiftKey ? 12 : 1, e.altKey)
+    else if (k === 'ArrowUp' || k === 'ArrowDown') this.vertical(k === 'ArrowUp' ? 1 : -1, e.shiftKey && !e.altKey ? 12 : 1, e.altKey && !e.shiftKey, e.altKey && e.shiftKey)
+    else if (e.shiftKey && (k === 'ArrowLeft' || k === 'ArrowRight')) this.extendSelection(k === 'ArrowRight' ? 1 : -1)
     else if (k === 'ArrowLeft' || k === 'ArrowRight') this.horizontal(k === 'ArrowRight' ? 1 : -1)
+    else if (k.toLowerCase() === 'j') { const ids = this.targets(); if (ids.length) this.commit((s) => ids.forEach((id) => respell(s, id))) }
     else if (k === 'Delete' || k === 'Backspace') { if (!this.delMark()) { if (k === 'Backspace' && this.mode === 'input' && this.sel === undefined) this.backspace(); else this.del() } }
     else if (k === 'Escape') { if (this.drag) { this.drag = undefined; this.ghost?.remove(); this.ghost = undefined; document.body.style.cursor = '' } this.sel = undefined; this.range = []; this.selMark = undefined; this.sysRange = undefined; this.setMode('select') }
     else if (k === '+' || k === '=') this.accidental(1)
@@ -786,7 +821,7 @@ export class Composer {
   setMode(m: Mode) {
     this.mode = m
     this.refresh()
-    this.say(m === 'input' ? 'Nhập nốt: bấm vào khuông hoặc gõ A–G (Shift = thêm vào hợp âm, R = dấu lặng, N hoặc Esc để thoát)' : 'Chọn: bấm vào nốt để chọn, ↑↓ đổi cao độ, Delete xoá')
+    this.say(m === 'input' ? 'Nhập nốt: bấm vào khuông hoặc gõ A–G (Shift = thêm vào hợp âm, 0 = dấu lặng, R = lặp lại, N hoặc Esc để thoát)' : 'Chọn: bấm vào nốt để chọn, ↑↓ đổi cao độ, Delete xoá')
   }
 
   /** The letter keys: enter a note at the cursor (input mode) or respell the selected note. */
@@ -794,9 +829,10 @@ export class Composer {
     const idx = STEPS.indexOf(letter as never)
     if (this.mode === 'input') {
       const m = this.cursor.m
-      const base = this.lastD
+      const top = chord ? this.chordTop() : undefined
       let best = idx, bd = Infinity
-      for (let oct = 0; oct <= 8; oct++) { const d = oct * 7 + idx; if (Math.abs(d - base) < bd) { bd = Math.abs(d - base); best = d } }
+      if (top !== undefined) best = top + 1 + ((idx - (top + 1)) % 7 + 7) % 7 // added to a chord: the first such note above its top note
+      else { const base = this.prevD(); for (let oct = 0; oct <= 8; oct++) { const d = oct * 7 + idx; if (Math.abs(d - base) < bd) { bd = Math.abs(d - base); best = d } } }
       const p = this.pitchAt(m, best)
       this.pendingAlter = undefined
       this.place(m, this.cursor.staff, this.voice, this.cursor.at, p, chord)
@@ -810,6 +846,45 @@ export class Composer {
       this.commit((s) => { const g = findEv(s, id)!; g.ev.pitches = [this.pitchAt(g.m, best)] })
       this.pendingAlter = undefined
     }
+  }
+
+  /** The chord just entered (Shift+letter adds to it, R repeats it). */
+  private lastChord(): Ev | undefined {
+    const l = this.lastPlaced
+    return l && (this.score.measures[l.m]?.staves[l.staff]?.[l.voice] ?? []).find((_, i, all) => starts(all)[i] === l.at)
+  }
+  /** The top note (as a staff step) of the chord just entered. */
+  private chordTop(): number | undefined { const e = this.lastChord(); return e?.pitches.length ? Math.max(...e.pitches.map(diatonic)) : undefined }
+
+  /** What a typed letter is placed near: the lowest note of the chord before the cursor in the same voice, else the middle of the clef (C5 treble, C3 bass), as in MuseScore. */
+  private prevD(): number {
+    const { m, staff, at } = this.cursor
+    for (let mm = m; mm >= 0; mm--) {
+      const evs = this.score.measures[mm].staves[staff]?.[this.voice] ?? [], st = starts(evs)
+      for (let i = evs.length - 1; i >= 0; i--) if ((mm < m || st[i] < at) && evs[i].pitches.length) return Math.min(...evs[i].pitches.map(diatonic))
+    }
+    const clef = clefAt(this.score, m, staff)
+    return diatonic({ step: 'C', alter: 0, octave: clef === 'bass' ? 3 : clef === 'treble' ? 5 : 4 })
+  }
+
+  /** R: the selection again, right after itself (input mode: the chord just entered, again at the cursor), as in MuseScore. */
+  repeatSelection() {
+    if (this.mode === 'input') {
+      const e = this.lastChord()
+      if (!e?.pitches.length) return
+      const [first, ...rest] = e.pitches
+      this.place(this.cursor.m, this.cursor.staff, this.voice, this.cursor.at, first, false)
+      rest.forEach((p) => this.place(this.cursor.m, this.cursor.staff, this.voice, this.cursor.at, p, true))
+      return
+    }
+    const ids = this.targets()
+    const clip = copyEvents(this.score, ids), lastId = ids[ids.length - 1], last = () => findEv(this.score, lastId)
+    if (!clip || !last()) { this.say('Chọn nốt để lặp lại'); return }
+    if (!tiedNext(this.score, last()!)) this.commit((s) => insertMeasures(s, s.measures.length, 1)) // the selection ends the piece: room after it
+    const keep = this.clip
+    this.clip = clip; this.sel = tiedNext(this.score, last()!)?.ev.id; this.range = []
+    this.paste()
+    this.clip = keep
   }
 
   rest() {
@@ -934,10 +1009,11 @@ export class Composer {
   }
 
   /** Make a tuplet of the current note length where the cursor / selected note is, then type its notes. */
-  tuplet() {
+  tuplet(which?: number) {
+    if (which === -1) { this.say('Chưa hỗ trợ liên này (có: 2, 3, 4, 5, 6)'); return }
     const sel = this.sel !== undefined ? findEv(this.score, this.sel) : undefined
     const loc = sel ? { m: sel.m, staff: sel.staff, voice: sel.voice, at: sel.at } : { m: this.cursor.m, staff: this.cursor.staff, voice: this.voice, at: this.cursor.at }
-    const t = TUPLETS[+(this.root.querySelector<HTMLSelectElement>('#cmp-tup')?.value ?? 0)]
+    const t = TUPLETS[which ?? +(this.root.querySelector<HTMLSelectElement>('#cmp-tup')?.value ?? 0)]
     let ids: number[] = []
     this.commit((s) => { ids = makeTuplet(s, loc, loc.at, this.dur, t.n, t.m) })
     if (!ids.length) { this.say(`Không đủ chỗ trong ô nhịp cho ${t.n}:${t.m} ở độ dài này`); return }
@@ -983,19 +1059,22 @@ export class Composer {
   }
 
   del() {
-    if (this.sel === undefined) return
-    const id = this.sel
-    this.commit((s) => deleteEv(s, id))
+    const g = this.grace()
+    if (g) { this.commit((s) => removeGrace(s, g.id, g.i)); this.selGrace = undefined; return } // a picked grace note: only it goes
+    const ids = this.targets()
+    if (ids.length) this.commit((s) => ids.forEach((id) => deleteEv(s, id)))
   }
 
   /** ↑/↓: semitone (Shift: octave); with Alt: switch staff instead. */
   /** Move the selected notes a semitone (Shift: an octave) up or down: the arrow keys, for a screen without a keyboard. */
   nudge(dir: 1 | -1, octave = false) { this.vertical(dir, octave ? 12 : 1, false) }
-  private vertical(dir: number, amount: number, alt: boolean) {
+  private vertical(dir: number, amount: number, alt: boolean, diatonicStep = false) {
     if (alt) { this.cursor.staff = Math.max(0, Math.min(this.score.clefs.length - 1, this.cursor.staff - dir)); this.refresh(); return }
-    if (this.sel === undefined) return
-    const id = this.sel, g = this.grace()
-    this.commit((s) => (g ? transposeGrace(s, id, g.i, dir * amount) : transpose(s, id, dir * amount)))
+    const ids = this.targets(), g = this.grace()
+    if (!ids.length) return
+    if (g) this.commit((s) => transposeGrace(s, g.id, g.i, dir * amount))
+    else if (diatonicStep) this.commit((s) => ids.forEach((id) => stepDiatonic(s, id, dir > 0 ? 1 : -1)))
+    else this.commit((s) => ids.forEach((id) => transpose(s, id, dir * amount)))
   }
 
   /** Ctrl+Alt+1-4: the voice new notes go into. */
@@ -1075,16 +1154,13 @@ export class Composer {
   accidental(alter: number) {
     const g = this.grace()
     if (g) { this.commit((s) => setGraceAlter(s, g.id, g.i, alter)); return }
-    if (this.sel !== undefined) {
-      const id = this.sel
-      const f = findEv(this.score, id)
-      if (!f) return
-      const cur = f.ev.pitches[0]?.alter
-      const { key } = contextAt(this.score, f.m)
-      this.commit((s) => {
-        const g = findEv(s, id)!
-        g.ev.pitches = g.ev.pitches.map((p) => ({ ...p, alter: cur === alter ? keyAlter(key, p.step) : alter }))
-      })
+    const ids = this.targets()
+    if (ids.length) {
+      const cur = findEv(this.score, ids[0])?.ev.pitches[0]?.alter // asking again for what the first note has gives back the key's own
+      this.commit((s) => ids.forEach((id) => {
+        const g = findEv(s, id)
+        if (g) { const { key } = contextAt(s, g.m); g.ev.pitches = g.ev.pitches.map((p) => ({ ...p, alter: cur === alter ? keyAlter(key, p.step) : alter })) }
+      }))
     } else { this.pendingAlter = this.pendingAlter === alter ? undefined : alter; this.say(this.pendingAlter === undefined ? 'Bỏ dấu hoá' : `Nốt kế tiếp sẽ có ${alter > 0 ? '♯' : alter < 0 ? '♭' : '♮'}`) }
   }
 

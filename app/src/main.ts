@@ -223,7 +223,7 @@ const composer = new Composer($('composer'), {
 })
 // commands from the macOS menu. A key press that already did the job (the page saw it too) is not done twice.
 let lastKeyAt = 0
-document.addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && /^(z|a|\+|=|-|_|0)$/i.test(e.key)) lastKeyAt = performance.now() }, true)
+document.addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && /^(z|a|\+|=|-|_|0)$/i.test(e.key) && !/^(INPUT|TEXTAREA|SELECT)$/.test((e.target as HTMLElement)?.tagName ?? '')) lastKeyAt = performance.now() }, true) // (in a text field the page does nothing with the key: the menu must select all / undo there)
 ;(window as unknown as { notefall?: { onMenu?(cb: (cmd: string) => void): void } }).notefall?.onMenu?.((cmd) => {
   if (performance.now() - lastKeyAt < 250) return
   const field = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName ?? ''), sheet = !$('composer').hidden

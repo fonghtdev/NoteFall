@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { Midi } from '@tonejs/midi'
 import { minuet, fromText, showcase, endings, palette } from './demo'
 import { scoreFromJson, scoreFromMusicXml, scoreFromNotes, scoreToJson, scoreToMidi, scoreToMusicXml, trimToBar } from './io'
-import { TPQ, setPedalEnd, toggleSpan, validate, type Ev, type Score } from './model'
+import { TPQ, setSpanEnd, toggleSpan, validate, type Ev, type Score } from './model'
 import { toPerformance } from './perform'
 import { toNotes, unroll } from '../core/score/playback'
 
@@ -195,7 +195,7 @@ describe('pedal styles', () => {
     const rh = s.measures[0].staves[0][0], lh = s.measures[0].staves[1][0]
     toggleSpan(s, 'pedal-line', rh[0].id, rh[1].id); toggleSpan(s, 'pedal-bracket', rh[2].id, rh[3].id); toggleSpan(s, 'pedal', lh[0].id, lh[3].id)
     expect([rh[0].pedal?.style, rh[2].pedal?.style, lh[0].pedal?.style]).toEqual(['line', 'bracket', undefined])
-    setPedalEnd(s, rh[0].id, rh[2].id); expect(rh[0].pedal).toEqual({ end: rh[2].id, style: 'line' })
+    setSpanEnd(s, rh[0].id, 'pedal', rh[2].id); expect(rh[0].pedal).toEqual({ end: rh[2].id, style: 'line' })
     const back = scoreFromMusicXml(scoreToMusicXml(s)).score, b = back.measures[0]
     expect([b.staves[0][0][0].pedal?.style, b.staves[0][0][2].pedal?.style, b.staves[1][0][0].pedal?.style]).toEqual(['line', 'bracket', undefined])
     toggleSpan(s, 'pedal-bracket', rh[2].id, rh[3].id); expect(rh[2].pedal).toBeUndefined()

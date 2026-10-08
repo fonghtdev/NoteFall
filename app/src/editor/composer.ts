@@ -8,7 +8,7 @@ import { locate, playedBars, quartersAt, scoreClicks, secondsAt, tempoRatios, to
 import { hitTest, keyAlter, type Hit } from './hit'
 import {
   CLEFS, STEPS, TPQ, addGrace, barTicks, clearGrace, contextAt, copyPrevious, deleteEv, deleteMeasure, diatonic, emptyScore, findEv, flipStem, fromDiatonic, graceStep, midiOf, moveGrace, removeGrace, respell, setGraceAlter, stepDiatonic, tiedNext, transposeGrace, insertMeasure, ottavaShiftAt, putNote, putRest,
-  TUPLETS, makeTuplet, setPedalEnd, navigationProblems, pruneRefs, setBarline, setBreak, setClef, setJump, setRehearsal, setTempoMark, setText, setTimeSymbol, setVolta, toggleEv, toggleMark, type BarlineKind, type ClefName, type Mark, type Orn, type SpanKind, type TextField,
+  TUPLETS, makeTuplet, setSpanEnd, setSpanStart, navigationProblems, pruneRefs, setBarline, setBreak, setClef, setJump, setRehearsal, setTempoMark, setText, setTimeSymbol, setVolta, toggleEv, toggleMark, type BarlineKind, type ClefName, type Mark, type Orn, type SpanKind, type TextField,
   putInTuplet, removeTuplet, setDyn, setKey, setLength, setTime, starts, toggleArt, toggleSpan, toggleTie, clefAt, transpose, validate, allEventIds, clearMark, copyEvents, moveEv, moveMark, moveTempo, setMarkOffset, setStaffGap, insertMeasures, deleteMeasures, toggleKeep, STAFF_GAP_MAX, STAFF_GAP_MIN, setTempoOffset, pasteClip, type Clip, type Art, type Dyn, type Ev, type Pitch, type Score,
 } from './model'
 import { toPerformance } from './perform'
@@ -175,6 +175,16 @@ export class Composer {
     this.redoStack = []
     this.edits++
     this.refresh()
+  }
+
+  /** A field of the score (title, composer, tempo): the page follows the typing at once, and one visit to the field is one undo step. */
+  private liveField(el: HTMLInputElement, set: (s: Score, value: string) => void) {
+    let open = false
+    el.addEventListener('focus', () => { open = false })
+    el.addEventListener('input', () => {
+      if (!open) { this.commit((s) => set(s, el.value)); open = true } // the first key opens the undo step
+      else { set(this.score, el.value); this.refresh() }                // the next ones only redraw
+    })
   }
 
   /** How many changes the user has made to the score (undo and redo count): lets the page tell an untouched score from one somebody worked on. */
@@ -465,7 +475,7 @@ export class Composer {
     else { d.clone?.remove(); this.dropMark(d.mark, x, y, d.el, d.lx, d.ly) }
     setTimeout(() => { this.suppressClick = false }, 0)
   }
-  private markHint(m: MarkRef) { return m.kind === 'ev' && m.field === 'pedal' ? 'Đã chọn chỗ nhả pedal: kéo tới nốt muốn nhả, Delete để xoá pedal' : m.kind === 'ev' ? 'Đã chọn dấu: kéo sang nốt khác để chuyển, Delete để xoá' : m.kind === 'tempo' ? 'Đã chọn dấu tốc độ: kéo tới ô / vị trí khác, Delete để xoá' : 'Đã chọn dấu tập: kéo sang ô khác, Delete để xoá' }
+  private markHint(m: MarkRef) { return m.kind === 'ev' && m.field === 'pedal' ? 'Đã chọn pedal: kéo Ped. / móc đầu để đổi chỗ đạp, kéo ✱ / móc cuối để đổi chỗ nhả, Delete để xoá' : m.kind === 'ev' && m.field === 'ottava' ? 'Đã chọn ottava: kéo chữ 8va để đổi chỗ bắt đầu, kéo móc cuối để đổi chỗ kết thúc, Delete để xoá' : m.kind === 'ev' ? 'Đã chọn dấu: kéo sang nốt khác để chuyển, Delete để xoá' : m.kind === 'tempo' ? 'Đã chọn dấu tốc độ: kéo tới ô / vị trí khác, Delete để xoá' : 'Đã chọn dấu tập: kéo sang ô khác, Delete để xoá' }
 
   /** Where a dragged note would land: same beat of the other voice with Shift, otherwise the voice it came from. */
   private dropNote(ev: DrawnEv, startY: number, x: number, y: number, shift: boolean) {
@@ -526,12 +536,15 @@ export class Composer {
       const shifted = (el ? shiftOf(el) : 0) + (y - ly) // where it will stand, counted from where it would stand by itself
       const id = mark.id, field = mark.field
       if (field === 'hairpin') { this.commit((s) => setMarkOffset(s, id, field, shifted)); this.selMark = mark; return } // a wedge only slides up or down: it keeps its two notes
-      if (field === 'pedal') { // the ✱: the pedal now goes at the note of its own staff and voice nearest to where it was dropped
+      if (field === 'pedal' || field === 'ottava') { // its end (✱ or hook) or its beginning (the sign): now at the note of its own staff and voice nearest to where it was dropped
         const to = dm.evs.filter((q) => q.staff === src.staff && q.voice === src.voice).reduce<DrawnEv | undefined>((a, q) => (!a || Math.abs(q.x - x) < Math.abs(a.x - x) ? q : a), undefined)
+        const start = !!mark.start, what = field === 'pedal' ? 'Pedal' : 'Ottava'
         let ok = false
-        if (to) this.commit((s) => { ok = setPedalEnd(s, id, to.id) })
-        this.selMark = mark
-        this.say(ok ? `Pedal nhả ở ô ${dm.m + 1}` : 'Thả dấu ✱ sau nốt đầu của pedal, cùng khuông với nó'); this.refresh(); return
+        if (to) this.commit((s) => { ok = start ? setSpanStart(s, id, field, to.id) : setSpanEnd(s, id, field, to.id) })
+        this.selMark = ok && start && to ? { kind: 'ev', field, id: to.id, start: true } : mark // (its beginning moved: the line now lives on that note)
+        this.say(!ok ? (start ? `Thả chỗ bắt đầu trước chỗ kết thúc của ${what.toLowerCase()}, cùng khuông với nó` : `Thả chỗ kết thúc từ nốt đầu của ${what.toLowerCase()} trở đi, cùng khuông với nó`)
+          : `${what} ${start ? 'bắt đầu' : 'kết thúc'} ở ô ${dm.m + 1}`)
+        this.refresh(); return
       }
       const to = dm.evs.filter((q) => q.staff === src.staff && !q.rest).reduce<DrawnEv | undefined>((a, q) => (!a || Math.abs(q.x - x) < Math.abs(a.x - x) ? q : a), undefined) // stays on its own staff
       if (!to) { this.say('Không có nốt nào ở đó để gắn dấu'); return }
@@ -939,7 +952,7 @@ export class Composer {
   rest() {
     if (this.mode === 'input') {
       const { m, staff, at } = this.cursor
-      this.commit((s) => putRest(s, { m, staff, voice: this.voice }, at, this.ticks))
+      this.commit((s) => putRest(s, { m, staff, voice: this.voice }, at, this.ticks, true)) // (the rest key: a rest of that value, not merged away)
       this.advance(m, staff, at + Math.min(this.ticks, this.bar - at))
       this.refresh()
     } else if (this.sel !== undefined) { const id = this.sel; this.commit((s) => deleteEv(s, id)) }
@@ -1083,12 +1096,13 @@ export class Composer {
   /** Hairpin or slur over the selected notes (first to last). */
   span(kind: SpanKind) {
     const ids = this.targets()
-    if (ids.length < 2) { this.say('Giữ Shift và bấm nốt cuối để chọn cả đoạn, rồi bấm lại') ; return }
-    if (kind === 'o8' || kind === 'o-8' || kind === 'o15' || kind === 'o-15') this.say('Ottava: nốt giữ nguyên trên trang, tiếng lên / xuống quãng tám')
+    const line = kind.startsWith('pedal') || kind.startsWith('o') // a pedal or an ottava goes on one picked note too; its end is then dragged further
+    if (!ids.length || (ids.length < 2 && !line)) { this.say(line ? 'Chọn một nốt trước' : 'Giữ Shift và bấm nốt cuối để chọn cả đoạn, rồi bấm lại'); return }
     let ok = false
     this.commit((s) => { ok = toggleSpan(s, kind, ids[0], ids[ids.length - 1]) })
     if (!ok) this.say('Chỉ nối được các nốt cùng khuông và cùng giọng')
-    else if (kind.startsWith('pedal')) this.say('Pedal: kéo chỗ nhả (✱ hoặc móc cuối) để đổi chỗ nhả pedal')
+    else if (kind.startsWith('pedal')) this.say('Pedal: kéo chỗ nhả (✱ hoặc móc cuối) tới nốt bạn muốn')
+    else if (line) this.say('Ottava: kéo móc cuối tới nốt bạn muốn. Nốt giữ nguyên trên trang, tiếng lên / xuống quãng tám')
   }
   slur() { this.span('slur') }
 
@@ -1644,12 +1658,13 @@ export class Composer {
 
     const sc = this.section(insp, 'Bản nhạc')
     const title = this.el('input', 'field', sc); title.placeholder = 'Tiêu đề'; title.id = 'cmp-title'; title.setAttribute('aria-label', 'Tiêu đề')
-    title.onchange = () => this.commit((s) => { s.title = title.value })
+    this.liveField(title, (s, v) => { s.title = v })
     const comp = this.el('input', 'field', sc); comp.placeholder = 'Tác giả'; comp.id = 'cmp-composer'; comp.setAttribute('aria-label', 'Tác giả')
-    comp.onchange = () => this.commit((s) => { s.composer = comp.value })
+    this.liveField(comp, (s, v) => { s.composer = v })
     const tempoRow = this.el('label', 'row between', sc); tempoRow.append('Tốc độ đầu bài (♩ =)')
     const tempo = this.el('input', 'field', tempoRow); tempo.type = 'number'; tempo.min = '30'; tempo.max = '300'; tempo.id = 'cmp-tempo'; tempo.title = 'Tempo (♩ = …)'
-    tempo.onchange = () => this.commit((s) => { s.tempo = Math.min(300, Math.max(30, +tempo.value || 100)) })
+    this.liveField(tempo, (s, v) => { const n = Math.round(+v); if (n >= 30 && n <= 300) s.tempo = n }) // (a half-typed number, like the 7 of 77, waits)
+    tempo.addEventListener('change', () => { const n = Math.min(300, Math.max(30, Math.round(+tempo.value) || 100)); tempo.value = String(n); if (n !== this.score.tempo) this.commit((s) => { s.tempo = n }) })
 
     // ---- palettes, in the order and with the names MuseScore uses
     const P = (vi: string, en: string, open = false) => this.section(insp, `${vi} <small>${en}</small>`, open)
@@ -1699,7 +1714,7 @@ export class Composer {
 
     const pt = P('Cao độ', 'Pitch'); g = grid(pt)
     for (const [k, gl, lab] of [['o8', '\uE511', '8va (lên 1 quãng tám)'], ['o-8', '\uE51C', '8vb (xuống 1 quãng tám)'], ['o15', '\uE515', '15ma (lên 2 quãng tám)'], ['o-15', '\uE51D', '15mb (xuống 2 quãng tám)']] as const)
-      this.pal(g, k, gl, lab, `${lab}: chọn đoạn nốt (Shift+bấm) rồi bấm`, () => this.span(k))
+      this.pal(g, k, gl, lab, `${lab}: chọn một nốt (hoặc cả đoạn) rồi bấm, kéo móc cuối để nối dài`, () => this.span(k))
     this.cap(pt, 'Nốt giữ nguyên trên trang; tiếng lên / xuống quãng tám.')
 
     const ac = P('Dấu hoá', 'Accidentals'); g = grid(ac)
@@ -1738,7 +1753,7 @@ export class Composer {
     this.btn(rrow, 'rehearsal', 'Đặt dấu tập', 'Đặt dấu tập trong khung ở ô đang chọn (bỏ trống = xoá)', () => this.rehearsal(rin.value), { html: 'Đặt' })
 
     const kb = P('Pedal', 'Keyboard'); g = grid(kb)
-    const how = 'chọn đoạn nốt (Shift+bấm) rồi bấm'
+    const how = 'chọn một nốt (hoặc cả đoạn) rồi bấm, kéo chỗ nhả để nối dài'
     this.pal(g, 'pedal', pic(bra(0, 16, '\uE650', 18) + bra(22, 16, '\uE655', 14), 34, 22), 'Pedal (Ped. và ✱)', `Pedal Ped. … ✱: ${how}`, () => this.span('pedal'), 'pic')
     this.pal(g, 'pedal-line', pic(bra(0, 14, '\uE650', 15) + '<path d="M19 14H32V6"/>', 34, 22), 'Pedal có đường kẻ', `Pedal Ped. và đường kẻ: ${how}`, () => this.span('pedal-line'), 'pic')
     this.pal(g, 'pedal-bracket', pic('<path d="M3 6v8h28V6"/>', 34, 22), 'Pedal ngoặc vuông', `Pedal ngoặc, móc thẳng hai đầu: ${how}`, () => this.span('pedal-bracket'), 'pic')

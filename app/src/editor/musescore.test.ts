@@ -8,7 +8,7 @@ import { emptyScore } from './model'
 const hooks = { toFalling() {}, piano: { options: () => [], value: () => '', set() {}, openLibrary() {}, isDefault: () => true, setDefault() {} }, click: () => ({ sound: 'wood' as const, accent: true }) }
 const make = () => { localStorage.clear(); const root = document.createElement('div'); document.body.append(root); const c = new Composer(root, hooks); c.setScore(emptyScore(2)); return c }
 const nm = (p: { step: string; alter: number; octave: number }) => p.step + (p.alter > 0 ? '#'.repeat(p.alter) : 'b'.repeat(-p.alter)) + p.octave
-const LEN: Record<number, string> = { 3840: 'w', 2880: 'h.', 1920: 'h', 1440: 'q.', 960: 'q', 720: 'e.', 480: 'e' }
+const LEN: Record<number, string> = { 3840: 'w', 2880: 'h.', 1920: 'h', 1440: 'q.', 960: 'q', 720: 'e.', 480: 'e', 240: 's' }
 const bar = (c: Composer, m: number, staff = 0, v = 0) => (c.score.measures[m]?.staves[staff]?.[v] ?? []).map((e) => (e.pitches.length ? e.pitches.map(nm).join('+') : 'r') + ':' + (LEN[e.ticks] ?? e.ticks) + (e.tie ? '~' : '') + (e.graces?.length ? '[g]' : '')).join(' ')
 type K = string | [string, Partial<KeyboardEventInit>]
 const keys = (c: Composer, ...ks: K[]) => ks.forEach((k) => (Array.isArray(k) ? c.key(k[0], k[1]) : c.key(k)))
@@ -83,4 +83,26 @@ describe('composer keys behave like MuseScore', { timeout: 20000 }, () => { // (
     c.sel = undefined; expect(c.startPlace()).toBeUndefined()
     keys(c, 'n'); c.cursor = { m: 1, staff: 0, at: 960 }; expect(c.startPlace()).toEqual({ m: 1, at: 960 })
   })
+  it('rests split like the note-value pyramid and stay split: the rest key, a shorter rest, then an edit elsewhere in the bar', () => {
+    const c = make(); keys(c, 'n', '3', '9'); expect(bar(c, 0)).toBe('r:q r:q r:h')          // a quarter rest entered into an empty bar
+    keys(c, 'Escape'); select(c, 2); keys(c, '4'); expect(bar(c, 0)).toBe('r:q r:q r:e r:e r:q') // the half rest made an eighth: the rest of its room follows the beats
+    keys(c, 'n'); c.cursor = { m: 0, staff: 0, at: 2880 }; keys(c, '3', 'c')
+    expect(bar(c, 0)).toBe('r:q r:q r:e r:e C5:q')                                               // a note later in the bar leaves the rests written before it alone
+  })
+  it('compound time groups rests by the dotted-quarter beat', () => {
+    const six = () => { localStorage.clear(); const root = document.createElement('div'); document.body.append(root); const c = new Composer(root, hooks); c.setScore(emptyScore(2, { beats: 6, unit: 8 })); return c }
+    const at = (c: Composer, tick: number) => { keys(c, 'n'); c.cursor = { m: 0, staff: 0, at: tick }; keys(c, '4', 'c') }
+    let c = six(); at(c, 0); expect(bar(c, 0)).toBe('C5:e r:q r:q.')          // an eighth on beat 1: a quarter rest to the end of the beat, a dotted quarter rest for beat 2
+    c = six(); at(c, 1440); expect(bar(c, 0)).toBe('r:q. C5:e r:q')
+  })
+  it('the title, the composer and the tempo show on the page while they are typed, one undo step per field', () => {
+    const c = make(), last = <T extends Element>(sel: string) => [...document.querySelectorAll<T>(sel)].pop()! // (every test adds a composer to the page: this one is the last)
+    const page = () => [...last('.cmp-sheet').querySelectorAll('svg text')].map((t) => t.textContent)
+    const type = (id: string, ...steps: string[]) => { const el = last<HTMLInputElement>('#' + id); el.focus(); for (const v of steps) { el.value = v; el.dispatchEvent(new Event('input')) } }
+    type('cmp-title', 'B', 'Ba', 'Bài'); expect(c.score.title).toBe('Bài'); expect(page()).toContain('Bài')  // still typing: the page follows
+    type('cmp-tempo', '7', '77'); expect(c.score.tempo).toBe(77); expect(page()).toContain('♩ = 77')          // the 7 of 77 waits (under 30)
+    c.undo(); expect(c.score.tempo).toBe(100)                                                                   // one undo: the whole tempo edit
+    c.undo(); expect(c.score.title).toBe('Không tên')
+  })
 })
+

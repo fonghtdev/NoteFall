@@ -1,4 +1,4 @@
-import { Accidental, Articulation, Barline, Beam, Curve, Dot, Formatter, Fraction, GhostNote, GraceNote, GraceNoteGroup, Modifier, Ornament, Renderer, Stave, StaveConnector, StaveNote, TickContext, StaveTie, Stroke, TextBracket, Tremolo, Tuplet, Voice, Volta } from 'vexflow/bravura'
+import { Accidental, Articulation, Barline, Beam, Curve, Dot, Formatter, Fraction, GhostNote, GraceNote, GraceNoteGroup, Modifier, Ornament, Renderer, Stave, StaveConnector, StaveNote, TickContext, StaveTie, Stroke, Tremolo, Tuplet, Voice, Volta } from 'vexflow/bravura'
 import { NATURAL, forceFor, gapWidth, gapsOf, leadOf, type Col, type Gap } from './spacing'
 import { CLEFS, barTicks, clefAt, contextAt, diatonic, midiOf, nominalTicks, notationOf, ottavaShifts, starts, type Art, type ClefName, type Ev, type Pitch, type Score } from './model'
 
@@ -241,7 +241,8 @@ function barSpec(score: Score, mi: number, first: boolean): BarSpec {
 const naturalWidth = (sp: BarSpec) => sp.mods + sp.lead + sp.gaps.reduce((a, g) => a + gapWidth(g, NATURAL), 0)
 
 /** A mark picked up for moving: a text / dynamic on a note, the tempo or the rehearsal mark of a bar. */
-export type MarkRef = { kind: 'ev'; field: 'dyn' | 'staffText' | 'expr' | 'chord' | 'lyric' | 'hairpin' | 'pedal'; id: number } | { kind: 'tempo' | 'rehearsal'; bar: number }
+/** A mark that can be picked and dragged; `start`: the beginning of a pedal / ottava line, dragged on its own (without it: the line's end). */
+export type MarkRef = { kind: 'ev'; field: 'dyn' | 'staffText' | 'expr' | 'chord' | 'lyric' | 'hairpin' | 'pedal' | 'ottava'; id: number; start?: boolean } | { kind: 'tempo' | 'rehearsal'; bar: number }
 /** One grace note: the event it belongs to and its place among that event's grace notes. */
 export interface GraceRef { id: number; i: number }
 export interface RenderOptions { width: number; selected?: Set<number>; selectedMark?: MarkRef; selectedGrace?: GraceRef }
@@ -265,7 +266,7 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
   const n = score.measures.length
 
   // 1. system breaks: greedy fill on the natural widths (the bar that opens a line carries clef, key and time, so it is measured with them)
-  const systems: { from: number; to: number; specs: BarSpec[]; forced?: boolean }[] = []
+  const systems: { from: number; to: number; specs: BarSpec[] }[] = []
   let cur: BarSpec[] = [], sum = 0, from = 0
   for (let mi = 0; mi < n; mi++) {
     let sp = barSpec(score, mi, cur.length === 0)
@@ -281,7 +282,7 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
     }
     cur.push(sp)
     sum += naturalWidth(sp)
-    if (score.measures[mi].break && mi < n - 1) { systems.push({ from, to: mi, specs: cur, forced: true }); cur = []; sum = 0; from = mi + 1 } // the user asked for a new line here
+    if (score.measures[mi].break && mi < n - 1) { systems.push({ from, to: mi, specs: cur }); cur = []; sum = 0; from = mi + 1 } // the user asked for a new line here
   }
   if (cur.length) systems.push({ from, to: n - 1, specs: cur })
 
@@ -316,11 +317,10 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
 
   systems.forEach((sys, sIdx) => {
     const y0 = sysY[sIdx]
-    const last = sIdx === systems.length - 1
     layout.systems.push({ y0: y0 + 5, y1: y0 + gapOf(sys) + TOP_SPACE + STAFF_H + 40, pageBreakAfter: score.measures[sys.to].break === 'page' }) // room for ledger lines above/below
-    // one force pulls the springs of the whole line, so equal notes get equal room across bars; a short last line or a forced break is not stretched to the edge
-    const natural = sys.specs.reduce((a, sp) => a + naturalWidth(sp), 0)
-    const target = last ? Math.min(usable, natural * 1.25) : sys.forced ? Math.min(usable, natural * 2) : usable
+    // one force pulls the springs of the whole line, so equal notes get equal room across bars; every line, the last one and one ended by a break
+    // included, reaches the right margin, so all lines are the same length (the user's choice, where MuseScore leaves a short one ragged)
+    const target = usable
     const fixed = sys.specs.reduce((a, sp) => a + sp.mods + sp.lead, 0)
     const force = forceFor(sys.specs.flatMap((sp) => sp.gaps), target - fixed)
     let x = MARGIN
@@ -548,9 +548,10 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
     return e
   }
   /** A drawn line (a pedal line); with a mark it can be picked and dragged like the text marks. */
-  const line = (d: string, mark?: MarkRef) => {
+  const line = (d: string, mark?: MarkRef, dashed = false) => {
     const e = document.createElementNS(NS, 'path')
     e.setAttribute('d', d); e.setAttribute('fill', 'none'); e.setAttribute('stroke', mark && isSel(mark) ? '#1d6fff' : '#000'); e.setAttribute('stroke-width', '1.3')
+    if (dashed) e.setAttribute('stroke-dasharray', '5 4')
     if (mark) { e.setAttribute('data-mark', JSON.stringify(mark)); e.setAttribute('style', 'cursor:grab'); e.setAttribute('pointer-events', 'stroke') }
     svg.appendChild(e)
     if (mark) { const hit = e.cloneNode() as SVGPathElement; hit.setAttribute('stroke', 'transparent'); hit.setAttribute('stroke-width', '10'); svg.appendChild(hit) } // a wider band to catch the pointer
@@ -580,8 +581,6 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
     evs.forEach((ev) => c.push({ ev, m: mi }))
     chains.set(k, c)
   })))
-  /** A mark that cannot be drawn (e.g. a line over a single note) is left out instead of breaking the whole page. */
-  const guard = (draw: () => void, p: { a: StaveNote; b: StaveNote }) => { if (p.a === p.b) return; try { draw() } catch (e) { console.warn('mark skipped:', (e as Error).message) } }
   /** First and last drawn note of chain[i..j] on every line it touches. */
   const pieces = (chain: { ev: Ev }[], i: number, j: number) => {
     const out: { a: StaveNote; b: StaveNote; system: number }[] = []
@@ -605,10 +604,19 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
       if (ev.expr) put(ev.expr, x - 2, st.bottom + 54, { size: 14, bold: true, italic: true, side: 1, staff: si, fixed: ev.off?.expr, mark: { kind: 'ev', field: 'expr', id: ev.id } })
       if (ev.lyric) put(ev.lyric, x + 5, st.bottom + 26, { size: 13, anchor: 'middle', side: 1, staff: si, fixed: ev.off?.lyric, mark: { kind: 'ev', field: 'lyric', id: ev.id } })
       if (ev.breath) put(ev.breath === 'breath' ? '\uE4CE' : '\uE4D1', x + 20, st.top - 2, { size: 30, font: 'Bravura, serif' })
-      if (ev.ottava) {
-        const j = chain.findIndex((q) => q.ev.id === ev.ottava!.end)
-        const up = ev.ottava.n > 0, big = Math.abs(ev.ottava.n) === 15
-        if (j >= i) for (const p of pieces(chain, i, j)) guard(() => new TextBracket({ start: p.a, stop: p.b, text: big ? '15' : '8', superscript: up ? (big ? 'ma' : 'va') : big ? 'mb' : 'vb', position: up ? 1 : -1 }).setLine(up ? 3 : 2).setContext(ctx).draw(), p)
+      if (ev.ottava) { // 8va / 15ma above the staff, 8vb / 15mb below: the sign, a dashed line and a hook at the end, which can be dragged to another note
+        const j = chain.findIndex((q) => q.ev.id === ev.ottava!.end), ps = j >= i ? pieces(chain, i, j) : []
+        const up = ev.ottava.n > 0, glyph = { 8: '\uE511', 15: '\uE515', [-8]: '\uE51C', [-15]: '\uE51D' }[ev.ottava.n]
+        const mark: MarkRef = { kind: 'ev', field: 'ottava', id: ev.id }
+        ps.forEach((p, k) => {
+          const first = k === 0, last = k === ps.length - 1
+          const st = layout.measures.find((d) => d.system === p.system)!.staves[si], y = up ? st.top - 26 : st.bottom + 34
+          const x0 = p.a.getAbsoluteX() - 4, x1 = p.b.getNoteHeadEndX() + 6
+          if (first) put(glyph, x0, y + (up ? 6 : 0), { size: 24, font: 'Bravura, serif', mark: { ...mark, start: true } }) // the sign drags the beginning
+          const from = first ? x0 + (Math.abs(ev.ottava!.n) === 15 ? 38 : 30) : x0
+          if (x1 > from) line(`M${from} ${y}L${x1} ${y}${last ? `L${x1} ${y + (up ? 9 : -9)}` : ''}`, last ? mark : undefined, true)
+          else if (last) line(`M${x1} ${y}L${x1} ${y + (up ? 9 : -9)}`, mark) // one short note: the hook alone
+        })
       }
       if (ev.pedal) { // under the lowest staff of the line, whichever staff the notes are on; the end (✱ or hook) can be dragged to let the pedal go elsewhere
         const j = chain.findIndex((q) => q.ev.id === ev.pedal!.end), ps = j >= i ? pieces(chain, i, j) : []
@@ -617,14 +625,16 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
         ps.forEach((p, k) => {
           const first = k === 0, last = k === ps.length - 1, y = below(p.system)
           const x0 = p.a.getAbsoluteX() - 4, x1 = p.b.getNoteHeadEndX() + 6
+          const begin: MarkRef = { ...mark, start: true } // its beginning (Ped. or the first hook) drags on its own
           if (style === 'star') {
-            if (first) put('\uE650', x0, y, { size: 30, font: 'Bravura, serif' })
+            if (first) put('\uE650', x0, y, { size: 30, font: 'Bravura, serif', mark: begin })
             if (last) put('\uE655', x1 - 2, y, { size: 30, font: 'Bravura, serif', mark })
             return
           }
           const ped = style === 'line' && first, from = ped ? x0 + 34 : x0, top = y - 12 // a line piece per line of music; Ped. or a hook where the pedal goes down, a hook where it comes up
-          if (ped) put('\uE650', x0, y, { size: 30, font: 'Bravura, serif' })
-          let d = `M${from} ${first && !ped ? top : y}${first && !ped ? `L${from} ${y}` : ''}L${x1} ${y}`
+          if (ped) put('\uE650', x0, y, { size: 30, font: 'Bravura, serif', mark: begin })
+          else if (first) line(`M${from} ${top}L${from} ${y}`, begin)
+          let d = `M${from} ${y}L${x1} ${y}`
           if (last) d += style === 'angled' ? `L${x1 + 7} ${top}` : `L${x1} ${top}`
           line(d, last ? mark : undefined)
         })

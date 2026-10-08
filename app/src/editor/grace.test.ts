@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
 import { fromText, pitch } from './demo'
-import { addGrace, setGraceAlter, transposeGrace, graceStep, moveGrace, removeGrace } from './model'
+import { addGrace, setBreak, setGraceAlter, transposeGrace, graceStep, moveGrace, removeGrace } from './model'
 import { renderScore } from './render'
 
 const one = (txt: string) => fromText([{ rh: txt, lh: 'r:4' }])
@@ -61,6 +61,18 @@ describe('stem direction', () => {
     const l = [...a.querySelectorAll('.vf-stem > path')].length
     expect(stems(a).slice(0, 4)).toEqual([1, 1, 1, -1]) // C6 D6 E6 alone: down; F6 sounds with the G4: up
     expect(l).toBeGreaterThanOrEqual(5)
+  })
+})
+
+describe('line length', () => {
+  it('every line reaches the right margin: a line ended by a break and a short last line too', () => {
+    const bar = { rh: 'C5:1 D5:1 E5:1 F5:1', lh: 'C3:4' }
+    const s = fromText([bar, bar, bar, bar, bar, bar, bar, bar, bar, bar, bar])
+    setBreak(s, 0, 'system')                                      // line 1: one bar, ended by a break
+    const l = renderScore(document.body.appendChild(document.createElement('div')), s, { width: 1000 })
+    const ends = [...new Set(l.measures.map((d) => d.system))].map((sys) => Math.max(...l.measures.filter((d) => d.system === sys).map((d) => d.x + d.w)))
+    expect(ends.length).toBeGreaterThanOrEqual(3)                 // the one-bar line, a full line, a short last line
+    expect(ends.every((e) => Math.abs(e - ends[0]) < 1)).toBe(true)
   })
 })
 

@@ -35,6 +35,7 @@ export interface Ev {
   pitches: Pitch[]  // sorted low -> high; empty = rest
   tie?: boolean     // tied to the next event with the same pitches
   tup?: Tup         // part of a tuplet: `ticks` is the real length, the written value is ticks*n/m
+  kept?: boolean    // a rest the user wrote (the rest key, or a rest made shorter): never merged into its neighbours, as in MuseScore
   dyn?: Dyn         // dynamic marking from this event on
   hairpin?: { type: 'cresc' | 'dim'; end: number } // wedge from this event to the event with id `end`
   off?: Partial<Record<MarkField, number>> // how far (px, + is down) the user dragged each mark from where it would stand by itself
@@ -132,20 +133,32 @@ export function notationOf(ticks: number): { name: string; dots: number } | null
 /** The written value of an event: tuplet members are written at the value they imitate (a 3:2 eighth is 320 ticks long but written as an eighth, 480). */
 export const nominalTicks = (e: { ticks: number; tup?: Tup }) => (e.tup ? Math.round((e.ticks * e.tup.n) / e.tup.m) : e.ticks)
 
+/** The beat of a compound time (6/8, 9/8, 12/8: a dotted quarter), which rests are grouped by; undefined in simple time. */
+export const compoundBeat = (time: TimeSig) => (time.unit === 8 && time.beats % 3 === 0 && time.beats >= 6 ? TPQ * 1.5 : undefined)
+
 /**
  * Split `ticks` starting at `at` (within a bar) into writable lengths that respect the beat grid
  * (no half note across beat 2). Fewest pieces wins. Rests pass `dots: false` (engraving avoids dotted rests)
  * and `bar`, so a whole empty bar stays a single whole-measure rest.
+ * In compound time (`beat` = a dotted quarter) a rest keeps to the beats instead: a whole beat is a dotted quarter rest, a piece inside a beat
+ * starts or ends on the beat, and nothing runs across a beat but whole beats.
  */
-export function splitLength(at: number, ticks: number, opts: { dots?: boolean; bar?: number } = {}): number[] {
-  const { dots = true, bar } = opts
+export function splitLength(at: number, ticks: number, opts: { dots?: boolean; bar?: number; beat?: number } = {}): number[] {
+  const { dots = true, bar, beat } = opts
   if (bar !== undefined && at === 0 && ticks === bar) return [ticks]
   const U = TPQ / 16 // one 64th
   if (at % U || ticks % U) return [ticks] // finer than a 64th: leave as is
+  const B = beat && !dots ? beat / U : 0 // the compound beat, for rests
   const options: { len: number; unit: number; cost: number }[] = []
-  for (const v of VALUES) for (let d = 0; d <= (dots ? 2 : 0); d++) {
+  for (const v of VALUES) for (let d = 0; d <= (dots || B ? (B ? 1 : 2) : 0); d++) {
     const len = (v.ticks * (2 - 0.5 ** d)) / U
-    if (Number.isInteger(len)) options.push({ len, unit: v.ticks / U, cost: 1 + 0.3 * d }) // fewest pieces, then fewest dots
+    if (!Number.isInteger(len) || (B && d && len % B)) continue // in compound time a dotted rest is whole beats only
+    options.push({ len, unit: v.ticks / U, cost: 1 + 0.3 * d })        // fewest pieces, then fewest dots
+  }
+  const fits = (pos: number, o: { len: number; unit: number }) => {
+    if (!B) return pos % o.unit === 0
+    const inBeat = Math.floor(pos / B) === Math.floor((pos + o.len - 1) / B)
+    return inBeat ? pos % B === 0 || (pos + o.len) % B === 0 : pos % B === 0 && o.len % B === 0 && pos % o.len === 0
   }
   options.sort((x, y) => y.len - x.len)
   const end = (at + ticks) / U, memo = new Map<number, { n: number; len: number }>()
@@ -155,7 +168,7 @@ export function splitLength(at: number, ticks: number, opts: { dots?: boolean; b
     if (hit) return hit
     let r = { n: Infinity, len: 0 }
     for (const o of options) {
-      if (pos + o.len > end || pos % o.unit) continue
+      if (pos + o.len > end || !fits(pos, o)) continue
       const n = o.cost + best(pos + o.len).n
       if (n < r.n) r = { n, len: o.len }
     }
@@ -175,8 +188,8 @@ export function splitLength(at: number, ticks: number, opts: { dots?: boolean; b
 let _id = 1
 export const newId = (s?: Score) => (s ? s.nextId++ : _id++)
 
-function restsFor(s: Score, at: number, ticks: number, bar: number): Ev[] {
-  return splitLength(at, ticks, { dots: false, bar }).map((t) => ({ id: newId(s), ticks: t, pitches: [] }))
+function restsFor(s: Score, at: number, ticks: number, bar: number, beat?: number): Ev[] {
+  return splitLength(at, ticks, { dots: false, bar, beat }).map((t) => ({ id: newId(s), ticks: t, pitches: [] }))
 }
 
 export function emptyScore(measures = 4, time: TimeSig = { beats: 4, unit: 4 }, key = 0): Score {
@@ -236,7 +249,8 @@ function voiceOf(s: Score, l: Loc): Ev[] {
  */
 function overwrite(s: Score, l: Loc, at: number, ticks: number, content: Ev[]) {
   const events = voiceOf(s, l)
-  const bar = barTicks(contextAt(s, l.m).time)
+  const time = contextAt(s, l.m).time, bar = barTicks(time), beat = compoundBeat(time)
+  const filler = (from: number, len: number) => restsFor(s, from, len, bar, beat) // rests that fill what was cut (these may merge)
   // a tuplet is all or nothing: touching one member replaces the whole group (what the new content leaves free becomes rests)
   {
     const st = starts(events)
@@ -244,7 +258,7 @@ function overwrite(s: Score, l: Loc, at: number, ticks: number, content: Ev[]) {
     events.forEach((e, i) => { if (e.tup && st[i] < hi && st[i] + e.ticks > lo) { lo = Math.min(lo, groupSpan(events, st, e.tup.group)[0]); hi = Math.max(hi, groupSpan(events, st, e.tup.group)[1]) } })
     if (lo !== at || hi !== at + ticks) {
       const tail = hi - (lo + ticks)
-      content = tail > 0 ? [...content, ...restsFor(s, lo + ticks, tail, bar)] : content
+      content = tail > 0 ? [...content, ...filler(lo + ticks, tail)] : content
       at = lo; ticks = Math.max(ticks, hi - lo)
     }
   }
@@ -258,9 +272,9 @@ function overwrite(s: Score, l: Loc, at: number, ticks: number, content: Ev[]) {
     if (eEnd <= at) out.push(e)
     else if (t >= end) { place(); out.push(e) }
     else {
-      if (t < at) out.push(...(e.pitches.length ? [{ ...e, ticks: at - t, tie: false }] : restsFor(s, t, at - t, bar)))  // head of a cut note stays
+      if (t < at) out.push(...(e.pitches.length ? [{ ...e, ticks: at - t, tie: false }] : filler(t, at - t)))  // head of a cut note stays
       place()
-      if (eEnd > end) out.push(...restsFor(s, end, eEnd - end, bar)) // tail becomes rests
+      if (eEnd > end) out.push(...filler(end, eEnd - end)) // tail becomes rests
     }
     t = eEnd
   }
@@ -270,16 +284,17 @@ function overwrite(s: Score, l: Loc, at: number, ticks: number, content: Ev[]) {
   let pos = 0
   for (const e of out) {
     if (!e.pitches.length && !e.tup) {
-      for (const len of splitLength(pos, e.ticks, { dots: false, bar })) { fixed.push({ ...e, id: fixed.length ? newId(s) : e.id, ticks: len }); pos += len }
+      splitLength(pos, e.ticks, { dots: false, bar, beat }).forEach((len, k) => { fixed.push({ ...e, id: k ? newId(s) : e.id, ticks: len }); pos += len })
     } else { fixed.push(e); pos += e.ticks }
   }
-  // merge neighbouring rests that came from the same cut (e.g. two eighth rests that are really a quarter on the beat)
+  // merge neighbouring rests into the value that spans them on the beat grid (two eighth rests that are really a quarter on the beat);
+  // a rest the user wrote keeps its own value
   const merged: Ev[] = []
   pos = 0
   for (const e of fixed) {
     const prev = merged[merged.length - 1]
-    if (!e.pitches.length && prev && !prev.pitches.length && !e.tup && !prev.tup) {
-      const startPrev = pos - prev.ticks, ok = splitLength(startPrev, prev.ticks + e.ticks, { dots: false, bar })
+    if (!e.pitches.length && prev && !prev.pitches.length && !e.tup && !prev.tup && !e.kept && !prev.kept) {
+      const startPrev = pos - prev.ticks, ok = splitLength(startPrev, prev.ticks + e.ticks, { dots: false, bar, beat })
       if (ok.length === 1) { prev.ticks += e.ticks; pos += e.ticks; continue }
     }
     merged.push(e); pos += e.ticks
@@ -334,11 +349,11 @@ function writeChord(s: Score, l: Loc, at: number, ticks: number, pitches: Pitch[
   return ev
 }
 
-/** Replace what is at [at, at+ticks) with a rest. */
-export function putRest(s: Score, l: Loc, at: number, ticks: number) {
-  const bar = barTicks(contextAt(s, l.m).time)
+/** Replace what is at [at, at+ticks) with a rest; `kept`: the user wrote it (the rest key), so it keeps its value instead of merging with the rests around it. */
+export function putRest(s: Score, l: Loc, at: number, ticks: number, kept = false) {
+  const time = contextAt(s, l.m).time, bar = barTicks(time)
   const len = Math.min(ticks, bar - at)
-  overwrite(s, l, at, len, restsFor(s, at, len, bar))
+  overwrite(s, l, at, len, restsFor(s, at, len, bar, compoundBeat(time)).map((r) => (kept ? { ...r, kept } : r)))
 }
 
 export function findEv(s: Score, id: number): (Loc & { index: number; at: number; ev: Ev }) | undefined {
@@ -402,10 +417,10 @@ export function setAlter(s: Score, id: number, alter: number) {
 export function setLength(s: Score, id: number, ticks: number) {
   const f = findEv(s, id)
   if (!f) return
-  const bar = barTicks(contextAt(s, f.m).time)
+  const time = contextAt(s, f.m).time, bar = barTicks(time)
   if (f.ev.pitches.length) { writeChord(s, f, f.at, ticks, f.ev.pitches, f.ev); return } // (a re-timed note leaves its tuplet)
   const len = Math.min(ticks, bar - f.at)
-  overwrite(s, f, f.at, len, restsFor(s, f.at, len, bar))
+  overwrite(s, f, f.at, len, restsFor(s, f.at, len, bar, compoundBeat(time)).map((r) => ({ ...r, kept: true })))
 }
 
 /**
@@ -580,10 +595,14 @@ export function toggleArt(s: Score, id: number, art: Art) {
   const rest = (f.ev.art ?? []).filter((a) => a !== art)
   f.ev.art = has ? (rest.length ? rest : undefined) : [...rest, art]
 }
-/** Slur / hairpin / ottava / pedal from event `from` to event `to` (same staff and voice, `to` later). A second call on the same pair removes it. */
+/**
+ * Slur / hairpin / ottava / pedal from event `from` to event `to` (same staff and voice, `to` later). A second call on the same pair removes it.
+ * A pedal or an ottava may also cover one note (`from` = `to`): put on a single picked note, then its end is dragged further.
+ */
 export function toggleSpan(s: Score, kind: SpanKind, from: number, to: number): boolean {
   const a = findEv(s, from), b = findEv(s, to)
-  if (!a || !b || a.staff !== b.staff || a.voice !== b.voice || (a.m === b.m ? a.at >= b.at : a.m > b.m) || from === to) return false
+  const line = kind.startsWith('pedal') || kind.startsWith('o')
+  if (!a || !b || a.staff !== b.staff || a.voice !== b.voice || (a.m === b.m ? a.at > b.at : a.m > b.m) || (from === to && !line)) return false
   if (kind === 'slur') a.ev.slur = a.ev.slur === to ? undefined : to
   else if (kind === 'cresc' || kind === 'dim') a.ev.hairpin = a.ev.hairpin?.end === to && a.ev.hairpin.type === kind ? undefined : { type: kind, end: to }
   else if (kind.startsWith('pedal')) {
@@ -597,13 +616,32 @@ export function toggleSpan(s: Score, kind: SpanKind, from: number, to: number): 
   return true
 }
 
-/** Let the pedal that starts at `from` go at event `to` instead (its ✱ dragged there). False when `to` is not later in the same staff and voice. */
-export function setPedalEnd(s: Score, from: number, to: number): boolean {
+/**
+ * Let the pedal or the ottava line that starts at `from` end at event `to` instead (its end dragged there): any note of the same staff and voice
+ * from `from` on, the first note itself included. False when `to` is earlier or elsewhere.
+ */
+export function setSpanEnd(s: Score, from: number, field: 'pedal' | 'ottava', to: number): boolean {
   const a = findEv(s, from)
-  if (!a?.ev.pedal) return false
-  if (a.ev.pedal.end === to) return true
-  const style = a.ev.pedal.style
-  return toggleSpan(s, style && style !== 'star' ? (`pedal-${style}` as SpanKind) : 'pedal', from, to)
+  const span = a?.ev[field]
+  if (!a || !span) return false
+  if (span.end === to) return true
+  if (field === 'pedal') { const style = a.ev.pedal!.style; return toggleSpan(s, style && style !== 'star' ? (`pedal-${style}` as SpanKind) : 'pedal', from, to) }
+  return toggleSpan(s, `o${a.ev.ottava!.n}` as SpanKind, from, to) // (keepWritten: the notes it now covers or leaves keep their place on the page)
+}
+
+/**
+ * Let the pedal or the ottava line that starts at `from` start at event `to` instead (its sign dragged there), still ending where it ends:
+ * any note of the same staff and voice up to that end. Returns false when `to` is after the end or elsewhere.
+ */
+export function setSpanStart(s: Score, from: number, field: 'pedal' | 'ottava', to: number): boolean {
+  const a = findEv(s, from), b = findEv(s, to), span = a?.ev[field]
+  if (!a || !b || !span) return false
+  if (from === to) return true
+  const e = findEv(s, span.end)
+  if (!e || b.staff !== a.staff || b.voice !== a.voice || (b.m === e.m ? b.at > e.at : b.m > e.m)) return false
+  const move = () => { b.ev[field] = { ...span } as never; a.ev[field] = undefined }
+  if (field === 'ottava') keepWritten(s, move); else move() // (the notes it now covers or leaves keep their place on the page)
+  return true
 }
 
 /**
@@ -867,7 +905,7 @@ export function copyPrevious(s: Score, i: number) {
 }
 
 // ---- moving notes and marks -----------------------------------------------------------------------------
-export type MarkField = 'dyn' | 'staffText' | 'expr' | 'chord' | 'lyric' | 'hairpin' | 'pedal'
+export type MarkField = 'dyn' | 'staffText' | 'expr' | 'chord' | 'lyric' | 'hairpin' | 'pedal' | 'ottava'
 
 /** Set how far a mark was dragged vertically from its usual place (0 puts it back). */
 export function setMarkOffset(s: Score, id: number, field: MarkField, dy: number) {
@@ -894,7 +932,8 @@ export function moveMark(s: Score, from: number, field: MarkField, to: number, d
 export function clearMark(s: Score, id: number, field: MarkField) {
   const f = findEv(s, id)
   if (!f) return
-  f.ev[field] = undefined as never
+  if (field === 'ottava') keepWritten(s, () => { f.ev.ottava = undefined }) // (the notes under it stay where they are on the page)
+  else f.ev[field] = undefined as never
   setMarkOffset(s, id, field, 0)
 }
 

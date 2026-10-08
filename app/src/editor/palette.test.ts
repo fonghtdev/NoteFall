@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { palette, fromText, pitch } from './demo'
 import { tickAtX, xAtTick, type DrawnMeasure } from './render'
-import { setTempoOffset, TPQ, absOf, copyEvents, makeTuplet, pasteClip, whereAbs, addGrace, clearMark, clefAt, contextAt, moveEv, moveMark, moveTempo, copyPrevious, flipStem, graceStep, octShift, ottavaShiftAt, ottavaShifts, setBarline, setBreak, setClef, setStretch, setTempoMark, setText, toggleEv, toggleSpan, validate } from './model'
+import { setTempoOffset, TPQ, absOf, copyEvents, makeTuplet, pasteClip, whereAbs, addGrace, clearMark, clefAt, contextAt, moveEv, moveMark, moveTempo, copyPrevious, flipStem, graceStep, octShift, ottavaShiftAt, ottavaShifts, setBarline, setBreak, setClef, setStretch, setTempoMark, setText, toggleEv, toggleSpan, validate, setSpanEnd, setSpanStart } from './model'
 import { toPerformance } from './perform'
 import { tempoRatios, toNotes, unroll } from '../core/score/playback'
 
@@ -90,6 +90,33 @@ describe('palette bookkeeping', () => {
     expect(play(s).filter((x) => x.pitch >= 60).map((x) => x.pitch)).toEqual([72, 74, 76, 77])
     toggleSpan(s, 'o-15', e[1].id, e[2].id)                    // 15mb: two octaves down
     expect(play(s).map((x) => x.pitch).filter((p) => p !== 48 && p < 72)).toEqual([50, 52])
+  })
+
+  it('a pedal or an ottava goes on one note, and its end is dragged to any later note of the voice; the notes it now covers keep their place on the page', () => {
+    const s = one('C5:1 D5:1 E5:1 F5:1')
+    const e = evs(s)
+    expect(toggleSpan(s, 'slur', e[1].id, e[1].id)).toBe(false)                  // a slur needs two notes
+    expect(toggleSpan(s, 'pedal-line', e[1].id, e[1].id)).toBe(true); expect(e[1].pedal).toEqual({ end: e[1].id, style: 'line' })
+    expect(setSpanEnd(s, e[1].id, 'pedal', e[3].id)).toBe(true); expect(e[1].pedal).toEqual({ end: e[3].id, style: 'line' }) // the style stays
+    expect(setSpanEnd(s, e[1].id, 'pedal', e[0].id)).toBe(false)                // not before where it starts
+    const sound = () => play(s).filter((x) => x.pitch >= 60).map((x) => x.pitch)
+    expect(toggleSpan(s, 'o8', e[0].id, e[0].id)).toBe(true); expect(sound()).toEqual([84, 74, 76, 77])  // 8va on C5 alone
+    expect(setSpanEnd(s, e[0].id, 'ottava', e[2].id)).toBe(true); expect(sound()).toEqual([84, 86, 88, 77]) // dragged to E5: D5 E5 sound up too
+    setSpanEnd(s, e[0].id, 'ottava', e[1].id); expect(sound()).toEqual([84, 86, 76, 77])                   // back to D5: E5 sounds as written again
+    clearMark(s, e[0].id, 'ottava'); expect(sound()).toEqual([72, 74, 76, 77])                            // Delete on the line
+  })
+
+  it('the beginning of a pedal or an ottava is dragged too: it keeps its end and style, never runs past its end; the ottava moves the sound, not the page', () => {
+    const s = one('C5:1 D5:1 E5:1 F5:1')
+    const e = evs(s)
+    toggleSpan(s, 'pedal-angled', e[1].id, e[2].id)
+    expect(setSpanStart(s, e[1].id, 'pedal', e[0].id)).toBe(true)
+    expect([e[0].pedal, e[1].pedal]).toEqual([{ end: e[2].id, style: 'angled' }, undefined]) // it now lives on the note it starts at
+    expect(setSpanStart(s, e[0].id, 'pedal', e[3].id)).toBe(false)                           // past its end
+    const sound = () => play(s).filter((x) => x.pitch >= 60).map((x) => x.pitch)
+    toggleSpan(s, 'o8', e[2].id, e[3].id); expect(sound()).toEqual([72, 74, 88, 89])
+    expect(setSpanStart(s, e[2].id, 'ottava', e[0].id)).toBe(true); expect(sound()).toEqual([84, 86, 88, 89]) // started earlier: C5 D5 sound up too
+    expect(setSpanStart(s, e[0].id, 'ottava', e[3].id)).toBe(true); expect(sound()).toEqual([72, 74, 76, 89]) // started later: C5 D5 E5 back as written
   })
 
   it('grace notes: added a step above, moved, kind remembered', () => {

@@ -104,5 +104,13 @@ describe('composer keys behave like MuseScore', { timeout: 20000 }, () => { // (
     c.undo(); expect(c.score.tempo).toBe(100)                                                                   // one undo: the whole tempo edit
     c.undo(); expect(c.score.title).toBe('Không tên')
   })
+  it('a pedal or an ottava just put on a note is what Delete removes, not the note under it', () => {
+    for (const kind of ['pedal', 'o8'] as const) {
+      const c = typed('3', 'c', 'd', 'e', 'Escape'); select(c, 1)
+      c.span(kind); keys(c, 'Delete')
+      const evs = c.score.measures[0].staves[0][0]
+      expect([bar(c, 0), !!evs[1].pedal || !!evs[1].ottava]).toEqual(['C5:q D5:q E5:q r:q', false])
+    }
+  })
 })
 

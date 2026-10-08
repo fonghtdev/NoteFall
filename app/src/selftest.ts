@@ -106,6 +106,8 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
         const bar1 = c.score.measures[1].staves[0][0]
         c.sel = bar1[0].id; c.selectRange(bar1[3].id)
         press('8va (lên 1 quãng tám)'); ok('palette: 8va over the selected notes', bar1[0].ottava?.n === 8 && bar1[0].ottava.end === bar1[3].id)
+        ok('palette: the new 8va is what is selected now (Delete takes the line, not the notes)', c.selMark?.kind === 'ev' && c.selMark.field === 'ottava' && c.sel === undefined)
+        c.sel = bar1[0].id; c.selectRange(bar1[3].id) // (pick the notes again for the next line)
         press('Pedal (Ped. và ✱)'); ok('palette: pedal over the selected notes', bar1[0].pedal?.end === bar1[3].id)
         c.cursor = { m: 1, staff: 1, at: 0 }; c.sel = undefined; c.range = []
         press('Sol 8 dưới'); ok('palette: clef change at the cursor bar, lower staff', c.score.measures[1].clefs?.[1] === 'treble8vb')

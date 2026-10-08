@@ -440,6 +440,7 @@ export class Composer {
       if (!d.el) return
       if (!d.clone) { d.clone = d.el.cloneNode(true) as SVGElement; d.clone.removeAttribute('data-mark'); d.clone.removeAttribute('data-grace'); d.clone.setAttribute('pointer-events', 'none'); d.clone.setAttribute('opacity', '0.75'); d.el.setAttribute('opacity', '0.25'); this.svg().appendChild(d.clone) }
       d.clone.setAttribute('transform', `translate(${x - d.lx} ${y - d.ly + (d.kind === 'mark' ? shiftOf(d.el) : 0)})`)
+      if (d.kind === 'mark' && d.mark.kind === 'ev' && (d.mark.field === 'pedal' || d.mark.field === 'ottava')) this.spanPreview(d.mark, x, y)
       return
     }
     this.moveGhost(x, y, d.kind === 'note' ? (e.shiftKey ? this.voice : d.ev.voice) : 0, false)
@@ -527,6 +528,27 @@ export class Composer {
     return this.layout.measures.find((dm) => (sys < 0 || dm.system === sys) && x >= dm.x && x <= dm.x + dm.w)
   }
 
+  /** The note a dragged pedal / ottava end would be anchored to if dropped at (x, y): the nearest one of its own staff and voice in the bar there. */
+  private spanTarget(mark: MarkRef & { kind: 'ev' }, x: number, y: number): DrawnEv | undefined {
+    const src = findEv(this.score, mark.id), hit = hitTest(this.layout, x, y, 0)
+    const dm = hit ? this.layout.measures[hit.m] : this.barAt(x, y)
+    if (!src || !dm) return undefined
+    return dm.evs.filter((q) => q.staff === src.staff && q.voice === src.voice).reduce<DrawnEv | undefined>((a, q) => (!a || Math.abs(q.x - x) < Math.abs(a.x - x) ? q : a), undefined)
+  }
+  /** While an end of a pedal / ottava is dragged: a pale band from the end that stays to the note the dragged end would land on, as MuseScore shows it. */
+  private spanPreview(mark: MarkRef & { kind: 'ev' }, x: number, y: number) {
+    const span = findEv(this.score, mark.id)?.ev[mark.field as 'pedal' | 'ottava'], to = this.spanTarget(mark, x, y)
+    const drawn = this.layout.measures.flatMap((dm) => dm.evs), fixed = span && drawn.find((q) => q.id === (mark.start ? span.end : mark.id))
+    if (!this.ghost) { this.ghost = document.createElementNS('http://www.w3.org/2000/svg', 'g'); this.ghost.setAttribute('pointer-events', 'none'); this.ghost.setAttribute('data-ui', ''); this.svg().appendChild(this.ghost) }
+    if (!to || !fixed) { this.ghost.innerHTML = ''; return }
+    const band = (a: DrawnEv, b: DrawnEv) => { // over the notes of one line, from one note column to another
+      const dm = this.layout.measures.find((q) => q.m === a.m)!, st = dm.staves[a.staff], x0 = Math.min(a.x, b.x) - 6, x1 = Math.max(a.x, b.x) + 18
+      return `<rect x="${x0}" y="${st.top - 14}" width="${x1 - x0}" height="${st.bottom - st.top + 28}" rx="4" fill="rgba(29,111,255,0.12)" stroke="#1d6fff" stroke-opacity="0.5" stroke-dasharray="3 3"/>`
+    }
+    const sys = (q: DrawnEv) => this.layout.measures.find((m) => m.m === q.m)!.system
+    this.ghost.innerHTML = sys(fixed) === sys(to) ? band(fixed, to) : band(to, to) // (on another line: the note it would land on)
+  }
+
   private dropMark(mark: MarkRef, x: number, y: number, el?: SVGGraphicsElement, lx = x, ly = y) {
     if (mark.kind === 'ev') {
       const src = findEv(this.score, mark.id)
@@ -537,7 +559,7 @@ export class Composer {
       const id = mark.id, field = mark.field
       if (field === 'hairpin') { this.commit((s) => setMarkOffset(s, id, field, shifted)); this.selMark = mark; return } // a wedge only slides up or down: it keeps its two notes
       if (field === 'pedal' || field === 'ottava') { // its end (✱ or hook) or its beginning (the sign): now at the note of its own staff and voice nearest to where it was dropped
-        const to = dm.evs.filter((q) => q.staff === src.staff && q.voice === src.voice).reduce<DrawnEv | undefined>((a, q) => (!a || Math.abs(q.x - x) < Math.abs(a.x - x) ? q : a), undefined)
+        const to = this.spanTarget(mark, x, y)
         const start = !!mark.start, what = field === 'pedal' ? 'Pedal' : 'Ottava'
         let ok = false
         if (to) this.commit((s) => { ok = start ? setSpanStart(s, id, field, to.id) : setSpanEnd(s, id, field, to.id) })
@@ -1100,9 +1122,13 @@ export class Composer {
     if (!ids.length || (ids.length < 2 && !line)) { this.say(line ? 'Chọn một nốt trước' : 'Giữ Shift và bấm nốt cuối để chọn cả đoạn, rồi bấm lại'); return }
     let ok = false
     this.commit((s) => { ok = toggleSpan(s, kind, ids[0], ids[ids.length - 1]) })
-    if (!ok) this.say('Chỉ nối được các nốt cùng khuông và cùng giọng')
-    else if (kind.startsWith('pedal')) this.say('Pedal: kéo chỗ nhả (✱ hoặc móc cuối) tới nốt bạn muốn')
-    else if (line) this.say('Ottava: kéo móc cuối tới nốt bạn muốn. Nốt giữ nguyên trên trang, tiếng lên / xuống quãng tám')
+    if (!ok) { this.say('Chỉ nối được các nốt cùng khuông và cùng giọng'); return }
+    const field = kind.startsWith('pedal') ? 'pedal' : 'ottava'
+    if (line && findEv(this.score, ids[0])?.ev[field]) { // the new line is what is selected now, as in MuseScore: Delete then takes the line, never the notes under it
+      this.sel = undefined; this.range = []; this.selMark = { kind: 'ev', field, id: ids[0] }; this.refresh()
+    }
+    if (kind.startsWith('pedal')) this.say('Pedal: kéo Ped. / ✱ tới nốt bạn muốn, Delete để xoá pedal')
+    else if (line) this.say('Ottava: kéo chữ 8va / móc cuối tới nốt bạn muốn, Delete để xoá. Nốt giữ nguyên trên trang, tiếng lên / xuống quãng tám')
   }
   slur() { this.span('slur') }
 

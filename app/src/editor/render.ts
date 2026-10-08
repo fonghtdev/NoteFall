@@ -548,6 +548,25 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
     return e
   }
   /** A drawn line (a pedal line); with a mark it can be picked and dragged like the text marks. */
+  /**
+   * What a selected pedal / ottava line holds, shown the MuseScore way: a pale band over the notes it covers (from their staff to the line)
+   * and a dashed guide from each end of the line to the note it is anchored to. Screen only (data-ui), never printed.
+   */
+  const cover = (ps: { a: StaveNote; b: StaveNote; system: number }[], si: number, yOf: (system: number) => number) => ps.forEach((p, k) => {
+    const st = layout.measures.find((d) => d.system === p.system)!.staves[si], y = yOf(p.system) // (each line of music has its staves at its own height)
+    const xa = p.a.getAbsoluteX() - 6, xb = p.b.getNoteHeadEndX() + 6, top = Math.min(st.top, y) - 6, bottom = Math.max(st.bottom, y) + 6
+    const band = document.createElementNS(NS, 'rect')
+    for (const [k_, v] of [['x', xa], ['y', top], ['width', xb - xa], ['height', bottom - top], ['rx', 4], ['fill', 'rgba(29,111,255,0.08)'], ['stroke', 'none'], ['pointer-events', 'none'], ['data-ui', '']] as const) band.setAttribute(k_, String(v)) // (stroke none: the page's svg would lend it a black outline)
+    svg.insertBefore(band, svg.firstChild) // behind the notes
+    const guide = (x: number, n: StaveNote) => { // from the line to the note head on its side
+      const ys = n.getYs(), ny = y < Math.min(...ys) ? Math.min(...ys) - 5 : Math.max(...ys) + 5
+      const g = document.createElementNS(NS, 'path')
+      for (const [k_, v] of [['d', `M${x} ${y}L${x} ${ny}`], ['stroke', '#1d6fff'], ['stroke-width', '1'], ['stroke-dasharray', '2 3'], ['opacity', '0.75'], ['pointer-events', 'none'], ['data-ui', '']] as const) g.setAttribute(k_, v)
+      svg.appendChild(g)
+    }
+    if (k === 0) guide(xa + 6, p.a)
+    if (k === ps.length - 1) guide(xb - 6, p.b)
+  })
   const line = (d: string, mark?: MarkRef, dashed = false) => {
     const e = document.createElementNS(NS, 'path')
     e.setAttribute('d', d); e.setAttribute('fill', 'none'); e.setAttribute('stroke', mark && isSel(mark) ? '#1d6fff' : '#000'); e.setAttribute('stroke-width', '1.3')
@@ -608,6 +627,7 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
         const j = chain.findIndex((q) => q.ev.id === ev.ottava!.end), ps = j >= i ? pieces(chain, i, j) : []
         const up = ev.ottava.n > 0, glyph = { 8: '\uE511', 15: '\uE515', [-8]: '\uE51C', [-15]: '\uE51D' }[ev.ottava.n]
         const mark: MarkRef = { kind: 'ev', field: 'ottava', id: ev.id }
+        if (isSel(mark)) cover(ps, si, (sys) => { const st = layout.measures.find((d) => d.system === sys)!.staves[si]; return up ? st.top - 26 : st.bottom + 34 })
         ps.forEach((p, k) => {
           const first = k === 0, last = k === ps.length - 1
           const st = layout.measures.find((d) => d.system === p.system)!.staves[si], y = up ? st.top - 26 : st.bottom + 34
@@ -622,13 +642,14 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
         const j = chain.findIndex((q) => q.ev.id === ev.pedal!.end), ps = j >= i ? pieces(chain, i, j) : []
         const below = (system: number) => Math.max(...layout.measures.filter((d) => d.system === system).map((d) => d.staves[d.staves.length - 1].bottom)) + 38
         const style = ev.pedal.style ?? 'star', mark: MarkRef = { kind: 'ev', field: 'pedal', id: ev.id }
+        if (isSel(mark)) cover(ps, si, (sys) => below(sys) - 6)
         ps.forEach((p, k) => {
           const first = k === 0, last = k === ps.length - 1, y = below(p.system)
           const x0 = p.a.getAbsoluteX() - 4, x1 = p.b.getNoteHeadEndX() + 6
           const begin: MarkRef = { ...mark, start: true } // its beginning (Ped. or the first hook) drags on its own
           if (style === 'star') {
             if (first) put('\uE650', x0, y, { size: 30, font: 'Bravura, serif', mark: begin })
-            if (last) put('\uE655', x1 - 2, y, { size: 30, font: 'Bravura, serif', mark })
+            if (last) put('\uE655', first ? Math.max(x1 - 2, x0 + 40) : x1 - 2, y, { size: 30, font: 'Bravura, serif', mark }) // (on one short note the ✱ still clears the Ped.)
             return
           }
           const ped = style === 'line' && first, from = ped ? x0 + 34 : x0, top = y - 12 // a line piece per line of music; Ped. or a hook where the pedal goes down, a hook where it comes up

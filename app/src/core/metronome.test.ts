@@ -76,6 +76,11 @@ describe('listSource', () => {
     expect(src(0, 1).map((c) => c.t)).toEqual([0.5, 1])   // not the one at `from`, the one at `to` yes
     expect(src(1, 5).map((c) => c.t)).toEqual([1.5])
     expect(src(2, 3)).toEqual([])
-    expect(src(-1, 0).map((c) => c.t)).toEqual([0])
+    expect(src(-1, 0).map((c) => c.t)).toEqual([-0.5, 0])
+  })
+  it('counts in before the first click at its pace, so the lead-in is not silent', () => {
+    const src = listSource(list)
+    expect(src(-2.2, -0.9).map((c) => c.t)).toEqual([-2, -1.5, -1])
+    expect(src(-0.6, 0.6).map((c) => [c.t, c.accent])).toEqual([[-0.5, false], [0, true], [0.5, false]])
   })
 })

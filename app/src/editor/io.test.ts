@@ -2,8 +2,8 @@
 import { describe, expect, it } from 'vitest'
 import { Midi } from '@tonejs/midi'
 import { minuet, fromText, showcase, endings, palette } from './demo'
-import { scoreFromJson, scoreFromMusicXml, scoreFromNotes, scoreToJson, scoreToMidi, scoreToMusicXml } from './io'
-import { TPQ, validate, type Ev, type Score } from './model'
+import { scoreFromJson, scoreFromMusicXml, scoreFromNotes, scoreToJson, scoreToMidi, scoreToMusicXml, trimToBar } from './io'
+import { TPQ, setPedalEnd, toggleSpan, validate, type Ev, type Score } from './model'
 import { toPerformance } from './perform'
 import { toNotes, unroll } from '../core/score/playback'
 
@@ -188,3 +188,40 @@ describe('MusicXML with more than two staves', () => {
     expect(warnings.some((w) => w.includes('3 khuông'))).toBe(true)
   })
 })
+
+describe('pedal styles', () => {
+  it('each style is kept, the same button again takes it off, moving the release keeps the style, and MusicXML brings them back', () => {
+    const s = fromText([{ rh: 'C5:1 D5:1 E5:1 F5:1', lh: 'C3:1 D3:1 E3:1 F3:1' }])
+    const rh = s.measures[0].staves[0][0], lh = s.measures[0].staves[1][0]
+    toggleSpan(s, 'pedal-line', rh[0].id, rh[1].id); toggleSpan(s, 'pedal-bracket', rh[2].id, rh[3].id); toggleSpan(s, 'pedal', lh[0].id, lh[3].id)
+    expect([rh[0].pedal?.style, rh[2].pedal?.style, lh[0].pedal?.style]).toEqual(['line', 'bracket', undefined])
+    setPedalEnd(s, rh[0].id, rh[2].id); expect(rh[0].pedal).toEqual({ end: rh[2].id, style: 'line' })
+    const back = scoreFromMusicXml(scoreToMusicXml(s)).score, b = back.measures[0]
+    expect([b.staves[0][0][0].pedal?.style, b.staves[0][0][2].pedal?.style, b.staves[1][0][0].pedal?.style]).toEqual(['line', 'bracket', undefined])
+    toggleSpan(s, 'pedal-bracket', rh[2].id, rh[3].id); expect(rh[2].pedal).toBeUndefined()
+  })
+})
+
+describe('MusicXML with more music than a bar holds (a misread scan)', () => {
+  it('the voice is cut at the barline, the score is valid, and a warning says so', () => {
+    const note = (step: string, dur: number) => `<note><pitch><step>${step}</step><octave>4</octave></pitch><duration>${dur}</duration><voice>1</voice></note>`
+    const xml = `<?xml version="1.0"?><score-partwise><part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list><part id="P1"><measure number="1"><attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>${note('C', 3)}${note('D', 2)}${note('E', 1)}</measure></part></score-partwise>`
+    const r = scoreFromMusicXml(xml), v = r.score.measures[0].staves[0][0]
+    expect(v.map((e) => [e.pitches[0]?.step, e.ticks])).toEqual([['C', 3 * TPQ], ['D', TPQ]]) // D crosses the barline: it ends there, E is past it
+    expect(validate(r.score)).toEqual([])
+    expect(r.warnings.some((w) => /dài quá ô/.test(w))).toBe(true)
+    const w: Ev[] = [{ id: 1, ticks: 960, pitches: [], tie: true }, { id: 2, ticks: 960, pitches: [] }]
+    expect([trimToBar(w, 1500), w.length, w[1].ticks]).toEqual([1500, 2, 540])
+  })
+})
+
+describe('ties between chords of other shapes', () => {
+  it('join only the pitches both chords have, each to its own place', async () => {
+    const { tiePairs } = await import('./render')
+    const p = (s: string) => ({ step: s[0] as 'C', alter: 0, octave: +s[1] })
+    expect(tiePairs([p('C4'), p('E4'), p('G4')], [p('E4'), p('G4')])).toEqual([[1, 0], [2, 1]]) // a smaller chord: E and G only, at their own places
+    expect(tiePairs([p('C4')], [p('D4')])).toEqual([])                                           // nothing in common: no tie
+    expect(tiePairs([p('C4'), p('E4')], [p('C4'), p('E4')])).toEqual([[0, 0], [1, 1]])
+  })
+})
+

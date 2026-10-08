@@ -24,7 +24,7 @@ const TUPLET_DIGIT = (c: number) => (c >= 0xf112 && c <= 0xf119 ? c - 0xf110 : 0
 const TUPLET_OF: Record<number, number> = { 2: 3, 3: 2, 4: 3, 5: 4, 6: 4, 7: 4, 9: 8 } // n notes in the time of m
 const SEMI = [0, 2, 4, 5, 7, 9, 11] // C D E F G A B
 
-export interface ScoreNote { pitch: number; start: number; duration: number; staff: number; tieNext?: boolean; velocity?: number } // start/duration in quarter notes, relative to the measure; staff 0 = upper
+export interface ScoreNote { pitch: number; start: number; duration: number; staff: number; tieNext?: boolean; velocity?: number; hold?: number } // start/duration in quarter notes, relative to the measure; staff 0 = upper; hold: how long it sounds when the pedal keeps it on (longer than duration)
 /** One written event, as the editor wants it (no ornament expansion, rests kept). */
 export interface Written { hidden?: boolean; art?: string[]; vel?: number; tup?: { n: number; m: number; group: number }; ticks: number; pitches: { step: string; alter: number; octave: number }[]; tie?: boolean; orn?: 'mordent' | 'inverted' | 'trill' | 'turn'; arp?: 'up' | 'down' | 'plain'; trem?: 1 | 2 | 3; graces?: { step: string; alter: number; octave: number }[] }
 export interface Measure {

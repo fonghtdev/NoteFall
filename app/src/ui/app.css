@@ -122,13 +122,18 @@ kbd { font: 500 11px/1 var(--font); padding: 3px 6px; border-radius: 4px; backgr
 .popover.menu button { white-space: nowrap; display: flex; align-items: center; gap: var(--s2); width: 100%; height: 32px; padding: 0 var(--s3); border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text); font: 400 13px/1 var(--font); cursor: pointer; text-align: left; }
 .popover.menu button:hover { background: var(--surface-3); }
 .popover.menu hr { border: 0; border-top: 1px solid var(--line); margin: var(--s1) 0; }
+.popover.menu { max-height: min(70vh, 560px); overflow-y: auto; }
+.popover.menu .menu-head { padding: var(--s2) var(--s3) var(--s1); color: var(--text-3); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
 .popover section { display: flex; flex-direction: column; gap: var(--s2); }
 
 /* ---- shell ------------------------------------------------------------------------------------------- */
 #top { height: 52px; flex: none; display: flex; align-items: center; gap: var(--s4); padding: 0 var(--s4); background: var(--surface); border-bottom: 1px solid var(--line); }
 .brand { display: flex; align-items: center; gap: var(--s2); font-weight: 650; font-size: 15px; letter-spacing: -0.01em; }
 .brand svg { width: 22px; height: 22px; }
-#top nav { margin: 0 auto; }
+#top { position: relative; z-index: 40; } /* above the screens below it, so the mixer that opens from it is not covered */
+#top .top-center { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: flex; } /* the two screens dead centre of the window, whatever stands left and right */
+#top .top-center > .pop-anchor { position: absolute; left: calc(100% + var(--s2)); top: 50%; transform: translateY(-50%); } /* the mixer beside them, not part of what is centred */
+#top .top-actions { margin-left: auto; }
 .top-actions { display: flex; gap: var(--s2); align-items: center; min-width: 160px; justify-content: flex-end; }
 
 main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
@@ -167,7 +172,8 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 body.score .grid-only { display: none !important; }
 #bpm { font-weight: 600; font-variant-numeric: tabular-nums; }
 .pop-anchor { position: relative; }
-#pop-settings, #pop-export, #pop-met { bottom: calc(100% + 10px); right: 0; width: 320px; }
+#pop-settings, #pop-export { bottom: calc(100% + 10px); right: 0; width: 320px; }
+#pop-mix { top: calc(100% + 10px); left: 0; width: 300px; transform-origin: top left; } /* under the top bar */
 
 /* ---- composer ---------------------------------------------------------------------------------------- */
 #composer { display: flex; flex-direction: column; background: var(--bg); }
@@ -176,10 +182,16 @@ body.score .grid-only { display: none !important; }
 .cmp-tools { background: var(--surface); min-height: 48px; gap: var(--s2) var(--s4); }
 .cmp-tools .group { display: inline-flex; align-items: center; gap: 2px; }
 .cmp-tools .btn { min-width: 34px; }
-.cmp-body { flex: 1; min-height: 0; display: flex; }
+.cmp-body { flex: 1; min-height: 0; display: flex; position: relative; --insp-w: 292px; }
+/* the arrow on the palette's right edge: ← closes it; closed, it waits at the page's left edge as → */
+.cmp-insp-toggle { position: absolute; z-index: 5; top: 50%; left: var(--insp-w); transform: translate(-50%, -50%); width: 22px; height: 44px; padding: 0; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--surface); color: var(--text-2); cursor: pointer; box-shadow: var(--shadow-pop); transition: color var(--ease), background var(--ease); }
+.cmp-insp-toggle:hover { color: var(--text); background: var(--surface-3); }
+.cmp-insp-toggle .icon { width: 16px; height: 16px; transform: rotate(90deg); }
+.cmp-body.insp-closed .cmp-insp-toggle { left: 0; transform: translate(0, -50%); border-left: 0; border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+.cmp-body.insp-closed .cmp-insp-toggle .icon { transform: rotate(-90deg); }
 .cmp-page { flex: 1; min-width: 0; overflow: auto; padding: var(--s5); background: var(--canvas); }
 .cmp-sheet { position: relative; margin: 0 auto; flex: none; background: var(--paper); border-radius: 4px; box-shadow: 0 8px 32px rgba(4, 6, 22, 0.55); cursor: crosshair; }
-.cmp-insp { width: 292px; flex: none; overflow-y: auto; background: var(--surface); border-left: 1px solid var(--line); }
+.cmp-insp { order: -1; width: var(--insp-w); flex: none; overflow-y: auto; background: var(--surface); border-right: 1px solid var(--line); } /* the palette on the left, as in MuseScore 4 */
 .cmp-insp details { border-bottom: 1px solid var(--line); }
 .cmp-insp summary { list-style: none; display: flex; align-items: center; justify-content: space-between; height: 38px; padding: 0 var(--s4); cursor: pointer; color: var(--text-2); font-weight: 600; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; user-select: none; }
 .cmp-insp summary::-webkit-details-marker { display: none; }
@@ -204,7 +216,7 @@ dialog.dlg h3 { margin: 0 0 var(--s2); font-size: 11px; letter-spacing: 0.06em; 
 dialog.dlg dl { margin: 0 0 var(--s4); display: grid; grid-template-columns: 9.5rem 1fr; gap: 6px var(--s3); align-items: center; }
 dialog.dlg dt { white-space: nowrap; }
 dialog.dlg dd { margin: 0; color: var(--text-2); }
-@media (max-width: 900px) { .cmp-insp { position: absolute; right: 0; top: 0; bottom: 0; z-index: 20; box-shadow: var(--shadow-pop); } .cmp-body { position: relative; } }
+@media (max-width: 900px) { .cmp-body { --insp-w: 240px; } } /* narrower on a small screen */
 
 /* ---- motion ----------------------------------------------------------------------------------------- */
 @keyframes pop-in  { from { opacity: 0; transform: translateY(6px) scale(0.97); } to { opacity: 1; transform: none; } }
@@ -240,6 +252,7 @@ input[type='range']:active::-webkit-slider-thumb { transform: scale(1.3); box-sh
 .btn.pal { min-width: 36px; height: 36px; padding: 0 6px; }
 .btn.pal .glyph { font-size: 24px; line-height: 1; color: var(--text); }
 .btn.pal .glyph.sm { font-size: 18px; }
+.btn.pal .pic { display: block; color: var(--text); }
 .btn.pal .ptxt { font-size: 12px; font-weight: 600; line-height: 1.1; display: inline-flex; flex-direction: column; align-items: center; color: var(--text); }
 .btn.pal .ptxt small { font-size: 10px; font-weight: 400; color: var(--text-3); }
 .cmp-insp .grid.wide .pal { min-width: 44px; }
@@ -248,17 +261,11 @@ input[type='range']:active::-webkit-slider-thumb { transform: scale(1.3); box-sh
 .cmp-insp .grid.wide .pal { height: 46px; } .cmp-insp .grid.wide .pal .glyph { font-size: 20px; }
 
 /* ---- metronome ---------------------------------------------------------------------------------------- */
-.dots { display: flex; gap: 8px; min-height: 14px; align-items: center; }
-.dots span { width: 12px; height: 12px; border-radius: 50%; background: var(--surface-3); box-shadow: 0 0 0 1px var(--line-strong) inset; transition: background 90ms, transform 90ms; }
-.dots span.on { background: var(--accent); transform: scale(1.25); }
-.dots span.acc.on { background: var(--gold); }
 #btn-met[aria-pressed='true'] { background: var(--accent-soft); border-color: var(--accent); color: var(--on-accent); }
-#pop-met input[type='number'] { font-variant-numeric: tabular-nums; }
 
 /* ---- composer zoom ------------------------------------------------------------------------------------ */
 .cmp-sheet.fit { width: 100%; max-width: 1900px; }
 .cmp-sheet:not(.fit) { max-width: none; }
-.btn.zoomlabel { min-width: 104px; font-variant-numeric: tabular-nums; font-size: 12px; }
 
 /* ---- touch screens (iPad) ----------------------------------------------------------------------------- */
 .touch-only { display: none !important; }
@@ -288,7 +295,6 @@ body { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-are
   #dock { flex-wrap: wrap; row-gap: var(--s2); }
   #track { order: 9; flex-basis: 100%; }
   .cmp-top { gap: var(--s2); }
-  .btn.zoomlabel { min-width: 84px; }
 }
 #share-offer { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 100; display: flex; gap: var(--s2); align-items: center; padding: var(--s2); background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--shadow-pop); animation: pop-in var(--t-in) var(--out); }
 
@@ -330,7 +336,6 @@ dialog.dlg .body.fonts { display: grid; grid-template-columns: 1fr; gap: var(--s
 .scanbar progress:indeterminate { background: linear-gradient(90deg, transparent, var(--accent), transparent); background-size: 40% 100%; background-repeat: no-repeat; animation: slide 1.2s linear infinite; }
 .scanbar small { color: var(--text-3); }
 .scanbar button { grid-row: 3; grid-column: 2; }
-.cmp-top .pname { display: inline-block; max-width: 14ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 
 /* the bar that runs across the score while the preview plays: drag it, or click the score, to go on from another place (editor/composer.ts) */
 .cmp-playhead { position: absolute; left: 0; top: 0; width: 16px; cursor: ew-resize; touch-action: none; will-change: transform; background: linear-gradient(rgb(118 83 250 / 0.9), rgb(118 83 250 / 0.9)) center / 2.5px 100% no-repeat; }

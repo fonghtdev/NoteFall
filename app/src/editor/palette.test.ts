@@ -77,16 +77,19 @@ describe('palette marks that change the sound', () => {
 })
 
 describe('palette bookkeeping', () => {
-  it('ottava shifts what is written, not what sounds', () => {
-    const s = one('C6:1 D6:1 E6:1 F6:1')
+  it('an ottava put over notes keeps them where they are on the page and moves the sound (as in MuseScore); taking it off moves it back', () => {
+    const s = one('C5:1 D5:1 E5:1 F5:1')
     const e = evs(s)
     expect(toggleSpan(s, 'o8', e[0].id, e[3].id)).toBe(true)
     expect(octShift(8)).toBe(-1); expect(octShift(-8)).toBe(1); expect(octShift(15)).toBe(-2); expect(octShift(-15)).toBe(2)
     expect([...ottavaShifts(s).values()]).toEqual([-1, -1, -1, -1])
     expect(ottavaShiftAt(s, 0, 0, 0, TPQ)).toBe(-1)
-    expect(play(s).filter((x) => x.pitch >= 60).map((x) => x.pitch)).toEqual([84, 86, 88, 89]) // still C6..F6
+    expect(play(s).filter((x) => x.pitch >= 60).map((x) => x.pitch)).toEqual([84, 86, 88, 89]) // written C5..F5, sounds C6..F6
     toggleSpan(s, 'o8', e[0].id, e[3].id)                      // second time removes it
     expect(ottavaShifts(s).size).toBe(0)
+    expect(play(s).filter((x) => x.pitch >= 60).map((x) => x.pitch)).toEqual([72, 74, 76, 77])
+    toggleSpan(s, 'o-15', e[1].id, e[2].id)                    // 15mb: two octaves down
+    expect(play(s).map((x) => x.pitch).filter((p) => p !== 48 && p < 72)).toEqual([50, 52])
   })
 
   it('grace notes: added a step above, moved, kind remembered', () => {

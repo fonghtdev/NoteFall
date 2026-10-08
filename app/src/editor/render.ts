@@ -1,12 +1,16 @@
-import { Accidental, Articulation, Barline, Beam, Curve, Dot, Formatter, Fraction, GhostNote, GraceNote, GraceNoteGroup, Modifier, Ornament, PedalMarking, Renderer, Stave, StaveConnector, StaveNote, TickContext, StaveTie, Stroke, TextBracket, Tremolo, Tuplet, Voice, Volta } from 'vexflow/bravura'
+import { Accidental, Articulation, Barline, Beam, Curve, Dot, Formatter, Fraction, GhostNote, GraceNote, GraceNoteGroup, Modifier, Ornament, Renderer, Stave, StaveConnector, StaveNote, TickContext, StaveTie, Stroke, TextBracket, Tremolo, Tuplet, Voice, Volta } from 'vexflow/bravura'
 import { NATURAL, forceFor, gapWidth, gapsOf, leadOf, type Col, type Gap } from './spacing'
-import { CLEFS, barTicks, clefAt, contextAt, diatonic, nominalTicks, notationOf, ottavaShifts, starts, type Art, type ClefName, type Ev, type Score } from './model'
+import { CLEFS, barTicks, clefAt, contextAt, diatonic, midiOf, nominalTicks, notationOf, ottavaShifts, starts, type Art, type ClefName, type Ev, type Pitch, type Score } from './model'
 
 /** One drawn event, for hit-testing and selection. */
 export interface DrawnEv { id: number; m: number; staff: number; voice: number; at: number; ticks: number; x: number; rest: boolean; ys: number[]; left: number; right: number }
 export interface DrawnStaff { top: number; bottom: number; spacing: number; clef: ClefName }
-export interface DrawnMeasure { m: number; x: number; w: number; system: number; staves: DrawnStaff[]; evs: DrawnEv[] }
+export interface DrawnMeasure { m: number; x: number; w: number; system: number; staves: DrawnStaff[]; evs: DrawnEv[]; notes?: [number, number] } // notes: where the notes may stand, after the clef / key / time
 export interface Layout { width: number; height: number; measures: DrawnMeasure[]; systems: { y0: number; y1: number; pageBreakAfter?: boolean }[]; graces: { id: number; i: number; x: number; y: number }[] }
+
+/** Which notes of a chord a tie joins to the next chord: [index here, index there] for every pitch both have (same sounding pitch). */
+export const tiePairs = (a: Pitch[], b: Pitch[]): [number, number][] =>
+  a.flatMap((p, i) => { const j = b.findIndex((q) => midiOf(q) === midiOf(p)); return j < 0 ? [] : [[i, j] as [number, number]] })
 
 const FIFTHS = ['Cb', 'Gb', 'Db', 'Ab', 'Eb', 'Bb', 'F', 'C', 'G', 'D', 'A', 'E', 'B', 'F#', 'C#']
 export const keyName = (fifths: number) => FIFTHS[fifths + 7]
@@ -78,10 +82,15 @@ function build(score: Score, mi: number, staves: Stave[], selected: Set<number>,
   m.staves.forEach((vs, si) => {
     const cd = CLEFS[clefAt(score, mi, si)], clef = cd.vf
     const multi = vs.length > 1
+    // As in MuseScore, a note's stem goes up (voice 1) or down (the others) only when another voice has a note sounding at the same time;
+    // a note alone at its moment (another voice resting, or a stray note elsewhere in the bar, common in a misread scan) points its stem as a single voice would.
+    const vStarts = vs.map(starts)
+    const together = (vi: number, at: number, len: number) => vs.some((o, ov) => ov !== vi && o.some((e, k) => e.pitches.length > 0 && vStarts[ov][k] < at + len && vStarts[ov][k] + e.ticks > at))
     const staffVoices: Voice[] = []
     vs.forEach((events, vi) => {
       const tickables: (StaveNote | GhostNote)[] = []
-      const ts = starts(events)
+      const ts = vStarts[vi], dir = vi === 0 ? 1 : -1
+      const held = new Set<StaveNote>() // notes whose stem direction is fixed by a voice sounding with them
       events.forEach((ev, ei) => {
         const nt = notationOf(nominalTicks(ev)) ?? { name: 'q', dots: 0 }
         const rest = ev.pitches.length === 0
@@ -112,8 +121,9 @@ function build(score: Score, mi: number, staves: Stave[], selected: Set<number>,
           duration: wholeBar ? 'wr' : nt.name + (rest ? 'r' : ''),
           dots: wholeBar ? 0 : nt.dots,
           alignCenter: wholeBar,
-          ...(multi ? { stemDirection: vi === 0 ? 1 : -1 } : { autoStem: true }),
+          ...(!rest && together(vi, ts[ei], ev.ticks) ? { stemDirection: dir } : { autoStem: true }),
         })
+        if (!rest && together(vi, ts[ei], ev.ticks)) held.add(n)
         n.setStave(staves[si])
         if (ev.flip && !rest) n.setStemDirection(n.getStemDirection() === 1 ? -1 : 1)
         if (nt.dots && !wholeBar) Dot.buildAndAttach([n], { all: true })
@@ -148,7 +158,20 @@ function build(score: Score, mi: number, staves: Stave[], selected: Set<number>,
       })
       const v = new Voice({ numBeats: bar / 960, beatValue: 4 }).setMode(Voice.Mode.SOFT).addTickables(tickables)
       staffVoices.push(v)
-      out.beams.push(...Beam.generateBeams(tickables.filter((t): t is StaveNote => t instanceof StaveNote), { groups: [groups], stemDirection: multi ? (vi === 0 ? 1 : -1) : undefined, maintainStemDirections: multi || events.some((e) => e.flip) }))
+      const notes = tickables.filter((t): t is StaveNote => t instanceof StaveNote), sounding = notes.filter((n) => !n.isRest())
+      if (sounding.length && sounding.every((n) => held.has(n))) out.beams.push(...Beam.generateBeams(notes, { groups: [groups], stemDirection: dir, maintainStemDirections: true })) // all with another voice: up / down by voice
+      else { // free notes: each beam group finds its own direction; a group holding a note that sounds with another voice takes that voice's side
+        const flips = events.some((e) => e.flip)
+        const beams = Beam.generateBeams(notes, { groups: [groups], maintainStemDirections: flips }).map((bm) => {
+          const ns = bm.getNotes() as StaveNote[]
+          if (!ns.some((n) => held.has(n))) return bm
+          ns.forEach((n) => n.setStemDirection(dir))
+          return new Beam(ns)
+        })
+        const beamed = new Set(beams.flatMap((bm) => bm.getNotes()))
+        held.forEach((n) => { if (!beamed.has(n)) n.setStemDirection(dir) }) // (generateBeams sets every note's direction, beamed or not: put back those another voice decides)
+        out.beams.push(...beams)
+      }
       out.tuplets.forEach((tp) => tp.setTupletLocation(Tuplet.LOCATION_TOP)) // beams move the number to their side; keep it above the staff, clear of dynamics
     })
     Accidental.applyAccidentals(staffVoices, keyName(key))
@@ -218,7 +241,7 @@ function barSpec(score: Score, mi: number, first: boolean): BarSpec {
 const naturalWidth = (sp: BarSpec) => sp.mods + sp.lead + sp.gaps.reduce((a, g) => a + gapWidth(g, NATURAL), 0)
 
 /** A mark picked up for moving: a text / dynamic on a note, the tempo or the rehearsal mark of a bar. */
-export type MarkRef = { kind: 'ev'; field: 'dyn' | 'staffText' | 'expr' | 'chord' | 'lyric' | 'hairpin'; id: number } | { kind: 'tempo' | 'rehearsal'; bar: number }
+export type MarkRef = { kind: 'ev'; field: 'dyn' | 'staffText' | 'expr' | 'chord' | 'lyric' | 'hairpin' | 'pedal'; id: number } | { kind: 'tempo' | 'rehearsal'; bar: number }
 /** One grace note: the event it belongs to and its place among that event's grace notes. */
 export interface GraceRef { id: number; i: number }
 export interface RenderOptions { width: number; selected?: Set<number>; selectedMark?: MarkRef; selectedGrace?: GraceRef }
@@ -354,11 +377,11 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
         const g = gn.getSVGElement(); g?.setAttribute('data-grace', `${id}:${i}`); g?.setAttribute('style', 'cursor:pointer')
         layout.graces.push({ id, i, x: gn.getAbsoluteX(), y: gn.getYs()[0] }) // where its head is, so a pointer near it picks it (the head itself is a few px wide)
       }))
-      b.beams.forEach((bm) => bm.setContext(ctx).draw())
+      b.beams.forEach((bm) => { try { bm.setContext(ctx).draw() } catch (e) { console.warn(`beam skipped in bar ${mi + 1}:`, (e as Error).message) } }) // a beam VexFlow cannot draw (odd rhythms read from a scan) is left out, not the whole page
       b.tuplets.forEach((tp) => tp.setContext(ctx).draw())
 
       const dm: DrawnMeasure = {
-        m: mi, x, w, system: sIdx,
+        m: mi, x, w, system: sIdx, notes: [x0, Math.min(...staves.map((s) => s.getNoteEndX()))],
         staves: staves.map((s, si) => ({ top: s.getYForLine(0), bottom: s.getYForLine(4), spacing: s.getSpacingBetweenLines(), clef: clefAt(score, mi, si) })),
         evs: [],
       }
@@ -398,12 +421,14 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
     const next = events[ei + 1] ?? score.measures[mi + 1]?.staves[si]?.[vi]?.[0]
     const a = noteOf.get(ev.id)
     if (!a) return
-    const idx = ev.pitches.map((_, i) => i)
-    const b = next && next.pitches.length ? noteOf.get(next.id) : undefined
-    if (b && b.system === a.system) new StaveTie({ firstNote: a.note, lastNote: b.note, firstIndexes: idx, lastIndexes: idx }).setContext(ctx).draw()
+    const pairs = tiePairs(ev.pitches, next?.pitches ?? []) // a tie joins the same pitch on both sides: chords of other sizes or orders tie only what they share
+    const first = pairs.map(([i]) => i), last = pairs.map(([, j]) => j)
+    const b = pairs.length ? noteOf.get(next!.id) : undefined
+    if (!pairs.length) return
+    if (b && b.system === a.system) new StaveTie({ firstNote: a.note, lastNote: b.note, firstIndexes: first, lastIndexes: last }).setContext(ctx).draw()
     else {
-      new StaveTie({ firstNote: a.note, lastNote: null, firstIndexes: idx, lastIndexes: idx }).setContext(ctx).draw()
-      if (b) new StaveTie({ firstNote: null, lastNote: b.note, firstIndexes: idx, lastIndexes: idx }).setContext(ctx).draw()
+      new StaveTie({ firstNote: a.note, lastNote: null, firstIndexes: first, lastIndexes: first }).setContext(ctx).draw()
+      if (b) new StaveTie({ firstNote: null, lastNote: b.note, firstIndexes: last, lastIndexes: last }).setContext(ctx).draw()
     }
   }))))
 
@@ -522,6 +547,14 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
     if (o.side) avoid(e, o.side, o.staff ?? 0, undefined, o.fixed)
     return e
   }
+  /** A drawn line (a pedal line); with a mark it can be picked and dragged like the text marks. */
+  const line = (d: string, mark?: MarkRef) => {
+    const e = document.createElementNS(NS, 'path')
+    e.setAttribute('d', d); e.setAttribute('fill', 'none'); e.setAttribute('stroke', mark && isSel(mark) ? '#1d6fff' : '#000'); e.setAttribute('stroke-width', '1.3')
+    if (mark) { e.setAttribute('data-mark', JSON.stringify(mark)); e.setAttribute('style', 'cursor:grab'); e.setAttribute('pointer-events', 'stroke') }
+    svg.appendChild(e)
+    if (mark) { const hit = e.cloneNode() as SVGPathElement; hit.setAttribute('stroke', 'transparent'); hit.setAttribute('stroke-width', '10'); svg.appendChild(hit) } // a wider band to catch the pointer
+  }
   layout.measures.forEach((dm) => {
     const m = score.measures[dm.m], top = dm.staves[0].top
     const x0 = (dm.evs[0]?.x ?? dm.x + 30) - 10
@@ -577,9 +610,24 @@ function drawScore(host: HTMLElement, score: Score, opts: RenderOptions): Layout
         const up = ev.ottava.n > 0, big = Math.abs(ev.ottava.n) === 15
         if (j >= i) for (const p of pieces(chain, i, j)) guard(() => new TextBracket({ start: p.a, stop: p.b, text: big ? '15' : '8', superscript: up ? (big ? 'ma' : 'va') : big ? 'mb' : 'vb', position: up ? 1 : -1 }).setLine(up ? 3 : 2).setContext(ctx).draw(), p)
       }
-      if (ev.pedal) {
-        const j = chain.findIndex((q) => q.ev.id === ev.pedal!.end)
-        if (j >= i) for (const p of pieces(chain, i, j)) guard(() => PedalMarking.createSustain([p.a, p.b]).setType(PedalMarking.type.MIXED).setLine(4).setContext(ctx).draw(), p)
+      if (ev.pedal) { // under the lowest staff of the line, whichever staff the notes are on; the end (✱ or hook) can be dragged to let the pedal go elsewhere
+        const j = chain.findIndex((q) => q.ev.id === ev.pedal!.end), ps = j >= i ? pieces(chain, i, j) : []
+        const below = (system: number) => Math.max(...layout.measures.filter((d) => d.system === system).map((d) => d.staves[d.staves.length - 1].bottom)) + 38
+        const style = ev.pedal.style ?? 'star', mark: MarkRef = { kind: 'ev', field: 'pedal', id: ev.id }
+        ps.forEach((p, k) => {
+          const first = k === 0, last = k === ps.length - 1, y = below(p.system)
+          const x0 = p.a.getAbsoluteX() - 4, x1 = p.b.getNoteHeadEndX() + 6
+          if (style === 'star') {
+            if (first) put('\uE650', x0, y, { size: 30, font: 'Bravura, serif' })
+            if (last) put('\uE655', x1 - 2, y, { size: 30, font: 'Bravura, serif', mark })
+            return
+          }
+          const ped = style === 'line' && first, from = ped ? x0 + 34 : x0, top = y - 12 // a line piece per line of music; Ped. or a hook where the pedal goes down, a hook where it comes up
+          if (ped) put('\uE650', x0, y, { size: 30, font: 'Bravura, serif' })
+          let d = `M${from} ${first && !ped ? top : y}${first && !ped ? `L${from} ${y}` : ''}L${x1} ${y}`
+          if (last) d += style === 'angled' ? `L${x1 + 7} ${top}` : `L${x1} ${top}`
+          line(d, last ? mark : undefined)
+        })
       }
       if (ev.gliss) {
         const nx = chain[i + 1], b = nx && noteOf.get(nx.ev.id)

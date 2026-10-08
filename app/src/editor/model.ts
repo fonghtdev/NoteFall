@@ -9,7 +9,9 @@ export interface Tup { n: number; m: number; group: number }
 export type Dyn = 'pppp' | 'ppp' | 'pp' | 'p' | 'mp' | 'mf' | 'f' | 'ff' | 'fff' | 'ffff' | 'sf' | 'sfz' | 'fp' | 'sfp' | 'rfz'
 export type Art = 'staccato' | 'accent' | 'tenuto' | 'marcato' | 'fermata' | 'staccatissimo' | 'upbow' | 'downbow'
 export type Orn = 'mordent' | 'inverted' | 'trill' | 'turn'
-export type SpanKind = 'slur' | 'cresc' | 'dim' | 'o8' | 'o-8' | 'o15' | 'o-15' | 'pedal'
+export type SpanKind = 'slur' | 'cresc' | 'dim' | 'o8' | 'o-8' | 'o15' | 'o-15' | 'pedal' | 'pedal-line' | 'pedal-bracket' | 'pedal-angled'
+/** How a sustain pedal is written (MuseScore's keyboard palette): Ped. … ✱, Ped. and a line, a bracket with straight hooks, or one whose end hook slants (a pedal change). */
+export type PedalStyle = 'star' | 'line' | 'bracket' | 'angled'
 
 export type ClefName = 'treble' | 'bass' | 'alto' | 'tenor' | 'treble8vb' | 'treble8va' | 'bass8vb' | 'bass8va'
 /** `vf` and `ann` are what VexFlow draws; `bottom` is the diatonic index (C0 = 0) of the bottom line as written; `shift` is how many octaves higher than it sounds the staff is written. */
@@ -47,7 +49,7 @@ export interface Ev {
   trem?: 1 | 2 | 3               // tremolo strokes through the stem: repeated notes of 1/8, 1/16, 1/32
   flip?: boolean                 // stem drawn against the default direction
   ottava?: { n: 8 | -8 | 15 | -15; end: number } // 8va / 8vb / 15ma / 15mb from this event to the event `end`: written an octave (or two) off, sounds as stored
-  pedal?: { end: number }        // sustain pedal from this event to the event `end` (drawn, and exported; it does not change the notes)
+  pedal?: { end: number; style?: PedalStyle } // sustain pedal from this event to the event `end` (no style: Ped. … ✱); it holds the sound, the notes keep their length
   breath?: 'breath' | 'caesura'  // mark after the note (drawn, and exported)
   staffText?: string             // text above the staff at this note
   expr?: string                  // expression (italic) below the staff
@@ -584,12 +586,41 @@ export function toggleSpan(s: Score, kind: SpanKind, from: number, to: number): 
   if (!a || !b || a.staff !== b.staff || a.voice !== b.voice || (a.m === b.m ? a.at >= b.at : a.m > b.m) || from === to) return false
   if (kind === 'slur') a.ev.slur = a.ev.slur === to ? undefined : to
   else if (kind === 'cresc' || kind === 'dim') a.ev.hairpin = a.ev.hairpin?.end === to && a.ev.hairpin.type === kind ? undefined : { type: kind, end: to }
-  else if (kind === 'pedal') a.ev.pedal = a.ev.pedal?.end === to ? undefined : { end: to }
+  else if (kind.startsWith('pedal')) {
+    const style = (kind.split('-')[1] ?? 'star') as PedalStyle
+    a.ev.pedal = a.ev.pedal?.end === to && (a.ev.pedal.style ?? 'star') === style ? undefined : { end: to, ...(style === 'star' ? {} : { style }) }
+  }
   else {
     const n = Number(kind.slice(1)) as 8 | -8 | 15 | -15
-    a.ev.ottava = a.ev.ottava?.end === to && a.ev.ottava.n === n ? undefined : { n, end: to }
+    keepWritten(s, () => { a.ev.ottava = a.ev.ottava?.end === to && a.ev.ottava.n === n ? undefined : { n, end: to } })
   }
   return true
+}
+
+/** Let the pedal that starts at `from` go at event `to` instead (its ✱ dragged there). False when `to` is not later in the same staff and voice. */
+export function setPedalEnd(s: Score, from: number, to: number): boolean {
+  const a = findEv(s, from)
+  if (!a?.ev.pedal) return false
+  if (a.ev.pedal.end === to) return true
+  const style = a.ev.pedal.style
+  return toggleSpan(s, style && style !== 'star' ? (`pedal-${style}` as SpanKind) : 'pedal', from, to)
+}
+
+/**
+ * Put up or take down ottava lines (`change`) the way MuseScore does: the notes stay where they are on the page and what they sound moves,
+ * an octave up under a new 8va, back down when it goes.
+ * ponytail: only the palette goes through here; a line lost because its last note was deleted keeps the sound, the page shifts.
+ */
+export function keepWritten(s: Score, change: () => void) {
+  const before = ottavaShifts(s)
+  change()
+  const after = ottavaShifts(s)
+  for (const id of new Set([...before.keys(), ...after.keys()])) {
+    const oct = (before.get(id) ?? 0) - (after.get(id) ?? 0), f = oct && findEv(s, id)
+    if (!f) continue
+    f.ev.pitches = f.ev.pitches.map((p) => ({ ...p, octave: p.octave + oct }))
+    if (f.ev.graces) f.ev.graces = f.ev.graces.map((p) => ({ ...p, octave: p.octave + oct }))
+  }
 }
 
 /** How many octaves an ottava line moves what is written away from what sounds (8va: written one octave lower). */
@@ -836,7 +867,7 @@ export function copyPrevious(s: Score, i: number) {
 }
 
 // ---- moving notes and marks -----------------------------------------------------------------------------
-export type MarkField = 'dyn' | 'staffText' | 'expr' | 'chord' | 'lyric' | 'hairpin'
+export type MarkField = 'dyn' | 'staffText' | 'expr' | 'chord' | 'lyric' | 'hairpin' | 'pedal'
 
 /** Set how far a mark was dragged vertically from its usual place (0 puts it back). */
 export function setMarkOffset(s: Score, id: number, field: MarkField, dy: number) {

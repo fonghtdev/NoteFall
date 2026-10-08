@@ -47,9 +47,26 @@ function velocityTimeline(s: Score, staff: number): (tick: number) => number {
   }
 }
 
+/** Where the sustain pedal is down, in absolute ticks: from its first note to the end of its last (pedal marks of any staff hold every staff, as on a piano). */
+function pedalRanges(s: Score): [number, number][] {
+  const span = new Map<number, [number, number]>() // event id -> its absolute start and end
+  let t = 0
+  s.measures.forEach((m, i) => {
+    m.staves.forEach((voices) => voices.forEach((events) => { const st = starts(events); events.forEach((e, k) => span.set(e.id, [t + st[k], t + st[k] + e.ticks])) }))
+    t += barTicks(contextAt(s, i).time)
+  })
+  const out: [number, number][] = []
+  for (const m of s.measures) for (const voices of m.staves) for (const events of voices) for (const e of events) {
+    const a = e.pedal && span.get(e.id), b = e.pedal && span.get(e.pedal.end)
+    if (a && b) out.push([a[0], b[1]])
+  }
+  return out
+}
+
 /** Editor score -> the playback representation the falling-notes view already understands (repeats, ties, tempo, dynamics). */
 export function toPerformance(s: Score): PerfScore {
   const timelines = s.clefs.map((_, staff) => velocityTimeline(s, staff))
+  const pedals = pedalRanges(s)
   let barStart = 0
   const measures: PerfMeasure[] = s.measures.map((m, i) => {
     const { time, key, tempo } = contextAt(s, i)
@@ -63,6 +80,10 @@ export function toPerformance(s: Score): PerfScore {
       })
       notes.push(...realizeVoice(written, key, staff))
     }))
+    for (const n of notes) { // under the pedal a note sounds on until the pedal goes up
+      const at = barStart + n.start * TPQ, up = pedals.find(([a, b]) => at >= a && at < b)?.[1]
+      if (up !== undefined && up > at + n.duration * TPQ) n.hold = (up - at) / TPQ
+    }
     notes.sort((a, b) => a.start - b.start || a.pitch - b.pitch)
     barStart += barTicks(time)
     return { index: i + 1, length: barTicks(time) / TPQ, beat: clickStep(time.beats, time.unit), tempo, tempoChanges: m.tempo && m.tempoAt ? [{ at: m.tempoAt / TPQ, bpm: m.tempo }] : undefined, notes, startRepeat: !!m.startRepeat, endRepeat: !!m.endRepeat, volta: m.volta, segno: m.segno, coda: m.coda, toCoda: m.toCoda, fine: m.fine, jump: m.jump }

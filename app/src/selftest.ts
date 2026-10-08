@@ -18,15 +18,15 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
 
     c.setScore((await import('./editor/model')).emptyScore(4, { beats: 3, unit: 4 }, 1))
     c.key('n')                                  // input mode
-    c.key('5'); for (const k of ['D']) c.key(k) // quarter D5 (nearest to the default start)
+    c.key('3'); for (const k of ['D']) c.key(k) // quarter D5 (nearest to the default start)
     c.key('4'); for (const k of ['G', 'A', 'B', 'C']) c.key(k) // eighths
     ok('keyboard entry bar 1 (each letter lands nearest the previous note)', shape(0) === 'D5:1 G5:0.5 A5:0.5 B5:0.5 C6:0.5')
-    c.key('5'); c.key('d'); c.key('g'); c.key('g')
+    c.key('3'); c.key('d'); c.key('g'); c.key('g')
     console.log('  bar 2:', shape(1), '| cursor', JSON.stringify(c.cursor))
 
     // mouse: click the bass staff of bar 3 on beat 1 at pitch B2 (second line of the bass clef) with a half note
     c.setScore((await import('./editor/model')).emptyScore(4, { beats: 3, unit: 4 }, 1))
-    c.setMode('input'); c.key('6')
+    c.setMode('input'); c.key('2')
     const dm = c.layout.measures[2], st = dm.staves[1], ev = dm.evs.find((e) => e.staff === 1)!
     c.click(ev.x, st.bottom - 2 * (st.spacing / 2)) // two half-steps above the bottom line (G2) = B2
     console.log('  bass bar 3 after click:', shape(2, 1))
@@ -50,7 +50,7 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
       c.setMode('input'); c.key('4')          // eighth notes
       c.tuplet()
       c.key('c'); c.key('d'); c.key('e')
-      c.key('5'); c.key('g')
+      c.key('3'); c.key('g')
       const evs = c.score.measures[0].staves[0][0]
       ok('triplet typed into its three members', evs.slice(0, 3).every((e) => e.tup && e.pitches.length === 1) && evs.slice(0, 3).map((e) => e.ticks).join() === '320,320,320')
       ok('the next note lands after the triplet', evs[3].pitches.length === 1 && evs[3].ticks === 960)
@@ -101,12 +101,12 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
         press('Trill'); ok('palette: Trill', evs()[0].orn === 'trill')
         press('Tremolo 2 vạch'); ok('palette: Tremolo 2 vạch', evs()[0].trem === 2)
         press('Staccatissimo'); ok('palette: Staccatissimo', !!evs()[0].art?.includes('staccatissimo'))
-        press('Appoggiatura'); ok('palette: grace note appears a step above', evs()[0].graces?.length === 1 && evs()[0].graces![0].step === 'A')
+        press('Láy dài (appoggiatura)'); ok('palette: grace note appears a step above', evs()[0].graces?.length === 1 && evs()[0].graces![0].step === 'A')
         press('Sfz'.toLowerCase()); ok('palette: sfz', evs()[0].dyn === 'sfz')
         const bar1 = c.score.measures[1].staves[0][0]
         c.sel = bar1[0].id; c.selectRange(bar1[3].id)
         press('8va (lên 1 quãng tám)'); ok('palette: 8va over the selected notes', bar1[0].ottava?.n === 8 && bar1[0].ottava.end === bar1[3].id)
-        press('Pedal'); ok('palette: pedal over the selected notes', bar1[0].pedal?.end === bar1[3].id)
+        press('Pedal (Ped. và ✱)'); ok('palette: pedal over the selected notes', bar1[0].pedal?.end === bar1[3].id)
         c.cursor = { m: 1, staff: 1, at: 0 }; c.sel = undefined; c.range = []
         press('Sol 8 dưới'); ok('palette: clef change at the cursor bar, lower staff', c.score.measures[1].clefs?.[1] === 'treble8vb')
         press('Vạch đôi'); ok('palette: double barline', c.score.measures[1].barline === 'double')
@@ -203,20 +203,20 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
         c.key('a', { ctrlKey: true })
         ok('Ctrl+A selects every note and rest', c.targets().length >= 8)
         c.sel = undefined; c.range = []; c.refresh()
-        // a copied bar goes to another bar with the buttons
+        // a copied bar goes to another bar with the keys (Ctrl+C, Ctrl+V)
         c.sel = undefined; c.cursor = { m: 0, staff: 0, at: 0 }
-        ;(document.querySelector('[aria-label="Sao chép"]') as HTMLElement).click()
+        c.key('c', { ctrlKey: true })
         c.cursor = { m: 2, staff: 0, at: 0 }
-        ;(document.querySelector('[aria-label="Dán"]') as HTMLElement).click()
-        ok('copy a bar with the button and paste it with the button (both staves)', c.score.measures[2].staves[0][0].map((e) => e.pitches[0]?.step ?? 'r').join('') === 'CDEF' && c.score.measures[2].staves[1][0][0].pitches[0]?.step === 'C')
+        c.key('v', { ctrlKey: true })
+        ok('copy a bar with Ctrl+C and paste it with Ctrl+V (both staves)', c.score.measures[2].staves[0][0].map((e) => e.pitches[0]?.step ?? 'r').join('') === 'CDEF' && c.score.measures[2].staves[1][0][0].pitches[0]?.step === 'C')
         // box selection
         const svgNow = () => document.querySelector('.cmp-sheet svg') as SVGElement
         const toClient = (x: number, y: number) => { const r = svgNow().getBoundingClientRect(); return { clientX: r.left + (x * r.width) / c.layout.width, clientY: r.top + (y * r.width) / c.layout.width } }
-        const fire = (el: EventTarget, type: string, x: number, y: number) => el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...toClient(x, y) }))
+        const fire = (el: EventTarget, type: string, x: number, y: number) => el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, shiftKey: true, ...toClient(x, y) }))
         const dm = c.layout.measures[0], st = dm.staves[0], evs = dm.evs.filter((e) => e.staff === 0)
         const x0 = evs[0].x - 14, y0 = st.top - 40, x1 = evs[1].x + 14, y1 = st.bottom + 20
         fire(svgNow(), 'mousedown', x0, y0); fire(window, 'mousemove', (x0 + x1) / 2, (y0 + y1) / 2); fire(window, 'mousemove', x1, y1); fire(window, 'mouseup', x1, y1)
-        ok('dragging a box on empty space selects the notes inside it', c.targets().length === 2 && c.targets().every((id) => evs.slice(0, 2).some((e) => e.id === id)))
+        ok('Shift + dragging a box on empty space selects the notes inside it', c.targets().length === 2 && c.targets().every((id) => evs.slice(0, 2).some((e) => e.id === id)))
         c.setScore(d.minuet())
       }
       { // stacking: clicking another pitch on a note's column makes a chord (also with a dotted / beamed run), clicking it again takes it out
@@ -272,7 +272,7 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
           const names = () => evs().map((e) => e.pitches.map((p) => p.step + p.octave).join('+') || 'r').join(' ')
           const lens = () => evs().map((e) => e.ticks).join()
           const fresh = () => { c.setScore(d.fromText(Array.from({ length: 3 }, () => ({ rh: 'r:4', lh: 'r:4' })))); c.setMode('input'); c.cursor = { m: 0, staff: 0, at: 0 }; c.sel = undefined }
-          fresh(); c.key('5'); c.key('C'); c.key('w'); c.key('E'); c.key('q'); c.key('q'); c.key('G')
+          fresh(); c.key('3'); c.key('C'); c.key('w'); c.key('E'); c.key('q'); c.key('q'); c.key('G')
           ok('W doubles and Q halves the length for the next notes: quarter, half, eighth (the first C on a treble staff is C5, as in MuseScore)', lens().startsWith('960,1920,480') && names().startsWith('C5 E5 G5'))
           c.setScore(d.fromText([{ rh: 'C5:1 r:3', lh: 'r:4' }])); c.setMode('select'); c.sel = evs()[0].id
           c.key('3', { altKey: true, code: 'Digit3' })
@@ -285,7 +285,7 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
           ok('Ctrl+Alt+2 chooses voice 2', c.voice === 1); c.setVoice(0)
           fresh(); c.key('ArrowRight', { ctrlKey: true })
           ok('Ctrl+Right jumps to the start of the next bar', c.cursor.m === 1 && c.cursor.at === 0)
-          fresh(); c.key('5'); c.key('C'); c.key('D'); c.sel = undefined; c.key('Backspace')
+          fresh(); c.key('3'); c.key('C'); c.key('D'); c.sel = undefined; c.key('Backspace')
           ok('Backspace takes back the last note (it becomes a rest) and stands where it was', names() === 'C5 r r' && c.cursor.at === 960)
           c.key('0')
           ok('0 enters a rest and moves on', c.cursor.at === 1920)
@@ -307,7 +307,7 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
           const lyricEl = marks.find((m) => m.textContent === 'la')!
           ok('a lyric on the same note as a dynamic steps below it', !!lyricEl.getAttribute('transform'))
         }
-        { // hold the right (or middle) button and drag: the page follows the hand
+        { // drag on empty space with any button: the page follows the hand (as in MuseScore)
           c.setScore(d.minuet()); c.setZoom(2.5)
           const page = document.querySelector<HTMLElement>('.cmp-page')!
           const fire = (type: string, target: EventTarget, x: number, y: number, button: number) => target.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y, button, bubbles: true, cancelable: true }))
@@ -318,18 +318,18 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
           }
           ok('the context menu does not open over the page', !fire('contextmenu', page, 500, 400, 2))
           const sel = c.sel; page.scrollLeft = 300; fire('mousedown', page, 500, 400, 0); fire('mousemove', window, 420, 360, 0); fire('mouseup', window, 420, 360, 0)
-          ok('the left button still does not pan (it selects / drags notes)', page.scrollLeft === 300 && c.sel === sel)
+          ok('the left button on empty space pans too, and selects nothing', page.scrollLeft === 380 && c.sel === sel)
           c.zoomFit()
         }
         { // input mode: the preview note under the mouse says what a click would write and shows the ledger lines it needs
-          c.setScore(d.fromText([{ rh: 'C5:1 r:3', lh: 'r:4' }])); c.setMode('input'); c.key('5')
+          c.setScore(d.fromText([{ rh: 'C5:1 r:3', lh: 'r:4' }])); c.setMode('input'); c.key('3')
           const sheet = document.querySelector<HTMLElement>('.cmp-sheet')!, dm = c.layout.measures[0], st = dm.staves[0]
           const move = (lx: number, ly: number) => { const r = sheet.getBoundingClientRect(), k = r.width / c.layout.width; sheet.dispatchEvent(new MouseEvent('mousemove', { clientX: r.left + lx * k, clientY: r.top + ly * k, bubbles: true })) }
           const col = dm.evs[0].x
           move(col, st.bottom - (4 * st.spacing) / 2) // the middle line of the treble staff: B4, no ledger lines
           const status = document.querySelector('.cmp-status')!.textContent!
           ok('the preview says the pitch and length a click would write', status.includes('B4') && status.includes('Đen'))
-          const lines = () => document.querySelectorAll('.cmp-sheet svg g[opacity="0.35"] line').length
+          const lines = () => document.querySelectorAll('.cmp-sheet svg g[opacity="0.55"] line').length - 1 // (less the stem)
           const none = lines()
           move(col, st.top - (3 * st.spacing) / 2 - 0.0) // 3 half-steps above the top line: C6 area, two ledger lines
           ok('a high preview note draws its ledger lines, a note on the staff draws none', none === 0 && lines() >= 1)
@@ -494,7 +494,7 @@ export async function run(show: (n: Note[], a?: AudioBuffer) => void, transport:
       console.log('pdf status: ' + document.querySelector('.cmp-status')?.textContent)
     }
     if (location.search.includes('falling')) {
-      const btn = [...document.querySelectorAll('button')].find((b) => b.textContent?.includes('Xem nốt rơi')) as HTMLButtonElement
+      const btn = document.querySelector<HTMLButtonElement>('button[aria-label="Xem nốt rơi"]')!
       btn.click()
       await new Promise((r) => setTimeout(r, 2500))
       console.log('falling status: ' + document.getElementById('status')!.textContent)

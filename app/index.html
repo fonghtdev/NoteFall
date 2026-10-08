@@ -20,11 +20,17 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><rect width="24" height="24" rx="6" fill="#7653fa"/><path d="M7.5 5v6M12 5v10M16.5 5v4.5" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/><path d="M5.5 19h13" stroke="#fff" stroke-opacity=".55" stroke-width="1.8" stroke-linecap="round"/></svg>
       NoteFall
     </div>
-    <nav class="seg" role="tablist" aria-label="Chế độ làm việc">
-      <button id="tab-falling" class="on" role="tab" aria-selected="true"><span data-icon="bars"></span>Nốt rơi</button>
-      <button id="tab-composer" role="tab" aria-selected="false"><span data-icon="pencil"></span>Soạn nhạc</button>
-    </nav>
-    <div class="top-actions" id="top-actions"><button id="open" class="btn"><span data-icon="folder"></span>Mở file…</button><button id="btn-keys" class="btn ghost icon" aria-label="Phím tắt" title="Phím tắt (?)"><span data-icon="help"></span></button></div>
+    <div class="top-center">
+      <nav class="seg" role="tablist" aria-label="Chế độ làm việc">
+        <button id="tab-falling" class="on" role="tab" aria-selected="true" aria-label="Nốt rơi" title="Nốt rơi"><span data-icon="bars"></span></button>
+        <button id="tab-composer" role="tab" aria-selected="false" aria-label="Soạn nhạc" title="Soạn nhạc"><span data-icon="score"></span></button>
+      </nav>
+      <div class="pop-anchor">
+        <button id="btn-mix" class="btn ghost icon" aria-label="Âm lượng" title="Âm lượng: piano, metronome, tổng"><span data-icon="volume"></span></button>
+        <div id="pop-mix" class="popover" role="dialog" aria-label="Âm lượng" hidden></div>
+      </div>
+    </div>
+    <div class="top-actions" id="top-actions"><button id="open" class="btn icon" aria-label="Mở file" title="Mở file (PDF, MusicXML, MIDI, âm thanh)"><span data-icon="folder"></span></button><button id="btn-keys" class="btn ghost icon" aria-label="Phím tắt" title="Phím tắt (?)"><span data-icon="help"></span></button></div>
   </header>
 
   <main id="falling">
@@ -33,14 +39,14 @@
       <div id="nowplaying"></div>
       <section id="empty" class="empty" aria-labelledby="empty-title">
         <div class="card">
-          <span class="chip" style="color:var(--accent-hover)"><span data-icon="music"></span>Nhạc piano → nốt rơi</span>
-          <h1 id="empty-title">Thả một bài nhạc vào đây</h1>
-          <p>NoteFall biến bản nhạc, MIDI hoặc bản ghi âm piano thành nốt rơi xuống đúng phím, rồi xuất thành video.</p>
-          <div class="formats"><span class="chip">PDF bản nhạc</span><span class="chip">MIDI</span><span class="chip">MP3</span><span class="chip">WAV</span><span class="chip">FLAC</span></div>
+          <span class="chip" style="color:var(--accent-hover)"><span data-icon="music"></span>Bản nhạc → nốt rơi → video</span>
+          <h1 id="empty-title">Bản nhạc nào cũng chơi được</h1>
+          <p>Mở bản nhạc PDF, MusicXML, MIDI hoặc bản ghi âm piano. NoteFall cho nốt rơi đúng phím với tiếng đàn thật, có metronome, sửa được từng nốt và xuất thành video.</p>
+          <div class="formats"><span class="chip">PDF</span><span class="chip">MusicXML</span><span class="chip">MIDI</span><span class="chip">MP3</span><span class="chip">WAV</span><span class="chip">FLAC</span></div>
           <div class="actions">
             <button id="empty-open" class="btn primary"><span data-icon="folder"></span>Mở file…</button>
             <button id="empty-demo" class="btn"><span data-icon="music"></span>Thử bản mẫu Minuet</button>
-            <button id="empty-compose" class="btn"><span data-icon="pencil"></span>Soạn nhạc mới</button>
+            <button id="empty-compose" class="btn"><span data-icon="score"></span>Soạn nhạc mới</button>
           </div>
         </div>
       </section>
@@ -55,34 +61,10 @@
         <span id="status" role="status">Chưa mở bài nào</span>
       </div>
 
-      <div class="pop-anchor">
-        <button id="btn-met" class="btn" aria-label="Metronome" aria-pressed="false" title="Metronome (M: bật / tắt theo bài)"><span data-icon="metronome"></span>Metronome</button>
-        <div id="pop-met" class="popover" role="dialog" aria-label="Metronome" hidden>
-          <section>
-            <span class="label">Theo bài</span>
-            <label class="switch"><input id="met-follow" type="checkbox" /> Gõ nhịp theo bài khi phát <kbd>M</kbd></label>
-            <p style="margin:0;color:var(--text-3);font-size:12px">Nhịp đi theo tempo và số phách của bài (6/8 gõ hai nhịp mỗi ô…), phách đầu ô nhấn nhẹ hơn.</p>
-          </section>
-          <section>
-            <span class="label">Âm thanh</span>
-            <label class="row between">Tiếng <select id="met-sound" class="field"></select></label>
-            <label class="row between">Âm lượng <input id="met-vol" type="range" min="0" max="100" value="45" style="width:150px" aria-label="Âm lượng metronome" /></label>
-            <label class="switch"><input id="met-accent" type="checkbox" checked /> Nhấn phách đầu ô (cao hơn một quãng năm)</label>
-            <div class="row"><button id="met-test" class="btn sm">Nghe thử</button></div>
-          </section>
-          <section>
-            <span class="label">Luyện tập một mình</span>
-            <div class="row"><button id="met-minus" class="btn sm icon" aria-label="Giảm 1 nhịp mỗi phút">−</button><input id="met-bpm" type="number" class="field" min="30" max="240" value="80" aria-label="Số nhịp mỗi phút" style="width:72px;text-align:center" /><button id="met-plus" class="btn sm icon" aria-label="Tăng 1 nhịp mỗi phút">+</button><button id="met-tap" class="btn sm" title="Gõ đều vào nút này để đo tempo">Gõ nhịp</button></div>
-            <input id="met-bpm-range" type="range" min="30" max="240" value="80" aria-label="Tempo" />
-            <label class="row between">Số phách mỗi ô <select id="met-beats" class="field"></select></label>
-            <div id="met-dots" class="dots" aria-hidden="true"></div>
-            <div class="row"><button id="met-run" class="btn primary sm">Bắt đầu</button><button id="met-song" class="btn sm ghost" title="Lấy tempo đang dùng của bài">Lấy tempo của bài</button></div>
-          </section>
-        </div>
-      </div>
+      <button id="btn-met" class="btn icon" aria-label="Metronome" aria-pressed="false" title="Metronome theo bài: bật / tắt (M). Nhịp và tốc độ lấy từ bản nhạc"><span data-icon="metronome"></span></button>
 
       <div class="pop-anchor">
-        <button id="btn-settings" class="btn" aria-label="Cài đặt hiển thị và nhịp"><span data-icon="sliders"></span>Cài đặt</button>
+        <button id="btn-settings" class="btn icon" aria-label="Cài đặt" title="Cài đặt: hiển thị, tiếng đàn, tempo"><span data-icon="sliders"></span></button>
         <div id="pop-settings" class="popover" role="dialog" aria-label="Cài đặt" hidden>
           <section>
             <span class="label">Hiển thị</span>
@@ -133,7 +115,7 @@
       </div>
 
       <div class="pop-anchor">
-        <button id="btn-export" class="btn" aria-label="Xuất video" disabled><span data-icon="download"></span>Xuất video</button>
+        <button id="btn-export" class="btn icon" aria-label="Xuất video" title="Xuất video" disabled><span data-icon="download"></span></button>
         <div id="pop-export" class="popover" role="dialog" aria-label="Xuất video" hidden>
           <section>
             <span class="label">Video MP4 (H.264 + AAC)</span>
@@ -144,11 +126,11 @@
         </div>
       </div>
 
-      <button id="xmlbtn" class="btn" hidden title="Lưu bản nhạc đọc từ PDF thành file MusicXML để mở trong MuseScore hoặc app khác"><span data-icon="download"></span>Lưu MusicXML</button>
-      <button id="editbtn" class="btn" disabled title="Mở bản nhạc này trong trình soạn để sửa từng nốt"><span data-icon="pencil"></span>Sửa trong trình soạn</button>
+      <button id="xmlbtn" class="btn icon" hidden aria-label="Lưu MusicXML" title="Lưu MusicXML: bản nhạc đọc từ PDF, để mở trong MuseScore hoặc app khác"><span data-icon="save"></span></button>
+      <button id="editbtn" class="btn icon" disabled aria-label="Sửa trong trình soạn" title="Sửa trong trình soạn: mở bản nhạc này để sửa từng nốt"><span data-icon="score"></span></button>
     </footer>
     <input id="bg-file" type="file" accept="image/*" hidden />
-    <input id="file" type="file" accept=".mid,.midi,.wav,.mp3,.flac,.ogg,.m4a,.pdf" hidden />
+    <input id="file" type="file" accept=".mid,.midi,.wav,.mp3,.flac,.ogg,.m4a,.pdf,.musicxml,.xml,.mxl" hidden />
   </main>
 
   <main id="composer" hidden></main>
@@ -190,11 +172,11 @@
         <h3>Soạn nhạc — nhập nốt</h3>
         <dl>
           <dt><kbd>N</kbd></dt><dd>Bật / tắt chế độ nhập nốt</dd>
-          <dt><kbd>1</kbd>–<kbd>7</kbd></dt><dd>Độ dài: móc 4 … tròn</dd>
-          <dt><kbd>.</kbd></dt><dd>Nốt chấm</dd>
+          <dt><kbd>1</kbd>–<kbd>7</kbd></dt><dd>Độ dài theo thứ tự trên thanh: tròn … móc 4</dd>
+          <dt><kbd>8</kbd> / <kbd>.</kbd></dt><dd>Nốt chấm</dd>
           <dt><kbd>A</kbd>–<kbd>G</kbd></dt><dd>Nhập nốt (gần nốt trước)</dd>
           <dt><kbd>Shift</kbd>+<kbd>A–G</kbd></dt><dd>Thêm vào hợp âm (phía trên)</dd>
-          <dt><kbd>0</kbd></dt><dd>Dấu lặng</dd>
+          <dt><kbd>9</kbd> / <kbd>0</kbd></dt><dd>Dấu lặng</dd>
           <dt><kbd>R</kbd></dt><dd>Lặp lại hợp âm vừa nhập (khi chọn: lặp lại đoạn đang chọn)</dd>
           <dt><kbd>Q</kbd> <kbd>W</kbd></dt><dd>Độ dài ngắn đi / dài ra một bậc</dd>
           <dt><kbd>Alt</kbd>+<kbd>2</kbd>–<kbd>8</kbd></dt><dd>Thêm nốt cách quãng 2…8 ở trên (Shift: ở dưới)</dd>
@@ -205,8 +187,8 @@
           <dt><kbd>X</kbd></dt><dd>Đổi hướng đuôi nốt</dd>
           <dt><kbd>Ctrl</kbd>+<kbd>C</kbd> <kbd>X</kbd> <kbd>V</kbd></dt><dd>Sao chép / cắt / dán (nốt đang chọn, hoặc cả ô nhịp)</dd>
           <dt><kbd>Ctrl</kbd>+<kbd>A</kbd></dt><dd>Chọn tất cả</dd>
-          <dt>Kéo vùng trống</dt><dd>Chọn nhiều nốt bằng khung</dd>
-          <dt>Giữ chuột phải (hoặc giữa) + kéo</dt><dd>Di chuyển trang theo mọi hướng, không cần thanh cuộn</dd>
+          <dt><kbd>Shift</kbd> + kéo vùng trống</dt><dd>Chọn nhiều nốt bằng khung</dd>
+          <dt>Kéo vùng trống</dt><dd>Di chuyển trang theo mọi hướng khi đang phóng to (như MuseScore)</dd>
           <dt><kbd>Alt</kbd>+bấm</dt><dd>Đặt con trỏ, không nhập</dd>
         </dl>
       </div>

@@ -51,7 +51,13 @@ function unpack(file) {
   if (!installed()) throw new Error('Audiveris đã tải nhưng không tìm thấy chương trình bên trong')
 }
 
-let running, installing, cancelled = false
+let running, installing, cancelled = false // running: the Audiveris processes of the recognition under way
+const kill = () => running?.forEach((p) => p.kill())
+
+/** How many Audiveris processes to run side by side: at most 4, no more than half the cores, and one per 4 GB of memory (each can grow to a few GB). */
+const workerCount = (pages) => Math.max(1, Math.min(pages, 4, Math.floor(os.cpus().length / 2), Math.floor(os.totalmem() / 4e9)))
+/** Pages 1..n shared out into `k` runs of pages that follow each other, as even as can be: 18 pages, 4 runs -> 5, 5, 4, 4. */
+const shareOut = (n, k) => Array.from({ length: k }, (_, i) => { const a = Math.floor((i * n) / k), b = Math.floor(((i + 1) * n) / k); return Array.from({ length: b - a }, (_, j) => a + j + 1) }).filter((r) => r.length)
 function register() {
   ipcMain.handle('omr-status', () => ({ supported: !!ASSET, installed: !!ASSET && installed() }))
 
@@ -66,7 +72,9 @@ function register() {
     } finally { fs.rmSync(file, { force: true }); installing = undefined }
   })())
 
-  // data: the PDF's bytes; pages: how many it has (for the progress). Resolves with one MusicXML text per movement Audiveris found.
+  // data: the PDF's bytes; pages: how many it has. Resolves with one MusicXML text per movement found, in page order.
+  // The pages are shared out between a few Audiveris processes that run side by side (one reads its pages one after the other): an 18-page scan takes a
+  // fraction of the time on a machine with cores and memory to spare. Each process gets a run of pages that follow each other.
   ipcMain.handle('omr-run', (e, data, pages) => new Promise((resolve, reject) => {
     if (running) return reject(new Error('đang nhận dạng một file khác'))
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'notefall-omr-'))
@@ -74,26 +82,32 @@ function register() {
     fs.writeFileSync(pdf, Buffer.from(data))
     const keepAwake = powerSaveBlocker.start('prevent-app-suspension') // a window that is hidden or behind others must not slow the reading down
     const done = (err, val) => { running = undefined; powerSaveBlocker.stop(keepAwake); fs.rmSync(dir, { recursive: true, force: true }); err ? reject(err) : resolve(val) }
-    const p = spawn(exe(), ['-batch', '-transcribe', '-export', '-output', dir, '-option', 'org.audiveris.omr.sheet.BookManager.useCompression=false', pdf])
-    running = p; cancelled = false
-    let steps = 0, pagesDone = 0
-    const watch = (b) => { // every page goes through 20 steps (LOAD … PAGE) that the log announces: "StepMonitoring 98 | HEADS"
-      const text = b.toString(), n = (text.match(/StepMonitoring/g) || []).length
-      if (!n) return
-      steps += n; pagesDone += (text.match(/\| PAGE\b/g) || []).length
-      e.sender.send('omr-progress', { phase: 'read', page: Math.min(pages, pagesDone + 1), ratio: pages ? Math.min(1, steps / (pages * 20)) : 0 })
+    const runs = shareOut(Math.max(1, pages), workerCount(pages))
+    const steps = runs.map(() => 0), read = runs.map(() => 0), codes = []
+    const report = () => { // every page goes through 20 steps (LOAD … PAGE) that the log announces: "StepMonitoring 98 | HEADS"
+      const all = steps.reduce((a, b) => a + b, 0), pagesDone = read.reduce((a, b) => a + b, 0)
+      e.sender.send('omr-progress', { phase: 'read', page: Math.min(pages, pagesDone + 1), ratio: pages ? Math.min(1, all / (pages * 20)) : 0 })
     }
-    p.stdout.on('data', watch); p.stderr.on('data', watch)
-    p.on('error', (err) => done(err))
-    p.on('close', (code, signal) => {
-      if (cancelled || signal) return done(new Error('đã huỷ nhận dạng'))
-      const xml = fs.readdirSync(dir).filter((f) => /\.xml$/.test(f)).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
-      if (code !== 0 || !xml.length) return done(new Error('Audiveris không nhận dạng được nốt nào trong file này'))
-      done(null, xml.map((f) => fs.readFileSync(path.join(dir, f), 'utf8')))
+    running = runs.map((sheets, k) => {
+      const out = path.join(dir, `part${k}`)
+      const p = spawn(exe(), ['-batch', '-transcribe', '-export', '-output', out, '-sheets', ...sheets.map(String), '-option', 'org.audiveris.omr.sheet.BookManager.useCompression=false', pdf])
+      const watch = (b) => { const text = b.toString(), n = (text.match(/StepMonitoring/g) || []).length; if (n) { steps[k] += n; read[k] += (text.match(/\| PAGE\b/g) || []).length; report() } }
+      p.stdout.on('data', watch); p.stderr.on('data', watch)
+      p.on('error', (err) => { kill(); done(err) })
+      p.on('close', (code, signal) => {
+        codes[k] = signal ? -1 : code
+        if (codes.filter((c) => c !== undefined).length < runs.length) return
+        if (cancelled || codes.includes(-1)) return done(new Error('đã huỷ nhận dạng'))
+        const xml = runs.flatMap((_, j) => { const d = path.join(dir, `part${j}`); return fs.existsSync(d) ? fs.readdirSync(d).filter((f) => /\.xml$/.test(f)).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).map((f) => fs.readFileSync(path.join(d, f), 'utf8')) : [] })
+        if (!xml.length) return done(new Error('Audiveris không nhận dạng được nốt nào trong file này'))
+        done(null, xml)
+      })
+      return p
     })
+    cancelled = false
   }))
 
-  ipcMain.handle('omr-cancel', () => { cancelled = true; running?.kill() })
+  ipcMain.handle('omr-cancel', () => { cancelled = true; kill() })
 }
 
-module.exports = { register }
+module.exports = { register, shareOut }

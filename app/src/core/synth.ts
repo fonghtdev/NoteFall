@@ -1,6 +1,6 @@
-import { end, type Note } from './models'
-import { mixSampled } from './sf2'
-import { loadSoundFont } from './soundfonts'
+import { soundEnd, type Note } from './models'
+import { defaultPreset, mixSampled, parseSf2, type SoundFont } from './sf2'
+import { loadSoundFont, voiceFont } from './soundfonts'
 
 /**
  * Notes -> piano audio, rendered offline so it plays, seeks and exports like any decoded file.
@@ -15,17 +15,21 @@ import { loadSoundFont } from './soundfonts'
  *  - a short felt thump at the strike, a gentle soundboard colour (warm lows, presence), notes spread left → right by pitch,
  *    and a light hall.
  * 'simple' is the old plain additive tone, kept for comparison.
+ * 'salamander' (the default) is a recorded Yamaha C5 grand that ships with the app (public/piano, see its README for the licence).
  */
-export type PianoVoice = 'crystal' | 'simple' | `sf2:${string}` // 'sf2:<id>' plays an installed SoundFont (see soundfonts.ts)
-export const VOICES: Record<'crystal' | 'simple', string> = { crystal: 'Piano cơ (Crystal)', simple: 'Đơn giản' }
-let current: PianoVoice = 'crystal'
+export type PianoVoice = 'salamander' | 'crystal' | 'simple' | `sf2:${string}` // 'sf2:<library>:<preset>' plays a piano of an installed SoundFont (see soundfonts.ts)
+export const VOICES: Record<'salamander' | 'crystal' | 'simple', string> = { salamander: 'Salamander Light', crystal: 'Piano cơ (Crystal)', simple: 'Đơn giản' }
+/** The piano the app opens with unless the person ticked another one as their default. */
+export const DEFAULT_VOICE: PianoVoice = 'salamander'
+let current: PianoVoice = DEFAULT_VOICE
 /** Fired on `window` when the piano in use, or the list of pianos, changed: every place that shows it repaints. */
 export const PIANO_CHANGED = 'notefall-piano'
 /** Where the piano last used and the piano ticked as default are kept (localStorage). */
 export const PIANO_LAST = 'notefall.piano', PIANO_DEFAULT = 'notefall.pianoDefault'
-/** The piano to start with: the one ticked as the default, else the one used last, whichever still exists. */
-export function startVoice(read: (key: string) => string | null, exists: (voice: string) => boolean): PianoVoice | undefined {
-  for (const k of [PIANO_DEFAULT, PIANO_LAST]) { const v = read(k); if (v && exists(v)) return v as PianoVoice }
+/** The piano to start with: the one ticked as the default if it still exists, else the app's own default (the one used last is not carried over). */
+export function startVoice(read: (key: string) => string | null, exists: (voice: string) => boolean): PianoVoice {
+  const v = read(PIANO_DEFAULT)
+  return v && exists(v) ? (v as PianoVoice) : DEFAULT_VOICE
 }
 export const setPianoVoice = (v: PianoVoice) => { current = v }
 export const getPianoVoice = () => current
@@ -138,7 +142,7 @@ export async function mixNotes(notes: Note[], sr: number, length: number): Promi
     const bankKey = key + ':' + variant
     let smp = bank.get(bankKey)
     if (!smp) { smp = synthNote(n.pitch, Math.round(clamp(n.velocity, 8, 127) / 8) * 8, sr, variant); bank.set(bankKey, smp) }
-    const t = n.start + (rnd() - 0.5) * 0.0006, off = Math.max(n.start + 0.06, end(n))
+    const t = n.start + (rnd() - 0.5) * 0.0006, off = Math.max(n.start + 0.06, soundEnd(n))
     const s0 = Math.round(t * sr), held = Math.round((off - n.start) * sr)
     const relTau = (PIANO.release * (n.pitch < 48 ? 1.5 : n.pitch > 84 ? 0.6 : 1)) / 2.3
     const gain = 10 ** (((rnd() - 0.5) * 2) / 20) // ±1 dB, like a pianist's evenness
@@ -184,12 +188,20 @@ async function finish(L: Float32Array<ArrayBuffer>, R: Float32Array<ArrayBuffer>
   return buf
 }
 
+/** The piano that ships with the app, read once (it is next to the page, so it works offline and in every build). */
+let bundledFont: Promise<SoundFont> | undefined
+const bundled = () => (bundledFont ??= fetch('./piano/SalC5Light2.sf2').then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.arrayBuffer() }).then(parseSf2))
+
 export async function renderNotes(notes: Note[], sampleRate = 44100, voice: PianoVoice = current): Promise<AudioBuffer> {
-  const length = Math.ceil((notes.reduce((m, n) => Math.max(m, end(n)), 0) + 3) * sampleRate)
+  const length = Math.ceil((notes.reduce((m, n) => Math.max(m, soundEnd(n)), 0) + 3) * sampleRate)
   if (voice === 'simple') return renderSimple(notes, sampleRate, length)
+  if (voice === 'salamander') {
+    const font = await bundled().catch((e) => { console.warn('the bundled piano did not load: playing the built-in one', e); bundledFont = undefined })
+    if (font) { const [L, R] = await mixSampled(font, defaultPreset(font), notes, sampleRate, length); return finish(L, R, sampleRate, length, false) }
+  }
   if (voice.startsWith('sf2:')) {
-    const lib = await loadSoundFont(voice.slice(4))
-    if (lib) { const [L, R] = await mixSampled(lib.font, lib.preset, notes, sampleRate, length); return finish(L, R, sampleRate, length, false) }
+    const { id, preset } = voiceFont(voice), lib = await loadSoundFont(id)
+    if (lib) { const [L, R] = await mixSampled(lib.font, preset !== undefined && lib.font.presets[preset] ? preset : lib.preset, notes, sampleRate, length); return finish(L, R, sampleRate, length, false) }
     console.warn('SoundFont not available any more: playing the built-in piano') // its file was removed or the browser cleared its storage
   }
   const [L, R] = await mixNotes(notes, sampleRate, length)
@@ -208,7 +220,7 @@ async function renderSimple(notes: Note[], sampleRate: number, length: number): 
     const g = ctx.createGain()
     const peak = 0.22 * (n.velocity / 127) ** 1.4
     const tau = Math.max(0.35, 2.6 - n.pitch * 0.022)
-    const t = n.start, off = Math.max(n.start + 0.05, end(n))
+    const t = n.start, off = Math.max(n.start + 0.05, soundEnd(n))
     g.gain.setValueAtTime(0, t)
     g.gain.linearRampToValueAtTime(peak, t + 0.004)
     g.gain.setTargetAtTime(0, t + 0.004, tau)

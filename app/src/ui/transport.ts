@@ -1,3 +1,5 @@
+import { bus } from '../core/mixer'
+
 /** Playback clock. Time comes from the AudioContext clock, so picture and sound share one timeline. */
 export class Transport {
   ctx = new AudioContext()
@@ -38,7 +40,7 @@ export class Transport {
     if (this.buffer) {
       this.src = this.ctx.createBufferSource()
       this.src.buffer = this.buffer
-      this.src.connect(this.ctx.destination)
+      this.src.connect(bus(this.ctx, 'piano'))
       // before the song starts the audio waits; otherwise it joins mid-way
       this.src.start(this.ctx.currentTime + Math.max(0, -this.t0), Math.max(0, this.t0))
     }

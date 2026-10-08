@@ -3,15 +3,16 @@ import { handleStaleChunk, isMissingChunk } from './ui/stale'
 import { isTouchDevice, saveFile } from './ui/save'
 import { paintIcons } from './ui/icons'
 import { popover } from './ui/popover'
+import { mountMixer } from './ui/mixer'
 import { PianoView } from './ui/pianoView'
 import { Transport } from './ui/transport'
 import { parseMidi } from './core/midi'
 import { transcribe } from './core/basicPitch'
-import { PIANO_CHANGED, PIANO_DEFAULT, PIANO_LAST, VOICES, startVoice, getPianoVoice, partialAmps, partials, decayOf, PIANO, renderNotes, setPianoVoice, type PianoVoice } from './core/synth'
+import { DEFAULT_VOICE, PIANO_CHANGED, PIANO_DEFAULT, PIANO_LAST, VOICES, startVoice, getPianoVoice, partialAmps, partials, decayOf, PIANO, renderNotes, setPianoVoice, type PianoVoice } from './core/synth'
 import { clean } from './core/postprocess'
 import { end, type Note } from './core/models'
 import { beatTimes, estimateGrid, gridForSignature, quantize, scaleTempo, shiftOffset, type BeatGrid } from './core/beats'
-import { DEFAULT_CLICK, Follower, Practice, listSource, SOUNDS, playClick, type ClickSettings, type ClickSound, type ClickSource } from './core/metronome'
+import { DEFAULT_CLICK, Follower, listSource, playClick, type ClickSource } from './core/metronome'
 import * as cache from './core/cache'
 import { readPdfScore, ScanPdfError } from './core/score/pdf'
 import { scanPdf } from './editor/scan'
@@ -24,10 +25,10 @@ import { Composer } from './editor/composer'
 import { minuet } from './editor/demo'
 import { toPerformance } from './editor/perform'
 import { scoreFromOmr } from './editor/importScore'
-import { exportMusicXml, scoreFromNotes } from './editor/io'
+import { exportMusicXml, importFileFull, scoreFromNotes } from './editor/io'
 import { keyName } from './editor/render'
 import { initFontsDialog } from './ui/fonts'
-import { fontLabel, listFonts, loadSoundFont } from './core/soundfonts'
+import { fontVoices, listFonts, loadSoundFont, upgradeVoice } from './core/soundfonts'
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 const view = new PianoView($('view') as HTMLCanvasElement, $('gl') as HTMLCanvasElement)
@@ -42,7 +43,7 @@ if (isTouchDevice()) { // there is nothing to drag a file from on a tablet: say 
 }
 popover($('btn-settings'), $('pop-settings'))
 popover($('btn-export'), $('pop-export'))
-popover($('btn-met'), $('pop-met'))
+mountMixer($('pop-mix')); popover($('btn-mix'), $('pop-mix'))
 
 /** Status line in the dock; errors get the danger colour. */
 const say = (text: string, kind: '' | 'error' = '') => { status.textContent = text; status.title = text; status.style.color = kind === 'error' ? 'var(--danger)' : '' }
@@ -66,12 +67,15 @@ const CACHE_V = ':v2'
 
 const isMidi = (name: string) => /\.midi?$/i.test(name)
 const isPdf = (name: string) => /\.pdf$/i.test(name)
+const isMusicXml = (name: string) => /\.(musicxml|xml|mxl)$/i.test(name)
 
 // raw = what the transcriber produced; the view shows quantize(raw) if asked. key = cache key (audio only).
 let raw: Note[] = [], shown: Note[] = [], grid: BeatGrid | undefined, key: string | undefined
 let audioBuf: AudioBuffer | undefined, songName = 'notefall'
 let midiNotes: Note[] | undefined // set while a MIDI file is open (its sound is made here, so a change of piano remakes it)
 let score: Score | undefined // set while a sheet-music PDF is open: notes are re-timed from it when the tempo changes
+/** The composer's own score when that is what plays (a composed piece, MusicXML, a scan, the demo): edited and saved as it is, not rebuilt from the played notes. */
+let composed: import('./editor/model').Score | undefined
 const ctl = { box: $('beatctl'), bpm: $('bpm'), show: $<HTMLInputElement>('showbeats'), quant: $<HTMLInputElement>('quant') }
 
 function refresh() {
@@ -165,6 +169,7 @@ $('tab-composer').onclick = () => openTab('composer')
 
 /** Falling notes -> composer: whatever is open (sheet music, MIDI, a recording) written as a score the composer can edit. */
 function songAsScore(): { score: import('./editor/model').Score; say: string } | undefined {
+  if (composed) return { score: structuredClone(composed), say: `Đã mở ${composed.title || 'bản nhạc'} để sửa` }
   if (score) { // sheet music: keep rests, voices, ornaments, repeats
     const r = scoreFromOmr(score, songName)
     return { score: r.score, say: r.warnings.length ? `Đã mở PDF để sửa · ${r.warnings.join(' · ')}` : 'Đã mở PDF để sửa' }
@@ -182,7 +187,7 @@ let filledFrom: { id: string; edits: number } | undefined
 function fillComposerFromSong(force: boolean) {
   const r = songAsScore()
   if (!r) return
-  const id = `${songName}|${score ? 'pdf' : raw.length}`
+  const id = `${songName}|${composed ? 'composed' : score ? 'pdf' : raw.length}`
   const untouched = !composer.hasMusic() || (!!filledFrom && composer.editCount === filledFrom.edits)
   if (!force && (!untouched || filledFrom?.id === id)) return
   composer.setScore(r.score)
@@ -195,6 +200,7 @@ $('editbtn').onclick = () => { fillComposerFromSong(true); openTab('composer') }
 
 /** Show a composed score in the falling view. */
 async function playComposed(sc: import('./editor/model').Score) {
+  composed = structuredClone(sc)
   score = toPerformance(sc)
   songName = sc.title || 'notefall'
   $<HTMLInputElement>('tempo').value = String(sc.tempo)
@@ -206,7 +212,7 @@ const composer = new Composer($('composer'), {
   toFalling: playComposed,
   // the piano and the metronome are the ones of the falling view: one choice for the whole app
   piano: {
-    options: () => [...pianoSel.options].map((o) => ({ value: o.value, label: o.textContent ?? o.value })),
+    options: () => [...pianoSel.options].map((o) => ({ value: o.value, label: o.textContent ?? o.value, group: o.parentElement instanceof HTMLOptGroupElement ? o.parentElement.label : undefined })),
     value: getPianoVoice,
     set: (v) => { pianoSel.value = v; pianoSel.dispatchEvent(new Event('change')) },
     openLibrary: () => $('btn-fonts').click(),
@@ -232,11 +238,18 @@ document.addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && /^
 
 export async function loadFile(file: File) {
   playBtn.disabled = exportBtn.disabled = exportOpen.disabled = editBtn.disabled = true
+  composed = undefined // (a composed piece, MusicXML or a scan sets it again when it plays)
   songName = file.name.replace(/\.[^.]+$/, '')
   say(`Đang phân tích ${file.name}…`)
   progress.hidden = false; progress.value = 0
   try {
     const data = await file.arrayBuffer()
+    if (isMusicXml(file.name)) { // notation: read as the composer reads it, then played like a composed piece
+      const { score: sc, warnings } = await importFileFull(file)
+      await playComposed(sc)
+      if (warnings.length) say(`${file.name} · ⚠ ${warnings[0]}`)
+      return
+    }
     if (isPdf(file.name)) {
       score = await readPdfScore(data)
       if (score.tempo) $<HTMLInputElement>('tempo').value = String(score.tempo) // the "♩ = 93" printed at the top
@@ -268,11 +281,11 @@ export async function loadFile(file: File) {
   }
 }
 
-/** A scanned PDF: Audiveris reads it (desktop app), then it plays like any score. */
+/** A PDF the reader cannot read (a scan, an unknown engraver): Audiveris turns it into MusicXML (desktop app), then it plays like any score. */
 async function playScan(file: File, why: ScanPdfError) {
   try {
     const r = await scanPdf(file, why.pages)
-    if (!r) return say(`Lỗi: ${why.message} Bản scan chỉ đọc được trong app NoteFall trên máy tính (Mac / Windows).`, 'error')
+    if (!r) return say(`Lỗi: ${why.message}`, 'error')
     await playComposed(r.score)
     say(`Đã mở ${file.name} · ⚠ ${r.warnings[0]}`)
   } catch (e) { say(`Không nhận dạng được: ${e instanceof Error ? e.message : e}`, 'error') }
@@ -299,64 +312,18 @@ document.addEventListener('drop', (e) => {
   const f = e.dataTransfer?.files[0]
   if (f) void (f.type.startsWith('image/') ? useBackground(f) : loadFile(f))
 })
-// ---- metronome: clicks along the song, and a free-standing one for practice
-type MetState = ClickSettings & { follow: boolean; bpm: number; beats: number }
-const met: MetState = { ...DEFAULT_CLICK, follow: false, bpm: 80, beats: 4 }
-try { Object.assign(met, JSON.parse(localStorage.getItem('notefall.met') ?? '{}')) } catch { /* defaults */ }
-const saveMet = () => { try { localStorage.setItem('notefall.met', JSON.stringify(met)) } catch { /* best effort */ } }
+// ---- metronome: clicks along the song, in its own tempo and metre (read from the music); the one button turns it on and off
+const met = { ...DEFAULT_CLICK, follow: false }
+try { met.follow = (JSON.parse(localStorage.getItem('notefall.met') ?? '{}') as { follow?: boolean }).follow === true } catch { /* off */ }
 const follower = new Follower(transport.ctx, () => transport.now(), () => clickSource, () => met)
-const dots = $('met-dots'), runBtn = $('met-run')
-const practice = new Practice(transport.ctx, () => met, (i, accent) => {
-  const el = dots.children[i] as HTMLElement | undefined
-  if (!el) return
-  el.classList.add('on'); el.classList.toggle('acc', accent && met.accent)
-  setTimeout(() => el.classList.remove('on'), 110)
-})
-const sound = $<HTMLSelectElement>('met-sound'), vol = $<HTMLInputElement>('met-vol'), beatsSel = $<HTMLSelectElement>('met-beats')
-const bpmNum = $<HTMLInputElement>('met-bpm'), bpmRange = $<HTMLInputElement>('met-bpm-range')
-for (const [k, label] of Object.entries(SOUNDS)) sound.add(new Option(label, k))
-for (let n = 1; n <= 9; n++) beatsSel.add(new Option(String(n), String(n)))
-const drawDots = () => { dots.innerHTML = ''; for (let i = 0; i < met.beats; i++) dots.appendChild(document.createElement('span')) }
-const applyMet = () => {
-  met.bpm = Math.min(240, Math.max(30, Math.round(met.bpm || 80)))
-  $<HTMLInputElement>('met-follow').checked = met.follow
-  $('btn-met').setAttribute('aria-pressed', String(met.follow || practice.running))
-  sound.value = met.sound; vol.value = String(Math.round(met.volume * 100)); fill(vol)
-  $<HTMLInputElement>('met-accent').checked = met.accent
-  bpmNum.value = String(met.bpm); bpmRange.value = String(met.bpm); fill(bpmRange)
-  beatsSel.value = String(met.beats)
-  practice.bpm = met.bpm; practice.beats = met.beats
-  runBtn.textContent = practice.running ? 'Dừng' : 'Bắt đầu'
-  saveMet()
+const setFollow = (on: boolean) => {
+  met.follow = on
+  $('btn-met').setAttribute('aria-pressed', String(on))
+  try { localStorage.setItem('notefall.met', JSON.stringify({ follow: on })) } catch { /* best effort */ }
 }
-const stopPractice = () => { practice.stop(); dots.querySelectorAll('.on').forEach((e) => e.classList.remove('on')); applyMet() }
-const setFollow = (on: boolean) => { met.follow = on; if (on && practice.running) stopPractice(); applyMet() }
-$<HTMLInputElement>('met-follow').onchange = (e) => setFollow((e.target as HTMLInputElement).checked)
-sound.onchange = () => { met.sound = sound.value as ClickSound; applyMet(); playClick(transport.ctx, transport.ctx.currentTime + 0.02, false, met) }
-vol.oninput = () => { met.volume = +vol.value / 100; applyMet() }
-vol.onchange = () => playClick(transport.ctx, transport.ctx.currentTime + 0.02, true, met)
-$<HTMLInputElement>('met-accent').onchange = (e) => { met.accent = (e.target as HTMLInputElement).checked; applyMet() }
-$('met-test').onclick = () => { void transport.ctx.resume(); const t = transport.ctx.currentTime + 0.05; playClick(transport.ctx, t, true, met); playClick(transport.ctx, t + 0.5, false, met); playClick(transport.ctx, t + 1, false, met); playClick(transport.ctx, t + 1.5, false, met) }
-bpmNum.onchange = () => { met.bpm = +bpmNum.value; applyMet() }
-bpmRange.oninput = () => { met.bpm = +bpmRange.value; applyMet() }
-$('met-minus').onclick = () => { met.bpm -= 1; applyMet() }
-$('met-plus').onclick = () => { met.bpm += 1; applyMet() }
-beatsSel.onchange = () => { met.beats = +beatsSel.value; drawDots(); applyMet() }
-let taps: number[] = []
-$('met-tap').onclick = () => {
-  const now = performance.now()
-  if (taps.length && now - taps[taps.length - 1] > 2000) taps = []
-  taps.push(now); taps = taps.slice(-6)
-  if (taps.length >= 2) { met.bpm = 60000 / ((taps[taps.length - 1] - taps[0]) / (taps.length - 1)); applyMet() }
-}
-runBtn.onclick = () => {
-  if (practice.running) { stopPractice(); return }
-  if (transport.playing) { setFollow(true); say('Metronome: gõ theo bài đang phát'); return } // the song keeps playing, the clicks follow it
-  met.follow = false; drawDots(); applyMet(); practice.start(); applyMet()
-}
-$('met-song').onclick = () => { const bpm = +$<HTMLInputElement>('tempo').value || grid?.bpm; if (bpm) { met.bpm = bpm; applyMet() } }
-drawDots(); applyMet()
-;(window as unknown as { __metronome: unknown }).__metronome = { playClick, SOUNDS, met }
+$('btn-met').onclick = () => { setFollow(!met.follow); say(met.follow ? 'Metronome: bật' : 'Metronome: tắt') }
+setFollow(met.follow)
+;(window as unknown as { __metronome: unknown }).__metronome = { playClick, met }
 import('./editor/render').then((m) => { ;(window as unknown as { __renderStats: unknown }).__renderStats = m.renderStats }).catch(() => {})
 ;(window as unknown as { __view: unknown }).__view = view
 ;(window as unknown as { __synth: unknown }).__synth = { renderNotes, PIANO, partials, partialAmps, decayOf }
@@ -364,7 +331,6 @@ let lastFrameT = 0
 const syncMetronome = (t: number) => { // called every frame
   if (met.follow && transport.playing) { if (!follower.running) follower.start(); else if (Math.abs(t - lastFrameT) > 0.4) follower.reset() }
   else if (follower.running) follower.stop()
-  if (transport.playing && practice.running) setFollow(true) // the song started: the practice click hands over to clicks along the song (its own tempo would drift from the music)
   lastFrameT = t
 }
 
@@ -390,10 +356,12 @@ document.addEventListener('keydown', (e) => { // the arrows jump 5 seconds back 
 // settings, remembered between runs (best-effort: storage may be unavailable)
 const bgDim = $<HTMLInputElement>('bg-dim'), bgBlur = $<HTMLInputElement>('bg-blur'), graceSel = $<HTMLSelectElement>('grace'), speed = $<HTMLInputElement>('speed'), sparks = $<HTMLInputElement>('sparks'), glass = $<HTMLInputElement>('glass'), themeSel = $<HTMLSelectElement>('theme')
 for (const id of ['black', 'crystal', 'image']) themeSel.add(new Option(THEMES[id].name, id)) // black / crystal / your own picture
+/** Seconds between pressing play and the music starting (the first notes are already falling). */
+const LEAD_IN = 2
 function applySettings() {
   view.lookahead = 10 - +speed.value // slider right = faster = fewer seconds on screen
   fill(speed)
-  transport.setLead(view.lookahead)
+  transport.setLead(Math.min(LEAD_IN, view.lookahead)) // the first notes start part way down the screen rather than at its top
   seek.min = String(-transport.lead)
   if (!transport.playing) { seek.value = String(transport.now()); fill(seek) }
   view.sparks = sparks.checked
@@ -446,22 +414,26 @@ void cache.load<Blob>('bg:image').then((b) => { if (b) void createImageBitmap(b)
 
 // the piano the notes are played on: the built-in tones and every SoundFont the user installed
 const pianoSel = $<HTMLSelectElement>('piano')
-const fillPiano = () => {
+const fillPiano = () => { // every piano of every library, grouped under the library's name
   pianoSel.replaceChildren()
   for (const [k, label] of Object.entries(VOICES)) pianoSel.add(new Option(label, k))
-  for (const f of listFonts()) pianoSel.add(new Option(fontLabel(f), `sf2:${f.id}`))
-  if (![...pianoSel.options].some((o) => o.value === getPianoVoice())) setPianoVoice('crystal') // its library is gone
+  for (const f of listFonts()) {
+    const g = document.createElement('optgroup'); g.label = f.name
+    for (const v of fontVoices(f)) g.append(new Option(v.label, v.value))
+    pianoSel.append(g)
+  }
+  if (![...pianoSel.options].some((o) => o.value === getPianoVoice())) setPianoVoice(DEFAULT_VOICE) // its library is gone
   pianoSel.value = getPianoVoice()
   window.dispatchEvent(new Event(PIANO_CHANGED))
 }
-try { const v = startVoice((k) => localStorage.getItem(k), (v) => v in VOICES || listFonts().some((f) => `sf2:${f.id}` === v)); if (v) setPianoVoice(v) } catch { /* default */ }
+try { setPianoVoice(startVoice((k) => { const x = localStorage.getItem(k); return x && upgradeVoice(x) }, (v) => v in VOICES || listFonts().some((f) => fontVoices(f).some((o) => o.value === v)))) } catch { /* default */ }
 fillPiano()
-{ // a library installed before the instrument's name was kept learns it now (the one in use is read when it plays anyway)
-  const inUse = getPianoVoice()
-  if (inUse.startsWith('sf2:') && !listFonts().find((f) => `sf2:${f.id}` === inUse)?.presetName) setTimeout(() => void loadSoundFont(inUse.slice(4)).then(fillPiano), 1500)
+{ // libraries installed before their pianos were listed learn them now, one after the other
+  const old = listFonts().filter((f) => !f.pianos)
+  if (old.length) setTimeout(() => void old.reduce((p, f) => p.then(() => loadSoundFont(f.id)).then(() => undefined), Promise.resolve()).then(fillPiano), 1500)
 }
 /** The tick "default": the piano the app opens with, whatever was used last. It stands for the piano in use now, so choosing another one unticks it. */
-const isPianoDefault = () => { try { return localStorage.getItem(PIANO_DEFAULT) === getPianoVoice() } catch { return false } }
+const isPianoDefault = () => { try { return upgradeVoice(localStorage.getItem(PIANO_DEFAULT) ?? '') === getPianoVoice() } catch { return false } }
 const setPianoDefault = (on: boolean) => {
   try { on ? localStorage.setItem(PIANO_DEFAULT, getPianoVoice()) : localStorage.removeItem(PIANO_DEFAULT) } catch { /* best effort */ }
   window.dispatchEvent(new Event(PIANO_CHANGED))
@@ -507,7 +479,6 @@ let cancelExport = false
 exportBtn.onclick = async () => {
   if (progress.hidden === false && exportBtn.textContent === 'Huỷ') { cancelExport = true; return }
   transport.pause(); setPlayState()
-  stopPractice() // the video's sound is the song alone: the metronome never goes into it (and stays quiet while it is made)
   cancelExport = false
   exportBtn.textContent = 'Huỷ'
   playBtn.disabled = true

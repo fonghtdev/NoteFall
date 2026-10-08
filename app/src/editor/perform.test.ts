@@ -27,6 +27,17 @@ describe('playing marks', () => {
     expect(v[3]).toBe(DYN_VELOCITY.f)
   })
 
+  it('the sustain pedal holds every staff\'s notes until it goes up; the keys (falling notes) keep their length', () => {
+    const s = fromText([{ rh: 'C5:1 D5:1 E5:1 F5:1', lh: 'C3:2 G3:2' }, { rh: 'G5:4', lh: 'C3:4' }])
+    const rh = s.measures[0].staves[0][0]
+    toggleSpan(s, 'pedal', rh[0].id, rh[2].id)                 // down on C5, up after E5 (beat 3)
+    const n = play(s), at = (p: number, t: number) => n.find((x) => x.pitch === p && Math.abs(x.start - t) < 1e-6)!
+    expect([at(72, 0).duration, at(72, 0).hold]).toEqual([1, 3])  // C5: key one beat, sound until beat 3
+    expect(at(74, 1).hold).toBe(2); expect(at(76, 2).hold).toBeUndefined() // E5 ends where the pedal goes up
+    expect(at(48, 0).hold).toBe(3)                            // the left hand too
+    expect(at(77, 3).hold).toBeUndefined(); expect(at(79, 4).hold).toBeUndefined()
+  })
+
   it('without any marking everything is mezzo-forte', () => {
     expect(play(fromText([{ rh: 'C5:4', lh: 'r:4' }]))[0].velocity).toBe(DYN_VELOCITY.mf)
   })

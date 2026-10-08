@@ -32,7 +32,7 @@ export function playOrder(ms: Measure[], repeats = true): number[] {
   return order
 }
 
-export interface Timed { pitch: number; start: number; duration: number; staff: number; velocity?: number } // quarter notes from the start
+export interface Timed { pitch: number; start: number; duration: number; staff: number; velocity?: number; hold?: number } // quarter notes from the start; hold: sounding length under the pedal
 
 /** Score -> notes in quarter-note time: repeats expanded, tied notes merged. */
 export function unroll(score: Score, repeats = true): Timed[] {
@@ -40,7 +40,7 @@ export function unroll(score: Score, repeats = true): Timed[] {
   let at = 0
   for (const mi of playOrder(score.measures, repeats)) {
     const m = score.measures[mi]
-    for (const n of m.notes) out.push({ pitch: n.pitch, staff: n.staff, start: at + n.start, duration: n.duration, tieNext: n.tieNext, velocity: n.velocity })
+    for (const n of m.notes) out.push({ pitch: n.pitch, staff: n.staff, start: at + n.start, duration: n.duration, tieNext: n.tieNext, velocity: n.velocity, hold: n.hold })
     at += m.length
   }
   out.sort((a, b) => a.start - b.start)
@@ -51,12 +51,13 @@ export function unroll(score: Score, repeats = true): Timed[] {
       const end = n.start + n.duration
       const j = out.findIndex((o, k) => !gone.has(k) && k > i && o.pitch === n.pitch && o.staff === n.staff && Math.abs(o.start - end) < 1e-6)
       if (j < 0) break
+      n.hold = out[j].hold === undefined ? undefined : out[j].start + out[j].hold - n.start // the last piece says how long the merged note sounds
       n.duration += out[j].duration
       n.tieNext = out[j].tieNext
       gone.add(j)
     }
   }
-  return out.filter((_, k) => !gone.has(k)).map(({ pitch, start, duration, staff, velocity }) => ({ pitch, start, duration, staff, velocity }))
+  return out.filter((_, k) => !gone.has(k)).map(({ pitch, start, duration, staff, velocity, hold }) => ({ pitch, start, duration, staff, velocity, ...(hold ? { hold } : {}) }))
 }
 
 /** Where the tempo changes, in the order the bars are played: `ratio` is the speed relative to the first bar. Empty when it never changes. */
@@ -120,5 +121,5 @@ export function scoreClicks(score: Score, repeats: boolean, bpm: number, changes
 /** `bpm` = quarter notes per minute (at the start; `changes` speed it up or down from there). */
 export function toNotes(timed: Timed[], bpm: number, velocity = 85, changes: { at: number; ratio: number }[] = []): Note[] {
   const secs = (q: number) => secondsAt(q, bpm, changes)
-  return timed.map((n) => ({ pitch: n.pitch, start: secs(n.start), duration: secs(n.start + n.duration) - secs(n.start), velocity: n.velocity ?? velocity, hand: (n.staff >= 1 ? 1 : 0) as 0 | 1 })) // upper staff = right hand
+  return timed.map((n) => ({ pitch: n.pitch, start: secs(n.start), duration: secs(n.start + n.duration) - secs(n.start), velocity: n.velocity ?? velocity, hand: (n.staff >= 1 ? 1 : 0) as 0 | 1, ...(n.hold ? { hold: secs(n.start + n.hold) - secs(n.start) } : {}) })) // upper staff = right hand
 }

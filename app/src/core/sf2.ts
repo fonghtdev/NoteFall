@@ -1,9 +1,10 @@
-import { end, type Note } from './models'
+import { soundEnd, type Note } from './models'
 
 /**
  * SoundFont 2 (.sf2): a bank of recorded instruments. This reads the file and plays notes from it (the parts of the format a piano needs):
- * key and velocity ranges, root key and tuning, looping, the volume envelope (delay, attack, hold, decay, sustain, release), pan and attenuation.
- * Filters, LFOs and modulators are ignored.
+ * key and velocity ranges, root key and tuning, looping, the volume envelope (delay, attack, hold, decay, sustain, release), pan, attenuation,
+ * and the low-pass filter (a library's "bright" and "dark" pianos are often the same samples with another cutoff), darkened for soft notes by the default velocity modulator.
+ * LFOs, the modulation envelope and other modulators are ignored.
  */
 
 /** One playable zone: which keys and velocities it answers, and how its sample is played. */
@@ -18,6 +19,7 @@ export interface Region {
   pan: number                // -1 left .. 1 right
   gain: number               // linear, from the attenuation
   delay: number; attack: number; hold: number; decay: number; sustain: number; release: number // seconds, sustain a level 0..1
+  cutoff: number; q: number  // low-pass filter: cutoff in cents (13500 and up = open), resonance in centibels
 }
 export interface Preset { name: string; bank: number; program: number; regions: Region[] }
 interface SampleHeader { name: string; start: number; end: number; loopStart: number; loopEnd: number; rate: number; pitch: number; correction: number; type: number }
@@ -27,7 +29,7 @@ const str = (v: DataView, at: number, n: number) => { let s = ''; for (let i = 0
 const tc = (x: number) => 2 ** (x / 1200) // timecents -> seconds
 
 interface Zone { gens: Map<number, number>; lo: [number, number]; vel: [number, number] }
-const GEN = { startOff: 0, endOff: 1, startLoopOff: 2, endLoopOff: 3, startCoarse: 4, endCoarse: 12, pan: 17, delay: 33, attack: 34, hold: 35, decay: 36, sustain: 37, release: 38, instrument: 41, keyRange: 43, velRange: 44, startLoopCoarse: 45, attenuation: 48, endLoopCoarse: 50, coarse: 51, fine: 52, sampleId: 53, sampleModes: 54, scale: 56, root: 58 }
+const GEN = { startOff: 0, endOff: 1, startLoopOff: 2, endLoopOff: 3, startCoarse: 4, filterFc: 8, filterQ: 9, endCoarse: 12, pan: 17, delay: 33, attack: 34, hold: 35, decay: 36, sustain: 37, release: 38, instrument: 41, keyRange: 43, velRange: 44, startLoopCoarse: 45, attenuation: 48, endLoopCoarse: 50, coarse: 51, fine: 52, sampleId: 53, sampleModes: 54, scale: 56, root: 58 }
 const RANGES = new Set<number>([GEN.keyRange, GEN.velRange])
 
 /** The zones of one preset / instrument from its bag, generator and header lists; the first zone with no target is the global one. */
@@ -100,6 +102,7 @@ export function parseSf2(buf: ArrayBuffer): SoundFont {
           gain: 10 ** (-Math.max(0, g(GEN.attenuation, 0)) / 200),
           delay: tc(g(GEN.delay, -12000)), attack: tc(g(GEN.attack, -12000)), hold: tc(g(GEN.hold, -12000)), decay: tc(g(GEN.decay, -12000)),
           sustain: 10 ** (-Math.min(1440, Math.max(0, g(GEN.sustain, 0))) / 200), release: tc(g(GEN.release, -12000)),
+          cutoff: g(GEN.filterFc, 13500), q: Math.max(0, g(GEN.filterQ, 0)),
         })
       }
     }
@@ -113,6 +116,19 @@ export function parseSf2(buf: ArrayBuffer): SoundFont {
 /** The preset a piano player wants: bank 0, program 0 (GM "Acoustic Grand Piano"), else the first one. */
 export const defaultPreset = (f: SoundFont) => Math.max(0, f.presets.findIndex((p) => p.bank === 0 && p.program === 0))
 
+/**
+ * The region's low-pass filter for a note of velocity `vel` (undefined: open), a two-pole (RBJ) low-pass. SoundFont 2.04's default modulator
+ * closes it for soft notes: up to 2400 cents, below velocity 64 only.
+ * ponytail: the default modulator only; a library's own velocity-to-cutoff modulators are not read (GeneralUser has some), parse pmod/imod if one sounds off.
+ */
+export function lowpass(r: Pick<Region, 'cutoff' | 'q'>, vel: number, sr: number): { b0: number; b1: number; b2: number; a1: number; a2: number } | undefined {
+  if (r.cutoff >= 13500) return undefined
+  const cents = r.cutoff - (vel < 64 ? 2400 * (1 - vel / 127) : 0)
+  const f = Math.min(0.45 * sr, 8.176 * 2 ** (cents / 1200)), Q = 10 ** ((r.q / 10 - 3.01) / 20)
+  const w = (2 * Math.PI * f) / sr, alpha = Math.sin(w) / (2 * Math.max(0.5, Q)), c = Math.cos(w), a0 = 1 + alpha
+  return { b0: (1 - c) / 2 / a0, b1: (1 - c) / a0, b2: (1 - c) / 2 / a0, a1: (-2 * c) / a0, a2: (1 - alpha) / a0 }
+}
+
 /** Mix notes from a preset into stereo (no effects). Samples are decoded once, on first use, and played back by linear interpolation. */
 export async function mixSampled(f: SoundFont, presetIndex: number, notes: Note[], sr: number, length: number): Promise<[Float32Array<ArrayBuffer>, Float32Array<ArrayBuffer>]> {
   const L = new Float32Array(length), R = new Float32Array(length)
@@ -123,7 +139,7 @@ export async function mixSampled(f: SoundFont, presetIndex: number, notes: Note[
   let worked = performance.now()
   for (const n of notes) {
     const vel = Math.max(1, Math.min(127, Math.round(n.velocity)))
-    const off = Math.max(n.start + 0.06, end(n)), held = off - n.start
+    const off = Math.max(n.start + 0.06, soundEnd(n)), held = off - n.start
     const vg = (vel / 127) ** 1.7 // the usual concave velocity curve
     for (const r of preset.regions) {
       if (n.pitch < r.keyLo || n.pitch > r.keyHi || vel < r.velLo || vel > r.velHi) continue
@@ -140,6 +156,8 @@ export async function mixSampled(f: SoundFont, presetIndex: number, notes: Note[
       const decayK = Math.exp(-11.513 / (Math.max(0.01, r.decay) * sr))
       const t1 = r.delay, t2 = t1 + r.attack, t3 = t2 + r.hold
       let phase = 0 // 0 delay, 1 attack, 2 hold, 3 decay/sustain, 4 release
+      const lp = lowpass(r, vel, sr)
+      let x1 = 0, x2 = 0, y1 = 0, y2 = 0
       for (let j = 0; j < total; j++) {
         const idx = s0 + j
         if (idx >= length) break
@@ -155,7 +173,9 @@ export async function mixSampled(f: SoundFont, presetIndex: number, notes: Note[
         if (looping && (r.loop === 1 || phase < 4) && pos >= le) pos = ls + ((pos - ls) % (le - ls))
         const i0 = pos | 0
         if (i0 >= last) break
-        const frac = pos - i0, x = data[i0] + (data[i0 + 1] - data[i0]) * frac
+        const frac = pos - i0, raw = data[i0] + (data[i0 + 1] - data[i0]) * frac
+        let x = raw
+        if (lp) { x = lp.b0 * raw + lp.b1 * x1 + lp.b2 * x2 - lp.a1 * y1 - lp.a2 * y2; x2 = x1; x1 = raw; y2 = y1; y1 = x }
         L[idx] += x * lvl * gl; R[idx] += x * lvl * gr
         pos += rate
       }

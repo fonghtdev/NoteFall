@@ -1,4 +1,5 @@
-import { CATALOG, addFont, downloadFont, listFonts, loadSoundFont, removeFont, setPreset, type FontInfo } from '../core/soundfonts'
+import { DEFAULT_VOICE } from '../core/synth'
+import { CATALOG, addFont, downloadFont, listFonts, loadSoundFont, pianosOf, removeFont, setPreset, type FontInfo } from '../core/soundfonts'
 
 const mb = (n: number) => `${(n / 1048576).toFixed(n < 10485760 ? 1 : 0)} MB`
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text = '') => { const e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e }
@@ -31,9 +32,9 @@ export function initFontsDialog(changed: (use?: string, remake?: boolean) => voi
     info.append(el('strong', '', f.name), el('span', 'hint', mb(f.size)))
     const sel = el('select', 'field'); sel.setAttribute('aria-label', `Tiếng đàn trong ${f.name}`)
     const pick = el('div', 'font-pick'), search = el('input', 'field'); search.type = 'search'; search.placeholder = 'Tìm tiếng đàn…'; search.setAttribute('aria-label', `Tìm tiếng đàn trong ${f.name}`)
-    let names: string[] = [], plainNames: string[] = [], chosen = 0
-    const list = () => { // only the instruments that match the search; the one in use stays in view while the search is empty
-      const hits = filterPresets(names, search.value)
+    let names: string[] = [], plainNames: string[] = [], chosen = 0, presets: number[] = [] // presets: the library's pianos, in the order shown
+    const list = () => { // only the pianos that match the search; the one in use stays in view while the search is empty
+      const hits = filterPresets(presets.map((i) => names[i]), search.value).map((k) => presets[k])
       sel.replaceChildren(...(hits.length ? hits.map((i) => new Option(names[i], String(i))) : [new Option('Không có tiếng đàn nào khớp', '')]))
       sel.disabled = !hits.length
       if (hits.includes(chosen)) sel.value = String(chosen)
@@ -41,17 +42,18 @@ export function initFontsDialog(changed: (use?: string, remake?: boolean) => voi
     void loadSoundFont(f.id).then((lib) => {
       if (!lib) { sel.replaceChildren(new Option('(file đã mất, hãy nạp lại)', '')); sel.disabled = true; return }
       plainNames = lib.font.presets.map((p) => p.name)
-      names = lib.font.presets.map((p) => `${p.name}${p.bank ? ` (ngân hàng ${p.bank})` : ''}`)
-      chosen = lib.preset
+      names = lib.font.presets.map((p) => p.name)
+      presets = pianosOf(lib.font).map((p) => p.i)
+      chosen = presets.includes(lib.preset) ? lib.preset : presets[0]
       list()
-      if (names.length >= SEARCH_FROM) pick.prepend(search)
+      if (presets.length >= SEARCH_FROM) pick.prepend(search)
     })
     search.oninput = list
-    sel.onchange = () => { chosen = +sel.value; setPreset(f.id, chosen, plainNames[chosen]); changed(undefined, current() === `sf2:${f.id}`) }
+    sel.onchange = () => { chosen = +sel.value; setPreset(f.id, chosen, plainNames[chosen]); const playing = current().startsWith(`sf2:${f.id}:`); changed(playing ? `sf2:${f.id}:${chosen}` : undefined, playing) } // a library in use goes on with the piano just picked
     pick.append(sel)
-    const use = el('button', 'btn sm primary', 'Dùng'); use.type = 'button'; use.onclick = () => { changed(`sf2:${f.id}`, true); dlg.close() }
+    const use = el('button', 'btn sm primary', 'Dùng'); use.type = 'button'; use.onclick = () => { changed(`sf2:${f.id}:${chosen}`, true); dlg.close() }
     const del = el('button', 'btn sm ghost', 'Xoá'); del.type = 'button'
-    del.onclick = async () => { const inUse = current() === `sf2:${f.id}`; await removeFont(f.id); drawInstalled(); drawCatalog(); changed(inUse ? 'crystal' : undefined, inUse); say(`Đã xoá ${f.name}`) }
+    del.onclick = async () => { const inUse = current().startsWith(`sf2:${f.id}:`); await removeFont(f.id); drawInstalled(); drawCatalog(); changed(inUse ? DEFAULT_VOICE : undefined, inUse); say(`Đã xoá ${f.name}`) }
     row.append(info, pick, use, del)
     return row
   }

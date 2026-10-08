@@ -1,12 +1,14 @@
 import { icon, type IconName } from '../ui/icons'
+import { animate, type JSAnimation } from 'animejs'
 import { popover } from '../ui/popover'
 import { PIANO_CHANGED, renderNotes } from '../core/synth'
 import { Follower, listSource, type ClickSettings } from '../core/metronome'
+import { bus } from '../core/mixer'
 import { locate, playedBars, quartersAt, scoreClicks, secondsAt, tempoRatios, toNotes, unroll } from '../core/score/playback'
 import { hitTest, keyAlter, type Hit } from './hit'
 import {
   CLEFS, STEPS, TPQ, addGrace, barTicks, clearGrace, contextAt, copyPrevious, deleteEv, deleteMeasure, diatonic, emptyScore, findEv, flipStem, fromDiatonic, graceStep, midiOf, moveGrace, removeGrace, respell, setGraceAlter, stepDiatonic, tiedNext, transposeGrace, insertMeasure, ottavaShiftAt, putNote, putRest,
-  TUPLETS, makeTuplet, navigationProblems, pruneRefs, setBarline, setBreak, setClef, setJump, setRehearsal, setTempoMark, setText, setTimeSymbol, setVolta, toggleEv, toggleMark, type BarlineKind, type ClefName, type Mark, type Orn, type SpanKind, type TextField,
+  TUPLETS, makeTuplet, setPedalEnd, navigationProblems, pruneRefs, setBarline, setBreak, setClef, setJump, setRehearsal, setTempoMark, setText, setTimeSymbol, setVolta, toggleEv, toggleMark, type BarlineKind, type ClefName, type Mark, type Orn, type SpanKind, type TextField,
   putInTuplet, removeTuplet, setDyn, setKey, setLength, setTime, starts, toggleArt, toggleSpan, toggleTie, clefAt, transpose, validate, allEventIds, clearMark, copyEvents, moveEv, moveMark, moveTempo, setMarkOffset, setStaffGap, insertMeasures, deleteMeasures, toggleKeep, STAFF_GAP_MAX, STAFF_GAP_MIN, setTempoOffset, pasteClip, type Clip, type Art, type Dyn, type Ev, type Pitch, type Score,
 } from './model'
 import { toPerformance } from './perform'
@@ -20,7 +22,7 @@ interface Pt { clientX: number; clientY: number; button?: number; shiftKey?: boo
 
 export interface ComposerHooks {
   toFalling(score: Score): void | Promise<void>
-  piano: { options(): { value: string; label: string }[]; value(): string; set(v: string): void; openLibrary(): void; isDefault(): boolean; setDefault(on: boolean): void }  // the sound the notes are played on
+  piano: { options(): { value: string; label: string; group?: string }[]; value(): string; set(v: string): void; openLibrary(): void; isDefault(): boolean; setDefault(on: boolean): void }  // the sound the notes are played on
   click(): ClickSettings                                                                           // how the metronome sounds
 }
 
@@ -28,12 +30,25 @@ const MIN_ZOOM = 0.35, MAX_ZOOM = 3.5
 const ZOOM_STEPS = [0.35, 0.5, 0.65, 0.8, 0.9, 1, 1.15, 1.3, 1.5, 1.75, 2, 2.5, 3, 3.5]
 const DRAFT = 'notefall.draft'
 const LOGICAL_WIDTH = 1000
+/** Shortest first; the key is the button's place on the toolbar, left to right (1 whole … 7 sixty-fourth, then 8 dot, 9 rest). */
 const DURATIONS: [string, string, number][] = [
-  ['1', 'Móc 4 (1/64)', TPQ / 16], ['2', 'Móc 3 (1/32)', TPQ / 8], ['3', 'Móc kép (1/16)', TPQ / 4], ['4', 'Móc đơn (1/8)', TPQ / 2],
-  ['5', 'Đen (1/4)', TPQ], ['6', 'Trắng (1/2)', 2 * TPQ], ['7', 'Tròn (1/1)', 4 * TPQ],
+  ['7', 'Móc 4 (1/64)', TPQ / 16], ['6', 'Móc 3 (1/32)', TPQ / 8], ['5', 'Móc kép (1/16)', TPQ / 4], ['4', 'Móc đơn (1/8)', TPQ / 2],
+  ['3', 'Đen (1/4)', TPQ], ['2', 'Trắng (1/2)', 2 * TPQ], ['1', 'Tròn (1/1)', 4 * TPQ],
 ]
 /** How far a mark was pushed down (+) or up (-) when it was drawn: by autoplace or by the user's drag. */
 const shiftOf = (el: Element) => +(/translate\(0 (-?[\d.]+)\)/.exec(el.getAttribute('transform') ?? '')?.[1] ?? 0)
+
+/** A small drawing for a palette mark that has no single SMuFL glyph (slurs, hairpins, glissandi, key signatures on a staff). Text in it is Bravura. */
+const pic = (body: string, w = 30, h = 22) => `<svg class="pic" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" aria-hidden="true">${body}</svg>`
+const bra = (x: number, y: number, glyph: string, size = 16) => `<text x="${x}" y="${y}" font-family="Bravura" font-size="${size}" fill="currentColor" stroke="none">${glyph}</text>`
+/** A key signature as MuseScore's palette shows it: the sharps or flats on a little treble staff (C major: the bare staff). */
+const keyPic = (fifths: number) => {
+  const order = fifths > 0 ? [8, 5, 9, 6, 3, 7, 4] : [4, 7, 3, 6, 2, 5, 1] // staff steps above E4 of F C G D A E B / B E A D G C F
+  const lines = [0, 1, 2, 3, 4].map((i) => `<line x1="1" x2="43" y1="${6 + i * 4}" y2="${6 + i * 4}" stroke-width="0.6"/>`).join('')
+  return pic(lines + order.slice(0, Math.abs(fifths)).map((st, i) => bra(4 + i * 5.3, 22 - st * 2, fifths > 0 ? '\uE262' : '\uE260')).join(''), 44, 30)
+}
+/** A time signature as it is engraved: the two numbers stacked in Bravura's figures. */
+const timePic = (b: number, u: number) => { const fig = (n: number) => [...String(n)].map((d) => String.fromCharCode(0xe080 + +d)).join(''); return pic(bra(15, 12, fig(b), 22).replace('<text', '<text text-anchor="middle"') + bra(15, 24, fig(u), 22).replace('<text', '<text text-anchor="middle"'), 30, 30) }
 
 /** A pitch as a musician writes it: F♯4, B♭3. */
 const pitchLabel = (p: Pitch) => `${p.step}${p.alter > 0 ? '♯'.repeat(p.alter) : p.alter < 0 ? '♭'.repeat(-p.alter) : ''}${p.octave}`
@@ -80,7 +95,6 @@ export class Composer {
   private suppressClick = false
   private clip?: Clip
   private zoom: number | 'fit' = 'fit'   // the page is drawn LOGICAL_WIDTH wide; 'fit' = as wide as the window allows, a number = that many times LOGICAL_WIDTH px
-  private zoomBtn?: HTMLButtonElement
   private marquee?: SVGRectElement
 
   constructor(private root: HTMLElement, private hooks: ComposerHooks) {
@@ -205,6 +219,28 @@ export class Composer {
     this.drawGapHandles()
     this.syncToolbar()
     this.saveDraft()
+    this.audition()
+  }
+
+  /** The note just placed, picked or moved to another pitch sounds once, as in MuseScore (not while the preview plays). */
+  private lastHeard = ''
+  private auditions = new Map<string, Promise<AudioBuffer>>()
+  private audition() {
+    const f = this.range.length === 0 && this.sel !== undefined ? findEv(this.score, this.sel) : undefined, g = this.grace()
+    const pitches = (g ? [f?.ev.graces?.[g.i]] : f?.ev.pitches ?? []).filter((p): p is Pitch => !!p).map(midiOf)
+    const key = `${this.sel}:${g?.i ?? ''}:${pitches}`
+    if (key === this.lastHeard) return
+    this.lastHeard = key
+    if (!pitches.length || this.playing || this.starting || typeof AudioContext === 'undefined') return
+    const ctx = (this.ctx ??= new AudioContext()), sound = `${this.hooks.piano.value()}:${pitches}`
+    if (this.auditions.size > 64) this.auditions.clear() // ponytail: drop the whole cache when it fills, an LRU if re-rendering is ever noticeable
+    let buf = this.auditions.get(sound)
+    if (!buf) { buf = renderNotes(pitches.map((pitch) => ({ pitch, start: 0, duration: 0.7, velocity: 80 })), ctx.sampleRate); this.auditions.set(sound, buf) }
+    void Promise.all([buf, ctx.resume()]).then(([b]) => {
+      const src = ctx.createBufferSource(), soft = ctx.createGain()
+      soft.gain.value = 0.5 // a lone note comes out of renderNotes at full scale: softer, like a note in a piece
+      src.buffer = b; src.connect(soft).connect(bus(ctx, 'piano')); src.start()
+    }).catch(() => this.auditions.delete(sound))
   }
 
   private svg() { return this.host.querySelector('svg')! }
@@ -267,7 +303,7 @@ export class Composer {
     if (this.suppressClick) { this.suppressClick = false; return }
     this.selMark = undefined
     this.selGrace = undefined
-    const hit = hitTest(this.layout, x, y, this.voice)
+    const hit = hitTest(this.layout, x, y, this.voice, this.mode === 'input' ? this.dur : 0) // (entering: a click inside a rest means the beat under it)
     if (!hit) { // beside the bars but on a line: pick the whole line, so + / − bar know which one you mean
       const sys = this.layout.systems.findIndex((q) => y >= q.y0 && y <= q.y1)
       if (sys >= 0) {
@@ -362,7 +398,7 @@ export class Composer {
     const [x, y] = this.toLogical(e)
     const ev = this.pickNote(x, y)
     if (ev) { this.drag = { kind: 'note', ev, sx: e.clientX, sy: e.clientY, moved: false }; e.preventDefault() } // (no text selection while dragging)
-    else if (this.mode === 'select') this.drag = { kind: 'marquee', sx: e.clientX, sy: e.clientY, moved: false, x0: x, y0: y } // empty space: a drag draws a box and selects what is inside
+    else if (this.mode === 'select' && e.shiftKey) this.drag = { kind: 'marquee', sx: e.clientX, sy: e.clientY, moved: false, x0: x, y0: y } // empty space: Shift+drag draws a box and selects what is inside (a plain drag moves the page, as in MuseScore)
   }
   private mouseMove(e: Pt) {
     const d = this.drag
@@ -429,7 +465,7 @@ export class Composer {
     else { d.clone?.remove(); this.dropMark(d.mark, x, y, d.el, d.lx, d.ly) }
     setTimeout(() => { this.suppressClick = false }, 0)
   }
-  private markHint(m: MarkRef) { return m.kind === 'ev' ? 'Đã chọn dấu: kéo sang nốt khác để chuyển, Delete để xoá' : m.kind === 'tempo' ? 'Đã chọn dấu tốc độ: kéo tới ô / vị trí khác, Delete để xoá' : 'Đã chọn dấu tập: kéo sang ô khác, Delete để xoá' }
+  private markHint(m: MarkRef) { return m.kind === 'ev' && m.field === 'pedal' ? 'Đã chọn chỗ nhả pedal: kéo tới nốt muốn nhả, Delete để xoá pedal' : m.kind === 'ev' ? 'Đã chọn dấu: kéo sang nốt khác để chuyển, Delete để xoá' : m.kind === 'tempo' ? 'Đã chọn dấu tốc độ: kéo tới ô / vị trí khác, Delete để xoá' : 'Đã chọn dấu tập: kéo sang ô khác, Delete để xoá' }
 
   /** Where a dragged note would land: same beat of the other voice with Shift, otherwise the voice it came from. */
   private dropNote(ev: DrawnEv, startY: number, x: number, y: number, shift: boolean) {
@@ -490,6 +526,13 @@ export class Composer {
       const shifted = (el ? shiftOf(el) : 0) + (y - ly) // where it will stand, counted from where it would stand by itself
       const id = mark.id, field = mark.field
       if (field === 'hairpin') { this.commit((s) => setMarkOffset(s, id, field, shifted)); this.selMark = mark; return } // a wedge only slides up or down: it keeps its two notes
+      if (field === 'pedal') { // the ✱: the pedal now goes at the note of its own staff and voice nearest to where it was dropped
+        const to = dm.evs.filter((q) => q.staff === src.staff && q.voice === src.voice).reduce<DrawnEv | undefined>((a, q) => (!a || Math.abs(q.x - x) < Math.abs(a.x - x) ? q : a), undefined)
+        let ok = false
+        if (to) this.commit((s) => { ok = setPedalEnd(s, id, to.id) })
+        this.selMark = mark
+        this.say(ok ? `Pedal nhả ở ô ${dm.m + 1}` : 'Thả dấu ✱ sau nốt đầu của pedal, cùng khuông với nó'); this.refresh(); return
+      }
       const to = dm.evs.filter((q) => q.staff === src.staff && !q.rest).reduce<DrawnEv | undefined>((a, q) => (!a || Math.abs(q.x - x) < Math.abs(a.x - x) ? q : a), undefined) // stays on its own staff
       if (!to) { this.say('Không có nốt nào ở đó để gắn dấu'); return }
       const edge = (m: number) => { const st = this.layout.measures[m].staves[src.staff]; return field === 'chord' || field === 'staffText' ? st.top : st.bottom } // the staff line its usual place is measured from
@@ -589,20 +632,11 @@ export class Composer {
       page.scrollLeft += after.left + ax * after.width - at.x
       page.scrollTop += after.top + ay * after.width - at.y
     }
-    this.updateZoomLabel()
   }
   private applyZoom() {
     const fit = this.zoom === 'fit'
     this.host.classList.toggle('fit', fit)
     this.host.style.width = fit ? '' : `${LOGICAL_WIDTH * (this.zoom as number)}px`
-  }
-  private updateZoomLabel() {
-    if (!this.zoomBtn) return
-    const p = this.zoomPercent()
-    this.zoomBtn.textContent = this.zoom === 'fit' ? `Vừa khung · ${p}%` : `${p}%`
-    this.zoomBtn.title = this.zoom === 'fit' ? 'Đang tự co giãn theo cửa sổ. Bấm để vẽ đúng 100%' : 'Bấm để tự co giãn theo cửa sổ (Ctrl/Cmd+0)'
-    this.btns.get('zoomout')?.toggleAttribute('disabled', p <= MIN_ZOOM * 100 + 1)
-    this.btns.get('zoomin')?.toggleAttribute('disabled', p >= MAX_ZOOM * 100 - 1)
   }
   zoomIn(at?: { x: number; y: number }) { const now = this.zoomPercent() / 100; this.setZoom(ZOOM_STEPS.find((z) => z > now + 0.01) ?? MAX_ZOOM, at) }
   zoomOut(at?: { x: number; y: number }) { const now = this.zoomPercent() / 100; this.setZoom([...ZOOM_STEPS].reverse().find((z) => z < now - 0.01) ?? MIN_ZOOM, at) }
@@ -672,20 +706,24 @@ export class Composer {
 
   /** The faint note / mark that follows the pointer while dragging (and in input mode). */
   private moveGhost(x: number, y: number, voice: number, small = false) {
-    const hit = hitTest(this.layout, x, y, voice)
+    const hit = hitTest(this.layout, x, y, voice, small || this.drag ? 0 : this.dur) // (a dragged note lands on a column, as dropNote puts it)
     if (!hit) { this.ghost?.remove(); this.ghost = undefined; return }
     const st = this.layout.measures[hit.m].staves[hit.staff]
     const half = Math.round((st.bottom - y) / (st.spacing / 2))
     if (!this.ghost) {
       this.ghost = document.createElementNS('http://www.w3.org/2000/svg', 'g')
-      this.ghost.setAttribute('fill', '#1d6fff'); this.ghost.setAttribute('stroke', '#1d6fff'); this.ghost.setAttribute('opacity', '0.35'); this.ghost.setAttribute('pointer-events', 'none')
+      this.ghost.setAttribute('fill', '#1d6fff'); this.ghost.setAttribute('stroke', '#1d6fff'); this.ghost.setAttribute('opacity', '0.55'); this.ghost.setAttribute('pointer-events', 'none')
       this.svg().appendChild(this.ghost)
     }
-    const cx = small ? x : hit.ev?.x ?? x, cy = small ? y : st.bottom - (half * st.spacing) / 2
+    const cx = small ? x : hit.x, cy = small ? y : st.bottom - (half * st.spacing) / 2
     // the ledger lines the note would stand on, so the preview shows how high or low it really is
     const lines: number[] = []
     if (!small) { for (let h = -2; h >= half; h -= 2) lines.push(h); for (let h = 10; h <= half; h += 2) lines.push(h) }
-    this.ghost.innerHTML = `<ellipse cx="${cx}" cy="${cy}" rx="${small ? 5 : 6.5}" ry="5" stroke="none"/>` + lines.map((h) => { const ly = st.bottom - (h * st.spacing) / 2; return `<line x1="${cx - 10}" x2="${cx + 10}" y1="${ly}" y2="${ly}" stroke-width="1.4"/>` }).join('')
+    // the note as it will be written: its head (whole, half or filled) and a stem, like MuseScore's shadow note
+    const sp = st.spacing, head = this.dur >= 4 * TPQ ? '\uE0A2' : this.dur >= 2 * TPQ ? '\uE0A3' : '\uE0A4', up = half < 4
+    const shape = small ? `<ellipse cx="${cx}" cy="${cy}" rx="5" ry="5" stroke="none"/>`
+      : `<text x="${cx}" y="${cy}" font-family="Bravura, serif" font-size="${sp * 4}" stroke="none">${head}</text>` + (this.dur < 4 * TPQ ? `<line x1="${up ? cx + sp * 1.15 : cx + 0.6}" x2="${up ? cx + sp * 1.15 : cx + 0.6}" y1="${cy}" y2="${up ? cy - sp * 3.5 : cy + sp * 3.5}" stroke-width="1.2"/>` : '') // (x: the head's left edge, as the columns are)
+    this.ghost.innerHTML = shape + lines.map((h) => { const ly = st.bottom - (h * st.spacing) / 2; return `<line x1="${small ? cx - 10 : cx - 4}" x2="${small ? cx + 10 : cx + st.spacing * 1.18 + 4}" y1="${ly}" y2="${ly}" stroke-width="1.4"/>` }).join('')
     if (!small) {
       const p = this.pitchAt(hit.m, hit.diatonic - 7 * ottavaShiftAt(this.score, hit.m, hit.staff, this.voice, hit.at))
       this.say(`Ô ${hit.m + 1} · ${pitchLabel(p)} · ${DURATIONS.find((d) => d[2] === this.dur)?.[1] ?? ''}${this.dotted ? ' chấm' : ''}: bấm để đặt nốt`)
@@ -789,8 +827,9 @@ export class Composer {
     else if (mod && (k === 'ArrowLeft' || k === 'ArrowRight')) this.barStep(k === 'ArrowRight' ? 1 : -1)
     else if (mod) used = false
     else if (e.altKey && /^[2-8]$/.test(digit)) this.addInterval(+digit, e.shiftKey)
-    else if (/^[1-7]$/.test(k)) this.setDuration(+k - 1)
-    else if (k === '0') this.rest()
+    else if (/^[1-7]$/.test(k)) this.setDuration(DURATIONS.findIndex((d) => d[0] === k))
+    else if (k === '8') { this.dotted = !this.dotted; this.afterToolChange() }
+    else if (k === '9' || k === '0') this.rest()
     else if (k.toLowerCase() === 'q' || k.toLowerCase() === 'w') this.stepDuration(k.toLowerCase() === 'w' ? 1 : -1)
     else if (k === '.') { this.dotted = !this.dotted; this.afterToolChange() }
     else if (/^[a-gA-G]$/.test(k)) this.letter(k.toUpperCase(), e.shiftKey)
@@ -1045,11 +1084,11 @@ export class Composer {
   span(kind: SpanKind) {
     const ids = this.targets()
     if (ids.length < 2) { this.say('Giữ Shift và bấm nốt cuối để chọn cả đoạn, rồi bấm lại') ; return }
-    if (kind === 'o8' || kind === 'o-8' || kind === 'o15' || kind === 'o-15') this.say('Ottava: nốt hiển thị cao/thấp hơn, âm thanh giữ nguyên')
+    if (kind === 'o8' || kind === 'o-8' || kind === 'o15' || kind === 'o-15') this.say('Ottava: nốt giữ nguyên trên trang, tiếng lên / xuống quãng tám')
     let ok = false
     this.commit((s) => { ok = toggleSpan(s, kind, ids[0], ids[ids.length - 1]) })
     if (!ok) this.say('Chỉ nối được các nốt cùng khuông và cùng giọng')
-    else if (kind === 'pedal') this.say('Pedal chỉ hiển thị và xuất file; không đổi độ dài nốt')
+    else if (kind.startsWith('pedal')) this.say('Pedal: kéo chỗ nhả (✱ hoặc móc cuối) để đổi chỗ nhả pedal')
   }
   slur() { this.span('slur') }
 
@@ -1082,7 +1121,7 @@ export class Composer {
     if (alt) { this.cursor.staff = Math.max(0, Math.min(this.score.clefs.length - 1, this.cursor.staff - dir)); this.refresh(); return }
     const ids = this.targets(), g = this.grace()
     if (!ids.length) return
-    if (g) this.commit((s) => transposeGrace(s, g.id, g.i, dir * amount))
+    if (g) { this.commit((s) => transposeGrace(s, g.id, g.i, dir * amount)); this.pickGrace(g.id, g.i) } // (the status line names its new pitch)
     else if (diatonicStep) this.commit((s) => ids.forEach((id) => stepDiatonic(s, id, dir > 0 ? 1 : -1)))
     else this.commit((s) => ids.forEach((id) => transpose(s, id, dir * amount)))
   }
@@ -1163,7 +1202,7 @@ export class Composer {
 
   accidental(alter: number) {
     const g = this.grace()
-    if (g) { this.commit((s) => setGraceAlter(s, g.id, g.i, alter)); return }
+    if (g) { this.commit((s) => setGraceAlter(s, g.id, g.i, alter)); this.pickGrace(g.id, g.i); return }
     const ids = this.targets()
     if (ids.length) {
       const cur = findEv(this.score, ids[0])?.ev.pitches[0]?.alter // asking again for what the first note has gives back the key's own
@@ -1222,7 +1261,7 @@ export class Composer {
   private playFrom(sec: number) {
     const ctx = this.ctx!, src = ctx.createBufferSource()
     src.buffer = this.buf!
-    src.connect(ctx.destination)
+    src.connect(bus(ctx, 'piano'))
     src.onended = () => { if (this.playing === src) this.finish() }
     this.playing = src
     src.start(0, sec)
@@ -1339,7 +1378,9 @@ export class Composer {
   private fillPianoMenu(menu: HTMLElement) {
     menu.replaceChildren()
     const now = this.hooks.piano.value()
+    let group: string | undefined
     for (const o of this.hooks.piano.options()) {
+      if (o.group !== group) { group = o.group; if (group) this.el('div', 'menu-head', menu).textContent = group } // the library the pianos below come from
       const b = this.el('button', '', menu); b.type = 'button'; b.setAttribute('role', 'menuitemradio'); b.setAttribute('aria-checked', String(o.value === now))
       b.textContent = (o.value === now ? '✓  ' : '') + o.label
       b.onclick = () => { this.hooks.piano.set(o.value); this.say(`Tiếng đàn: ${o.label}`); menu.hidden = true }
@@ -1356,9 +1397,9 @@ export class Composer {
   /** The button names the piano in use, so both screens show the same thing (the page tells when it changes). */
   private paintPiano(btn: HTMLElement) {
     const now = this.hooks.piano.value(), name = this.hooks.piano.options().find((o) => o.value === now)?.label ?? ''
-    btn.innerHTML = `${icon('music')}<span class="pname"></span>${icon('chevron')}`
-    btn.querySelector('.pname')!.textContent = name
+    btn.innerHTML = `${icon('piano')}${icon('chevron')}`
     btn.title = `Tiếng đàn: ${name}. Bấm để đổi (dùng chung với màn Nốt rơi)`
+    btn.setAttribute('aria-label', `Tiếng đàn: ${name}`)
   }
 
   /** The metronome clicks along with the preview; switching it while the preview plays takes effect at once. */
@@ -1368,6 +1409,14 @@ export class Composer {
     if (this.metOn) { this.clicks?.reset(); this.clicks?.start() } else this.clicks?.stop()
     this.say(this.metOn ? 'Metronome: bật khi nghe thử' : 'Metronome: tắt')
     this.syncToolbar()
+  }
+
+  /** Where the preview starts, as in MuseScore: at the selected note, the picked line, or the input cursor; else (undefined) from the top. */
+  startPlace(): { m: number; at: number } | undefined {
+    const f = this.sel !== undefined ? findEv(this.score, this.sel) : undefined
+    if (f) return { m: f.m, at: f.at }
+    if (this.sysRange) return { m: this.sysRange[0], at: 0 }
+    if (this.mode === 'input') return { m: this.cursor.m, at: this.cursor.at }
   }
 
   private starting = false
@@ -1389,7 +1438,8 @@ export class Composer {
     this.buf = buf
     const ratios = tempoRatios(perf)
     this.plan = { bars: playedBars(perf), bpm: this.score.tempo, changes: ratios, end: Math.max(...notes.map((n) => n.start + n.duration)) }
-    this.playFrom(0)
+    const from = this.startPlace()
+    this.playFrom(from ? this.timeOf(from.m, from.at / TPQ, 0) ?? 0 : 0)
     const ctx = this.ctx
     const clicks = listSource(scoreClicks(perf, true, this.score.tempo, ratios)) // the same repeats and tempo changes the notes were made with
     this.clicks = new Follower(ctx, () => ctx.currentTime - this.t0, () => clicks, () => this.hooks.click())
@@ -1420,10 +1470,52 @@ export class Composer {
     return this.el('div', 'sec-body', d)
   }
   /** A palette button drawn with a music-font glyph (or short text when it has none). */
-  private pal(parent: HTMLElement, id: string, glyph: string, label: string, tip: string, fn: () => void, text = false): HTMLButtonElement {
-    return this.btn(parent, id, label, tip, fn, { cls: 'ghost pal', html: text ? `<span class="ptxt">${glyph}</span>` : `<span class="glyph" aria-hidden="true">${glyph}</span>` })
+  /** A palette button: a Bravura glyph, a drawing (`pic`), or words for what is written as words (tempo names). The label is for tooltips and screen readers. */
+  private pal(parent: HTMLElement, id: string, glyph: string, label: string, tip: string, fn: () => void, kind: 'glyph' | 'pic' | 'text' = 'glyph'): HTMLButtonElement {
+    return this.btn(parent, id, label, tip, fn, { cls: 'ghost pal', html: kind === 'text' ? `<span class="ptxt">${glyph}</span>` : kind === 'pic' ? glyph : `<span class="glyph" aria-hidden="true">${glyph}</span>` })
   }
   private cap(parent: HTMLElement, text: string) { const c = this.el('span', 'cap', parent); c.textContent = text }
+
+  private panelSlide?: JSAnimation // the palette's slide under way
+  private panelShut = { v: 0 }     // 0 open … 1 closed: where the slide is now
+  /**
+   * Show or hide the palette panel (and remember it); `show` forces one way. It slides out to the left while the page widens, the arrow riding
+   * on its edge and turning from ‹ to › (anime.js). A click during the slide turns it back from where it is; with reduced motion it just switches.
+   */
+  togglePanel(show?: boolean, instant = false) {
+    const a = this.root.querySelector<HTMLElement>('.cmp-insp'), b = this.root.querySelector<HTMLElement>('.cmp-insp-toggle')
+    if (!a || !b) return
+    const wasClosed = this.panelSlide ? this.panelShut.v > 0.5 : !!a.hidden
+    const close = !(show ?? wasClosed) // (no `show`: open it if it is closed, close it if it is open)
+    try { localStorage.setItem('notefall.insp', close ? '0' : '1') } catch { /* best effort */ }
+    const w = parseFloat(getComputedStyle(a.parentElement!).getPropertyValue('--insp-w')) || 292, chev = b.querySelector<SVGElement>('svg')
+    const place = (v: number) => { // the panel pulled out of view by v of its width; the arrow on its edge, turning as it goes
+      a.style.marginLeft = `${-w * v}px`
+      b.style.left = `${w * (1 - v)}px`; b.style.transform = `translate(${-50 * (1 - v)}%, -50%)`
+      if (chev) chev.style.transform = `rotate(${90 - 180 * v}deg)`
+    }
+    const settle = () => {
+      this.panelSlide = undefined
+      a.hidden = close
+      a.style.marginLeft = b.style.left = b.style.transform = ''; if (chev) chev.style.transform = '' // the classes take over again
+      this.paintPanelToggle()
+    }
+    this.panelSlide?.pause()
+    if (instant || matchMedia('(prefers-reduced-motion: reduce)').matches) { this.panelShut.v = close ? 1 : 0; settle(); return }
+    if (!this.panelSlide) this.panelShut.v = a.hidden ? 1 : 0
+    a.hidden = false; a.parentElement!.classList.remove('insp-closed'); place(this.panelShut.v)
+    this.panelSlide = animate(this.panelShut, { v: close ? 1 : 0, duration: 260 * Math.abs((close ? 1 : 0) - this.panelShut.v) + 1, ease: 'outCubic', onUpdate: () => place(this.panelShut.v), onComplete: settle })
+    this.paintPanelToggle(close)
+  }
+  /** The arrow on the panel's edge points the way a click moves it: ← to close, → to open. */
+  private paintPanelToggle(closing?: boolean) {
+    const a = this.root.querySelector<HTMLElement>('.cmp-insp'), b = this.root.querySelector<HTMLElement>('.cmp-insp-toggle')
+    if (!a || !b) return
+    const closed = closing ?? !!a.hidden
+    if (closing === undefined) a.parentElement!.classList.toggle('insp-closed', closed) // (during a slide the inline styles place it)
+    const label = closed ? 'Mở bảng ký hiệu' : 'Thu gọn bảng ký hiệu'
+    b.setAttribute('aria-label', label); b.title = label; b.setAttribute('aria-expanded', String(!closed))
+  }
 
   private buildUi() {
     const r = this.root
@@ -1432,7 +1524,7 @@ export class Composer {
     // ---- top bar: file menu, undo/redo, mode, play, hand over to the falling view
     const top = this.el('div', 'cmp-top', r)
     const fileWrap = this.el('div', 'pop-anchor', top)
-    const fileBtn = this.btn(fileWrap, 'file', 'Tệp', 'Mở, lưu, xuất', () => {}, { cls: '', html: `${icon('file')}Tệp${icon('chevron')}` })
+    const fileBtn = this.btn(fileWrap, 'file', 'Tệp', 'Mở, lưu, xuất', () => {}, { cls: '', html: `${icon('file')}${icon('chevron')}` })
     const menu = this.el('div', 'popover menu', fileWrap); menu.setAttribute('role', 'menu')
     const item = (label: string, ic: IconName, fn: () => void) => { const b = this.el('button', '', menu); b.type = 'button'; b.setAttribute('role', 'menuitem'); b.innerHTML = `${icon(ic)}${label}`; b.onclick = fn }
     const fileInput = this.el('input', '', r); fileInput.type = 'file'; fileInput.hidden = true
@@ -1457,18 +1549,15 @@ export class Composer {
     const edit = this.group(top)
     this.btn(edit, 'undo', 'Hoàn tác', 'Hoàn tác (Ctrl+Z)', () => this.undo(), { cls: 'ghost icon', html: icon('undo') })
     this.btn(edit, 'redo', 'Làm lại', 'Làm lại (Ctrl+Shift+Z)', () => this.redo(), { cls: 'ghost icon', html: icon('redo') })
-    this.btn(edit, 'cut', 'Cắt', 'Cắt nốt đang chọn (Ctrl+X)', () => this.cut(), { cls: 'ghost icon', html: icon('cut') })
-    this.btn(edit, 'copy', 'Sao chép', 'Sao chép nốt hoặc ô nhịp đang chọn (Ctrl+C)', () => void this.copy(), { cls: 'ghost icon', html: icon('copy') })
     const keys = this.group(top, 'group touch-only'); keys.setAttribute('role', 'group'); keys.setAttribute('aria-label', 'Phím cho màn hình cảm ứng')
     this.btn(keys, 'k-up', 'Nâng nửa cung', 'Nâng nốt đang chọn nửa cung', () => this.nudge(1), { cls: 'ghost icon', html: icon('arrowup') })
     this.btn(keys, 'k-down', 'Hạ nửa cung', 'Hạ nốt đang chọn nửa cung', () => this.nudge(-1), { cls: 'ghost icon', html: icon('arrowdown') })
     this.btn(keys, 'k-del', 'Xoá', 'Xoá nốt hoặc dấu đang chọn', () => { if (!this.delMark()) this.del() }, { cls: 'ghost icon', html: icon('trash') })
-    this.btn(edit, 'paste', 'Dán', 'Dán tại nốt hoặc ô đang chọn (Ctrl+V)', () => this.paste(), { cls: 'ghost icon', html: icon('paste') })
     this.el('span', 'divider', top)
 
     const mode = this.el('div', 'seg', top); mode.setAttribute('role', 'group'); mode.setAttribute('aria-label', 'Chế độ')
-    for (const [id, label, tip] of [['select', 'Chọn', 'Chọn nốt để sửa (Esc)'], ['input', 'Nhập nốt', 'Bấm vào khuông để đặt nốt (N)']] as const) {
-      const b = this.el('button', '', mode); b.type = 'button'; b.textContent = label; b.title = tip
+    for (const [id, label, tip, ic] of [['select', 'Chọn', 'Chọn: chọn nốt để sửa (Esc)', 'cursor'], ['input', 'Nhập nốt', 'Nhập nốt: bấm vào khuông để đặt nốt (N)', 'pencil']] as const) {
+      const b = this.el('button', '', mode); b.type = 'button'; b.innerHTML = icon(ic); b.title = tip; b.setAttribute('aria-label', label)
       b.onclick = () => { this.setMode(id); b.blur() }
       this.btns.set(id, b)
     }
@@ -1476,26 +1565,21 @@ export class Composer {
     this.el('span', 'spacer', top)
     const pianoWrap = this.el('div', 'pop-anchor', top)
     const pianoMenu = this.el('div', 'popover menu', pianoWrap); pianoMenu.setAttribute('role', 'menu')
-    const pianoBtn = this.btn(pianoWrap, 'piano', 'Tiếng đàn', 'Chọn tiếng đàn khi nghe thử (dùng chung với màn Nốt rơi)', () => this.fillPianoMenu(pianoMenu), { cls: '', html: `${icon('music')}Tiếng đàn${icon('chevron')}` })
+    const pianoBtn = this.btn(pianoWrap, 'piano', 'Tiếng đàn', 'Chọn tiếng đàn khi nghe thử (dùng chung với màn Nốt rơi)', () => this.fillPianoMenu(pianoMenu), { cls: '', html: `${icon('piano')}${icon('chevron')}` })
     popover(pianoBtn, pianoMenu)
     window.addEventListener(PIANO_CHANGED, () => this.paintPiano(pianoBtn))
-    this.btn(top, 'met', 'Metronome', 'Gõ nhịp khi nghe thử. Tiếng và âm lượng chỉnh ở màn Nốt rơi', () => this.toggleMetronome(), { cls: '', html: `${icon('metronome')}Metronome` })
-    this.btn(top, 'play', 'Nghe thử', 'Nghe bản soạn (Space)', () => void this.togglePlay(), { cls: '', html: `${icon('play')}Nghe thử` })
-    this.btn(top, 'falling', 'Xem nốt rơi', 'Chuyển bản soạn sang màn hình nốt rơi', () => void this.hooks.toFalling(this.score), { cls: 'primary', html: `Xem nốt rơi${icon('bars')}` })
-    const zoomBar = this.group(top); zoomBar.setAttribute('role', 'group'); zoomBar.setAttribute('aria-label', 'Phóng to / thu nhỏ')
-    this.btn(zoomBar, 'zoomout', 'Thu nhỏ', 'Thu nhỏ (Ctrl/Cmd + −, hoặc Ctrl + lăn chuột)', () => this.zoomOut(), { cls: 'ghost icon', html: icon('minus') })
-    this.zoomBtn = this.btn(zoomBar, 'zoomfit', 'Vừa khung', 'Tự co giãn theo cửa sổ', () => { this.zoom === 'fit' ? this.setZoom(1) : this.zoomFit() }, { cls: 'ghost zoomlabel', html: '' })
-    this.btn(zoomBar, 'zoomin', 'Phóng to', 'Phóng to (Ctrl/Cmd + +, hoặc Ctrl + lăn chuột)', () => this.zoomIn(), { cls: 'ghost icon', html: icon('plus') })
-    this.btn(top, 'panel', 'Bảng ký hiệu', 'Ẩn / hiện bảng ký hiệu', () => { const a = r.querySelector<HTMLElement>('.cmp-insp')!; a.hidden = !a.hidden; this.btns.get('panel')!.setAttribute('aria-pressed', String(!a.hidden)); try { localStorage.setItem('notefall.insp', a.hidden ? '0' : '1') } catch { /* ignore */ } }, { cls: 'ghost icon', html: icon('panel') })
+    this.btn(top, 'met', 'Metronome', 'Metronome khi nghe thử: bật / tắt. Nhịp và tốc độ lấy từ bản nhạc, âm lượng ở nút loa trên cùng', () => this.toggleMetronome(), { cls: 'icon', html: icon('metronome') })
+    this.btn(top, 'play', 'Nghe thử', 'Nghe thử / dừng (Space)', () => void this.togglePlay(), { cls: 'icon', html: icon('play') })
+    this.btn(top, 'falling', 'Xem nốt rơi', 'Xem nốt rơi: chuyển bản soạn sang màn hình nốt rơi', () => void this.hooks.toFalling(this.score), { cls: 'primary icon', html: icon('bars') })
 
     // ---- note-entry tools: what you reach for on every note
     const tools = this.el('div', 'cmp-tools', r)
     tools.setAttribute('role', 'toolbar'); tools.setAttribute('aria-label', 'Công cụ nhập nốt')
     const GLYPH: Record<number, string> = { [4 * TPQ]: '', [2 * TPQ]: '', [TPQ]: '', [TPQ / 2]: '', [TPQ / 4]: '', [TPQ / 8]: '', [TPQ / 16]: '' }
     const dur = this.group(tools); dur.setAttribute('role', 'group'); dur.setAttribute('aria-label', 'Độ dài nốt')
-    DURATIONS.slice().reverse().forEach(([key, label, ticks]) => this.btn(dur, `d${ticks}`, label, `${label} — phím ${key}`, () => this.setDuration(+key - 1), { cls: 'ghost', html: `<span class="glyph" aria-hidden="true">${GLYPH[ticks]}</span>` }))
-    this.btn(dur, 'dot', 'Nốt chấm', 'Nốt chấm (.)', () => { this.dotted = !this.dotted; this.afterToolChange() }, { cls: 'ghost', html: '<span class="glyph" aria-hidden="true"></span>' })
-    this.btn(dur, 'rest', 'Dấu lặng', 'Dấu lặng (R) / biến nốt thành dấu lặng', () => this.rest(), { cls: 'ghost', html: '<span class="glyph" aria-hidden="true"></span>' })
+    DURATIONS.slice().reverse().forEach(([key, label, ticks]) => this.btn(dur, `d${ticks}`, label, `${label} — phím ${key}`, () => this.setDuration(DURATIONS.findIndex((d) => d[0] === key)), { cls: 'ghost', html: `<span class="glyph" aria-hidden="true">${GLYPH[ticks]}</span>` }))
+    this.btn(dur, 'dot', 'Nốt chấm', 'Nốt chấm — phím 8 (hoặc .)', () => { this.dotted = !this.dotted; this.afterToolChange() }, { cls: 'ghost', html: '<span class="glyph" aria-hidden="true"></span>' })
+    this.btn(dur, 'rest', 'Dấu lặng', 'Dấu lặng — phím 9 (hoặc 0) / biến nốt thành dấu lặng', () => this.rest(), { cls: 'ghost', html: '<span class="glyph" aria-hidden="true"></span>' })
     this.el('span', 'divider', tools)
     const acc = this.group(tools); acc.setAttribute('role', 'group'); acc.setAttribute('aria-label', 'Dấu hoá')
     this.btn(acc, 'sharp', 'Dấu thăng', 'Dấu thăng (+)', () => this.accidental(1), { cls: 'ghost', html: '<span class="glyph" aria-hidden="true"></span>' })
@@ -1528,30 +1612,35 @@ export class Composer {
     this.host.addEventListener('mousemove', (e) => this.hover(e))
     this.host.addEventListener('dblclick', (e) => { const gh = (e.target as Element).closest?.('[data-gap]'); if (gh) this.setGap(+gh.getAttribute('data-gap')!, 0) })
     page.addEventListener('wheel', (e) => this.wheelZoom(e), { passive: false })
-    // hold the right (or the middle) button and drag: the page follows the hand, like MuseScore, so there is no need for the scroll bars
+    // drag on empty space (any button; Shift+drag selects): the page follows the hand, like MuseScore, so there is no need for the scroll bars
     page.addEventListener('contextmenu', (e) => e.preventDefault())
     page.addEventListener('mousedown', (e) => {
-      if (e.button !== 1 && e.button !== 2) return
+      if (this.drag || e.shiftKey || ![0, 1, 2].includes(e.button)) return // (the left button on a note or a mark picked it up; Shift is for the selection box)
       e.preventDefault()
       this.pan = { page, x: e.clientX, y: e.clientY, left: page.scrollLeft, top: page.scrollTop }
       page.classList.add('panning')
     })
     try { const z = localStorage.getItem('notefall.zoom'); if (z && z !== 'fit' && +z > 0) this.zoom = +z } catch { /* fit */ }
     this.applyZoom()
-    new ResizeObserver(() => this.updateZoomLabel()).observe(this.host)
-    this.host.addEventListener('mousedown', (e) => this.mouseDown(e))
+    this.host.addEventListener('mousedown', (e) => this.mouseDown(e)) // (before the page's: what it picks up is not also panned)
     this.host.addEventListener('touchstart', (e) => this.touchStart(e), { passive: false })
     window.addEventListener('touchmove', (e) => this.touchMove(e), { passive: false })
     window.addEventListener('touchend', (e) => this.touchEnd(e))
     this.host.addEventListener('pointermove', (e) => { if (e.pointerType === 'pen') this.hover(e) }) // an Apple Pencil that hovers over the screen shows the note before it touches
     window.addEventListener('touchcancel', () => { this.penDown = false; this.pinch = undefined; this.drag = undefined; this.ghost?.remove(); this.ghost = undefined; this.marquee?.remove(); this.marquee = undefined })
     window.addEventListener('mousemove', (e) => { if (this.pan) this.panTo(e); else this.mouseMove(e) })
-    window.addEventListener('mouseup', (e) => { if (this.pan) { this.pan.page.classList.remove('panning'); this.pan = undefined } else this.mouseUp(e) })
+    window.addEventListener('mouseup', (e) => {
+      if (!this.pan) return this.mouseUp(e)
+      if (Math.hypot(e.clientX - this.pan.x, e.clientY - this.pan.y) >= 5) { this.suppressClick = true; setTimeout(() => { this.suppressClick = false }, 0) } // a drag that moved the page is not also a click (which would put a note)
+      this.pan.page.classList.remove('panning'); this.pan = undefined
+    })
     this.host.addEventListener('mouseleave', () => { this.ghost?.remove(); this.ghost = undefined })
 
     const insp = this.el('aside', 'cmp-insp', body); insp.setAttribute('aria-label', 'Bảng ký hiệu')
-    try { const v = localStorage.getItem('notefall.insp'); insp.hidden = v === '0' || (v === null && window.innerWidth < 1000) } catch { /* ignore */ } // on a narrow screen the palette starts closed: it would cover the page
-    queueMicrotask(() => this.btns.get('panel')?.setAttribute('aria-pressed', String(!insp.hidden)))
+    const edge = this.el('button', 'cmp-insp-toggle', body); edge.type = 'button'; edge.innerHTML = icon('chevron') // on the panel's right edge: ← closes it, → (at the page's left edge) opens it
+    edge.onclick = () => { this.togglePanel(); edge.blur() }
+    try { if (localStorage.getItem('notefall.insp') === '0') this.togglePanel(false, true) } catch { /* shown */ }
+    this.paintPanelToggle()
 
     const sc = this.section(insp, 'Bản nhạc')
     const title = this.el('input', 'field', sc); title.placeholder = 'Tiêu đề'; title.id = 'cmp-title'; title.setAttribute('aria-label', 'Tiêu đề')
@@ -1568,21 +1657,22 @@ export class Composer {
     const needsNote = 'Chọn nốt trước (Shift+bấm để chọn cả đoạn)'
 
     const ar = P('Rải & lướt', 'Arpeggios & glissandos'); let g = grid(ar)
-    this.pal(g, 'arp-up', '\uE63F', 'Rải lên', 'Rải hợp âm từ thấp lên cao', () => this.evMark('arp', 'up'))
-    this.pal(g, 'arp-down', '\uE640', 'Rải xuống', 'Rải hợp âm từ cao xuống thấp', () => this.evMark('arp', 'down'))
-    this.pal(g, 'arp-plain', '\uE63C', 'Rải', 'Rải hợp âm (không mũi tên)', () => this.evMark('arp', 'plain'))
-    this.pal(g, 'gliss-s', 'gliss ─', 'Lướt thẳng', 'Lướt từ nốt này đến nốt kế (đường thẳng)', () => this.evMark('gliss', 'straight'), true)
-    this.pal(g, 'gliss-w', 'gliss ∿', 'Lướt lượn', 'Lướt từ nốt này đến nốt kế (đường lượn)', () => this.evMark('gliss', 'wavy'), true)
+    const arp = (head: string) => pic('<path d="M15 4' + ' q3 1.5 0 3 q-3 1.5 0 3'.repeat(5) + '"/>' + head, 30, 40) // the wavy line of a rolled chord, with its arrowhead
+    this.pal(g, 'arp-up', arp('<path d="M11 8l4-5 4 5"/>'), 'Rải lên', 'Rải hợp âm từ thấp lên cao', () => this.evMark('arp', 'up'), 'pic')
+    this.pal(g, 'arp-down', arp('<path d="M11 30l4 5 4-5"/>'), 'Rải xuống', 'Rải hợp âm từ cao xuống thấp', () => this.evMark('arp', 'down'), 'pic')
+    this.pal(g, 'arp-plain', arp(''), 'Rải', 'Rải hợp âm (không mũi tên)', () => this.evMark('arp', 'plain'), 'pic')
+    this.pal(g, 'gliss-s', pic(bra(0, 19, '\uE0A4', 22) + bra(21, 8, '\uE0A4', 22) + '<line x1="8" y1="16" x2="21" y2="7"/>'), 'Lướt thẳng', 'Lướt từ nốt này đến nốt kế (đường thẳng)', () => this.evMark('gliss', 'straight'), 'pic')
+    this.pal(g, 'gliss-w', pic(bra(0, 19, '\uE0A4', 22) + bra(21, 8, '\uE0A4', 22) + '<path d="M8 16 l2 -3 l1.5 2 l2 -3 l1.5 2 l2 -3 l1.5 2 l1.5 -2"/>'), 'Lướt lượn', 'Lướt từ nốt này đến nốt kế (đường lượn)', () => this.evMark('gliss', 'wavy'), 'pic')
 
     const tr = P('Tremolo', 'Tremolos'); g = grid(tr)
     ;([[1, '\uE220'], [2, '\uE221'], [3, '\uE222']] as const).forEach(([n, gl]) => this.pal(g, `trem${n}`, gl, `Tremolo ${n} vạch`, `Tremolo ${n} vạch: nốt lặp 1/${8 * 2 ** (n - 1)}`, () => this.evMark('trem', n)))
 
     const gr = P('Nốt láy', 'Grace notes'); g = grid(gr)
-    this.pal(g, 'acc', 'Láy ngắn ⁄', 'Acciaccatura', 'Nốt láy ngắn có gạch chéo, thêm trước nốt đang chọn', () => this.addGraceNote('acc'), true)
-    this.pal(g, 'app', 'Láy dài', 'Appoggiatura', 'Nốt láy không gạch, thêm trước nốt đang chọn', () => this.addGraceNote('app'), true)
-    this.pal(g, 'gup', 'Láy ↑', 'Nâng nốt láy', 'Nâng nốt láy cuối lên một bậc', () => this.graceMove(1), true)
-    this.pal(g, 'gdn', 'Láy ↓', 'Hạ nốt láy', 'Hạ nốt láy cuối xuống một bậc', () => this.graceMove(-1), true)
-    this.pal(g, 'gclr', 'Bỏ láy', 'Xoá nốt láy', 'Xoá nốt láy của nốt đang chọn', () => this.graceClear(), true)
+    this.pal(g, 'acc', '\uE560', 'Láy ngắn (acciaccatura)', 'Nốt láy ngắn có gạch chéo, thêm trước nốt đang chọn', () => this.addGraceNote('acc'))
+    this.pal(g, 'app', '\uE562', 'Láy dài (appoggiatura)', 'Nốt láy không gạch, thêm trước nốt đang chọn', () => this.addGraceNote('app'))
+    this.pal(g, 'gup', pic(bra(2, 18, '\uE562', 20) + '<path d="M22 17V5M18 9l4-4 4 4"/>'), 'Nâng nốt láy', 'Nâng nốt láy cuối lên một bậc', () => this.graceMove(1), 'pic')
+    this.pal(g, 'gdn', pic(bra(2, 18, '\uE562', 20) + '<path d="M22 5v12M18 13l4 4 4-4"/>'), 'Hạ nốt láy', 'Hạ nốt láy cuối xuống một bậc', () => this.graceMove(-1), 'pic')
+    this.pal(g, 'gclr', pic(bra(2, 18, '\uE562', 20) + '<path d="M18 7l8 8M26 7l-8 8"/>'), 'Xoá nốt láy', 'Xoá nốt láy của nốt đang chọn', () => this.graceClear(), 'pic')
     this.cap(gr, 'Độ nhanh nốt láy khi nghe: Cài đặt → Nốt láy')
 
     const cl = P('Khoá nhạc', 'Clefs'); g = grid(cl); g.classList.add('wide')
@@ -1590,15 +1680,15 @@ export class Composer {
     this.cap(cl, 'Áp dụng cho khuông đang chọn, từ ô đang chọn. Nốt giữ nguyên cao độ.')
 
     const ks = P('Hoá biểu', 'Key signatures'); g = grid(ks); g.classList.add('wide')
-    for (let f = -7; f <= 7; f++) this.pal(g, `key${f}`, `${keyName(f)}<small>${f > 0 ? f + '♯' : f < 0 ? -f + '♭' : '0'}</small>`, `${keyName(f)} (${f})`, `Hoá biểu ${keyName(f)} từ ô đang chọn`, () => this.keySig(f), true)
+    for (let f = -7; f <= 7; f++) this.pal(g, `key${f}`, keyPic(f), `Hoá biểu ${keyName(f)} (${f > 0 ? f + '♯' : f < 0 ? -f + '♭' : 'không dấu'})`, `Hoá biểu ${keyName(f)} từ ô đang chọn`, () => this.keySig(f), 'pic')
 
     const ts = P('Nhịp', 'Time signatures'); g = grid(ts)
-    for (const t of ['2/4', '3/4', '4/4', '5/4', '6/4', '7/4', '2/2', '3/2', '3/8', '6/8', '9/8', '12/8', '5/8', '7/8']) this.pal(g, `time${t}`, t, `Nhịp ${t}`, `Nhịp ${t} từ ô đang chọn (các nốt được chia lại)`, () => { const [b, u] = t.split('/').map(Number); this.timeSig(b, u) }, true)
+    for (const t of ['2/4', '3/4', '4/4', '5/4', '6/4', '7/4', '2/2', '3/2', '3/8', '6/8', '9/8', '12/8', '5/8', '7/8']) { const [b, u] = t.split('/').map(Number); this.pal(g, `time${t}`, timePic(b, u), `Nhịp ${t}`, `Nhịp ${t} từ ô đang chọn (các nốt được chia lại)`, () => this.timeSig(b, u), 'pic') }
     this.pal(g, 'time-c', '\uE08A', 'Nhịp C', 'Nhịp 4/4 ký hiệu C', () => this.timeSig(4, 4, 'common'))
     this.pal(g, 'time-cut', '\uE08B', 'Nhịp ¢', 'Nhịp 2/2 ký hiệu ¢', () => this.timeSig(2, 2, 'cut'))
 
     const tp0 = P('Tốc độ', 'Tempo'); g = grid(tp0)
-    for (const [t, b] of [['Largo', 50], ['Adagio', 70], ['Andante', 90], ['Moderato', 108], ['Allegro', 132], ['Presto', 176]] as const) this.pal(g, `tp-${t}`, t, `${t} ♩=${b}`, `${t}, ♩ = ${b}, từ ô đang chọn`, () => this.tempoMark(b, t), true)
+    for (const [t, b] of [['Largo', 50], ['Adagio', 70], ['Andante', 90], ['Moderato', 108], ['Allegro', 132], ['Presto', 176]] as const) this.pal(g, `tp-${t}`, t, `${t} ♩=${b}`, `${t}, ♩ = ${b}, từ ô đang chọn`, () => this.tempoMark(b, t), 'text')
     const trow = this.el('div', 'row', tp0)
     const tbpm = this.el('input', 'field', trow); tbpm.type = 'number'; tbpm.min = '20'; tbpm.max = '300'; tbpm.placeholder = '♩ ='; tbpm.id = 'cmp-bpm'; tbpm.setAttribute('aria-label', 'Số phách mỗi phút'); tbpm.style.width = '72px'
     const ttxt = this.el('input', 'field', trow); ttxt.placeholder = 'Chữ (vd. Vivace)'; ttxt.id = 'cmp-tempotext'; ttxt.setAttribute('aria-label', 'Chữ chỉ tốc độ')
@@ -1608,9 +1698,9 @@ export class Composer {
     for (const t of ['rit.', 'accel.', 'a tempo']) this.btn(tapply, `tp-${t}`, t, `Chữ "${t}" (chỉ hiển thị, không đổi tốc độ)`, () => { const m = this.here(); this.commit((s) => { s.measures[m].tempoText = t }) }, { html: t })
 
     const pt = P('Cao độ', 'Pitch'); g = grid(pt)
-    for (const [k, gl, lab] of [['o8', '8va', '8va (lên 1 quãng tám)'], ['o-8', '8vb', '8vb (xuống 1 quãng tám)'], ['o15', '15ma', '15ma (lên 2 quãng tám)'], ['o-15', '15mb', '15mb (xuống 2 quãng tám)']] as const)
-      this.pal(g, k, gl, lab, `${lab}: chọn đoạn nốt (Shift+bấm) rồi bấm`, () => this.span(k), true)
-    this.cap(pt, 'Nốt trong đoạn được viết thấp/cao hơn một quãng; âm thanh giữ nguyên.')
+    for (const [k, gl, lab] of [['o8', '\uE511', '8va (lên 1 quãng tám)'], ['o-8', '\uE51C', '8vb (xuống 1 quãng tám)'], ['o15', '\uE515', '15ma (lên 2 quãng tám)'], ['o-15', '\uE51D', '15mb (xuống 2 quãng tám)']] as const)
+      this.pal(g, k, gl, lab, `${lab}: chọn đoạn nốt (Shift+bấm) rồi bấm`, () => this.span(k))
+    this.cap(pt, 'Nốt giữ nguyên trên trang; tiếng lên / xuống quãng tám.')
 
     const ac = P('Dấu hoá', 'Accidentals'); g = grid(ac)
     ;([[-2, '\uE264', 'Giáng kép'], [-1, '\uE260', 'Giáng'], [0, '\uE261', 'Bình'], [1, '\uE262', 'Thăng'], [2, '\uE263', 'Thăng kép']] as const).forEach(([al, gl, lab]) => this.pal(g, `acc${al}`, gl, lab, `${lab} cho nốt đang chọn (hoặc nốt kế tiếp khi nhập)`, () => this.accidental(al)))
@@ -1620,8 +1710,8 @@ export class Composer {
     this.btn(g, 'dyn-none', 'Bỏ sắc thái', 'Bỏ sắc thái', () => this.dynamic(undefined), { cls: 'ghost', html: 'Bỏ' })
     this.cap(dy, 'Mạnh dần / nhẹ dần (chọn đoạn bằng Shift+bấm)')
     g = grid(dy)
-    this.btn(g, 'cresc', 'Mạnh dần', 'Hairpin mạnh dần', () => this.span('cresc'), { html: 'cresc. &lt;' })
-    this.btn(g, 'dim', 'Nhẹ dần', 'Hairpin nhẹ dần', () => this.span('dim'), { html: 'dim. &gt;' })
+    this.pal(g, 'cresc', pic('<path d="M27 6L3 11l24 5"/>'), 'Mạnh dần (crescendo)', 'Hairpin mạnh dần', () => this.span('cresc'), 'pic')
+    this.pal(g, 'dim', pic('<path d="M3 6l24 5-24 5"/>'), 'Nhẹ dần (diminuendo)', 'Hairpin nhẹ dần', () => this.span('dim'), 'pic')
 
     const ar2 = P('Dấu nhấn & hoa mỹ', 'Articulations', true); g = grid(ar2)
     ;([['stac', 'staccato', '\uE4A2', 'Staccato', 'Ngắt nốt'], ['stacc2', 'staccatissimo', '\uE4A6', 'Staccatissimo', 'Ngắt rất ngắn'], ['acc', 'accent', '\uE4A0', 'Accent', 'Nhấn'], ['ten', 'tenuto', '\uE4A4', 'Tenuto', 'Giữ đủ giá trị'], ['marc', 'marcato', '\uE4AC', 'Marcato', 'Nhấn mạnh'], ['ferm', 'fermata', '\uE4C0', 'Fermata', 'Ngân dài (chỉ hiển thị)'], ['upb', 'upbow', '\uE612', 'Kéo lên', 'Up bow'], ['dnb', 'downbow', '\uE610', 'Kéo xuống', 'Down bow']] as const)
@@ -1634,9 +1724,8 @@ export class Composer {
     this.pal(g, 'invm', '\uE56C', 'Mordent đảo', 'Nốt chính – nốt trên – nốt chính', () => this.ornament('inverted'))
     this.pal(g, 'breath', '\uE4CE', 'Dấu lấy hơi', 'Dấu lấy hơi sau nốt (chỉ hiển thị)', () => this.evMark('breath', 'breath'))
     this.pal(g, 'caes', '\uE4D1', 'Caesura', 'Caesura // sau nốt (chỉ hiển thị)', () => this.evMark('breath', 'caesura'))
-    this.pal(g, 'flip', 'Lật đuôi ⇅', 'Đổi hướng đuôi nốt', 'Đổi hướng đuôi nốt (X)', () => this.flip(), true)
-    this.pal(g, 'slur', 'Luyến ⌒', 'Luyến', 'Dấu luyến từ nốt đầu đến nốt cuối của đoạn chọn (S)', () => this.slur(), true)
-    this.pal(g, 'tie2', 'Nối ‿', 'Nối nốt', 'Nối nốt đang chọn với nốt sau, cùng cao độ (T)', () => this.tie(), true)
+    this.pal(g, 'slur', pic(bra(1, 19, '\uE0A4') + bra(21, 19, '\uE0A4') + '<path d="M4 13Q15 3 26 13" stroke-width="1.6"/>'), 'Luyến', 'Dấu luyến từ nốt đầu đến nốt cuối của đoạn chọn (S)', () => this.slur(), 'pic')
+    this.pal(g, 'tie2', pic(bra(1, 10, '\uE0A4') + bra(21, 10, '\uE0A4') + '<path d="M5 14Q15 21 25 14" stroke-width="1.6"/>'), 'Nối nốt', 'Nối nốt đang chọn với nốt sau, cùng cao độ (T)', () => this.tie(), 'pic')
 
     const tx = P('Chữ', 'Text'); 
     const tkind = this.el('select', 'field', tx); tkind.id = 'cmp-textkind'; tkind.setAttribute('aria-label', 'Loại chữ')
@@ -1649,21 +1738,25 @@ export class Composer {
     this.btn(rrow, 'rehearsal', 'Đặt dấu tập', 'Đặt dấu tập trong khung ở ô đang chọn (bỏ trống = xoá)', () => this.rehearsal(rin.value), { html: 'Đặt' })
 
     const kb = P('Pedal', 'Keyboard'); g = grid(kb)
-    this.pal(g, 'pedal', '\uE650', 'Pedal', 'Pedal đạp: chọn đoạn nốt (Shift+bấm) rồi bấm. Chỉ hiển thị và xuất file', () => this.span('pedal'))
-    this.cap(kb, 'Pedal chỉ hiển thị và xuất MusicXML; không đổi độ dài nốt.')
+    const how = 'chọn đoạn nốt (Shift+bấm) rồi bấm'
+    this.pal(g, 'pedal', pic(bra(0, 16, '\uE650', 18) + bra(22, 16, '\uE655', 14), 34, 22), 'Pedal (Ped. và ✱)', `Pedal Ped. … ✱: ${how}`, () => this.span('pedal'), 'pic')
+    this.pal(g, 'pedal-line', pic(bra(0, 14, '\uE650', 15) + '<path d="M19 14H32V6"/>', 34, 22), 'Pedal có đường kẻ', `Pedal Ped. và đường kẻ: ${how}`, () => this.span('pedal-line'), 'pic')
+    this.pal(g, 'pedal-bracket', pic('<path d="M3 6v8h28V6"/>', 34, 22), 'Pedal ngoặc vuông', `Pedal ngoặc, móc thẳng hai đầu: ${how}`, () => this.span('pedal-bracket'), 'pic')
+    this.pal(g, 'pedal-angled', pic('<path d="M3 6v8h22l6-8"/>', 34, 22), 'Pedal móc chéo', `Pedal ngoặc, móc chéo ở cuối (thay pedal liền nhau): ${how}`, () => this.span('pedal-angled'), 'pic')
+    this.cap(kb, 'Tiếng ngân tới chỗ nhả pedal; kéo ✱ hoặc móc cuối để đổi chỗ nhả.')
 
     const bar = P('Lặp & nhảy', 'Repeats & jumps')
     g = grid(bar)
-    this.btn(g, 'rs', 'Dấu lặp bắt đầu', 'Dấu lặp bắt đầu', () => this.commit((s) => { const m = s.measures[this.here()]; m.startRepeat = !m.startRepeat }), { html: '|:' })
-    this.btn(g, 're', 'Dấu lặp kết thúc', 'Dấu lặp kết thúc', () => this.commit((s) => { const m = s.measures[this.here()]; m.endRepeat = !m.endRepeat; if (m.endRepeat) m.barline = undefined }), { html: ':|' })
-    this.btn(g, 'rbar', 'Lặp ô trước', 'Chép nội dung ô trước vào ô này', () => this.repeatBar(), { html: 'Chép ô trước' })
+    this.pal(g, 'rs', '\uE040', 'Dấu lặp bắt đầu', 'Dấu lặp bắt đầu', () => this.commit((s) => { const m = s.measures[this.here()]; m.startRepeat = !m.startRepeat }))
+    this.pal(g, 're', '\uE041', 'Dấu lặp kết thúc', 'Dấu lặp kết thúc', () => this.commit((s) => { const m = s.measures[this.here()]; m.endRepeat = !m.endRepeat; if (m.endRepeat) m.barline = undefined }))
+    this.pal(g, 'rbar', '\uE500', 'Lặp ô trước', 'Chép nội dung ô trước vào ô này', () => this.repeatBar())
     const vsel = this.el('select', 'field', bar); vsel.id = 'cmp-volta'; vsel.title = 'Ô nhịp tạm (1., 2.…) cho các ô đang chọn'; vsel.setAttribute('aria-label', 'Ô nhịp tạm')
     ;[['', 'Ô nhịp tạm…'], ['none', '(bỏ)'], ['1', '1.'], ['2', '2.'], ['3', '3.'], ['1,2', '1., 2.'], ['1,2,3', '1.–3.']].forEach(([v, l]) => vsel.add(new Option(l, v)))
     vsel.onchange = () => { if (vsel.value) this.ending(vsel.value === 'none' ? undefined : vsel.value.split(',').map(Number)); vsel.value = '' }
     this.cap(bar, 'Điều hướng')
     g = grid(bar)
-    this.btn(g, 'segno', 'Segno', 'Dấu Segno ở đầu ô (đích của D.S.)', () => this.mark('segno'), { cls: 'sm', html: '<span class="glyph sm" aria-hidden="true">\uE047</span> Segno' })
-    this.btn(g, 'coda', 'Coda', 'Dấu Coda ở đầu ô (đích của "To Coda")', () => this.mark('coda'), { cls: 'sm', html: '<span class="glyph sm" aria-hidden="true">\uE048</span> Coda' })
+    this.pal(g, 'segno', '\uE047', 'Segno', 'Dấu Segno ở đầu ô (đích của D.S.)', () => this.mark('segno'))
+    this.pal(g, 'coda', '\uE048', 'Coda', 'Dấu Coda ở đầu ô (đích của "To Coda")', () => this.mark('coda'))
     this.btn(g, 'tocoda', 'To Coda', 'Cuối ô này nhảy sang Coda (sau D.C./D.S. al Coda)', () => this.mark('toCoda'))
     this.btn(g, 'fine', 'Fine', 'Cuối ô này kết thúc (sau D.C./D.S. al Fine)', () => this.mark('fine'))
     const jsel = this.el('select', 'field', bar); jsel.id = 'cmp-jump'; jsel.title = 'Nhảy ở cuối ô đang chọn'; jsel.setAttribute('aria-label', 'Nhảy')
@@ -1671,8 +1764,9 @@ export class Composer {
     jsel.onchange = () => { if (jsel.value) { const [k, al] = jsel.value.split('-'); this.jump(jsel.value === 'none' ? undefined : { kind: k as 'dc' | 'ds', al: al as 'end' | 'fine' | 'coda' }) } jsel.value = '' }
 
     const bl = P('Vạch nhịp', 'Barlines'); g = grid(bl)
-    for (const [k, lab, gl] of [['single', 'Vạch đơn', '│'], ['double', 'Vạch đôi', '║'], ['final', 'Vạch kết', '┃┃'], ['dashed', 'Vạch đứt', '¦'], ['dotted', 'Vạch chấm', '⁞'], ['none', 'Ẩn vạch', '∅']] as const)
-      this.pal(g, `bl-${k}`, gl, lab, `${lab} ở cuối ô đang chọn`, () => this.barline(k as BarlineKind), true)
+    for (const [k, lab, gl] of [['single', 'Vạch đơn', '\uE030'], ['double', 'Vạch đôi', '\uE031'], ['final', 'Vạch kết', '\uE032'], ['dashed', 'Vạch đứt', '\uE036'], ['dotted', 'Vạch chấm', '\uE037']] as const)
+      this.pal(g, `bl-${k}`, gl, lab, `${lab} ở cuối ô đang chọn`, () => this.barline(k as BarlineKind))
+    this.pal(g, 'bl-none', pic('<path d="M15 3v16" stroke-dasharray="1.5 2.5" opacity="0.5"/><path d="M9 6l12 10M21 6L9 16"/>'), 'Ẩn vạch', 'Ẩn vạch ở cuối ô đang chọn', () => this.barline('none'), 'pic')
 
     const lay = P('Bố cục', 'Layout'); g = grid(lay)
     this.btn(g, 'sysbreak', 'Xuống dòng', 'Bắt đầu hệ khuông mới sau ô đang chọn', () => this.pageBreak('system'), { html: 'Xuống dòng ↵' })
@@ -1714,7 +1808,7 @@ export class Composer {
     for (let v = 0; v < 4; v++) set(`v${v}`, v === this.voice)
     const on = !!this.playing || this.starting
     set('play', on); set('met', this.metOn)
-    const b = this.btns.get('play'); if (b) { b.innerHTML = on ? `${icon('pause')}Dừng` : `${icon('play')}Nghe thử`; b.classList.toggle('on', on) }
+    const b = this.btns.get('play'); if (b) { b.innerHTML = icon(on ? 'pause' : 'play'); b.setAttribute('aria-label', on ? 'Dừng' : 'Nghe thử'); b.classList.toggle('on', on) }
     set('sharp', this.pendingAlter === 1); set('flat', this.pendingAlter === -1); set('natural', this.pendingAlter === 0)
     const ctx = contextAt(this.score, Math.min(this.cursor.m, this.score.measures.length - 1))
     const q = <T extends HTMLElement>(id: string) => this.root.querySelector<T>('#' + id)

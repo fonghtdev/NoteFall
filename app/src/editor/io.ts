@@ -4,7 +4,7 @@ import { saveFile } from '../ui/save'
 import { parseMidi } from '../core/midi'
 import type { Note } from '../core/models'
 import { tempoRatios, toNotes, unroll } from '../core/score/playback'
-import { CLEFS, TPQ, barTicks, blankMeasure, clefAt, type BarlineKind, type ClefName, type Orn, contextAt, emptyScore, midiOf, newId, nominalTicks, notationOf, putNote, spell, splitLength, starts, validate, type Art, type Dyn, type Ev, type Measure, type Pitch, type Score, type StepName } from './model'
+import { CLEFS, TPQ, barTicks, blankMeasure, clefAt, type BarlineKind, type ClefName, type Orn, contextAt, emptyScore, midiOf, newId, nominalTicks, notationOf, putNote, spell, splitLength, starts, validate, type Art, type Dyn, type Ev, type Measure, type PedalStyle, type Pitch, type Score, type StepName } from './model'
 import { toPerformance } from './perform'
 
 const download = saveFile
@@ -126,7 +126,7 @@ export function scoreToMusicXml(s: Score): string {
         if (e.staffText) dirs.push(`<words>${esc(e.staffText)}</words>`)
         if (e.expr) dirs.push(`<words font-style="italic">${esc(e.expr)}</words>`)
         if (e.ottava) { const n = ottEnd.get(e.ottava.end)?.[0].no ?? 1; dirs.push(`<octave-shift type="${e.ottava.n > 0 ? 'down' : 'up'}" size="${Math.abs(e.ottava.n)}" number="${n}"/>`) } // 8va: written lower than it sounds
-        if (e.pedal) dirs.push(`<pedal type="start" line="yes" number="${pedEnd.get(e.pedal.end)?.[0] ?? 1}"/>`)
+        if (e.pedal) { const st = e.pedal.style ?? 'star'; dirs.push(`<pedal type="start" line="${st === 'star' ? 'no' : 'yes'}" sign="${st === 'star' || st === 'line' ? 'yes' : 'no'}" number="${pedEnd.get(e.pedal.end)?.[0] ?? 1}"/>`) } // (MusicXML has no slanted end hook: 'angled' comes back as a bracket)
 
         if (e.hairpin) dirs.push(`<wedge type="${e.hairpin.type === 'cresc' ? 'crescendo' : 'diminuendo'}" number="${wedgeNo.get(e.id)}"/>`)
         for (const n of wedgeEnd.get(e.id) ?? []) dirs.push(`<wedge type="stop" number="${n}"/>`)
@@ -174,7 +174,7 @@ export function scoreToMusicXml(s: Score): string {
           if (pi === 0 && e.lyric) o.push(`<lyric number="1"><syllabic>${hyph.get(e.id) ?? 'single'}</syllabic><text>${esc(e.lyric.replace(/-$/, ''))}</text></lyric>`)
           o.push('</note>')
         })
-        const stops = [...(ottEnd.get(e.id) ?? []).map((q) => `<octave-shift type="stop" size="${q.size}" number="${q.no}"/>`), ...(pedEnd.get(e.id) ?? []).map((n) => `<pedal type="stop" line="yes" number="${n}"/>`)]
+        const stops = [...(ottEnd.get(e.id) ?? []).map((q) => `<octave-shift type="stop" size="${q.size}" number="${q.no}"/>`), ...(pedEnd.get(e.id) ?? []).map((n) => `<pedal type="stop" number="${n}"/>`)]
         stops.forEach((d) => o.push(`<direction placement="below"><direction-type>${d}</direction-type><staff>${si + 1}</staff></direction>`))
       })
     }))
@@ -229,10 +229,10 @@ export function scoreFromMusicXml(xml: string): { score: Score; warnings: string
   const clefOf: ClefName[] = used.map((_, i) => (i === 1 && used.length === 2 ? 'bass' : 'treble')), curClef: ClefName[] = [...clefOf]
   let time = { beats: 4, unit: 4 }, key = 0, tempo: number | undefined
   let tied: Record<string, boolean> = {}
-  let unsupported = 0
+  let unsupported = 0, overfull = 0
 
   // marks that run across bars (slurs, wedges, tuplets) are tracked per staff
-  const laneState = used.map(() => ({ words: [] as { text: string; italic: boolean }[], ott: new Map<string, Ev>(), ottPending: [] as { n: 8 | -8 | 15 | -15; no: string }[], ped: new Map<string, Ev>(), pedPending: [] as string[], gliss: new Map<string, { ev: Ev; wavy: boolean }>(), harmony: undefined as string | undefined, lastEv: undefined as Ev | undefined, slurs: new Map<string, Ev>(), wedge: undefined as { ev: Ev; type: 'cresc' | 'dim' } | undefined, wedgeStart: undefined as 'cresc' | 'dim' | undefined, wedgeStop: false, dyn: undefined as Dyn | undefined, tupGroup: 0, tupCount: 0, tupN: 0 }))
+  const laneState = used.map(() => ({ words: [] as { text: string; italic: boolean }[], ott: new Map<string, Ev>(), ottPending: [] as { n: 8 | -8 | 15 | -15; no: string }[], ped: new Map<string, Ev>(), pedPending: [] as { no: string; style: PedalStyle }[], gliss: new Map<string, { ev: Ev; wavy: boolean }>(), harmony: undefined as string | undefined, lastEv: undefined as Ev | undefined, slurs: new Map<string, Ev>(), wedge: undefined as { ev: Ev; type: 'cresc' | 'dim' } | undefined, wedgeStart: undefined as 'cresc' | 'dim' | undefined, wedgeStop: false, dyn: undefined as Dyn | undefined, tupGroup: 0, tupCount: 0, tupN: 0 }))
   const DYNS: Dyn[] = ['pppp', 'ppp', 'pp', 'p', 'mp', 'mf', 'f', 'ff', 'fff', 'ffff', 'sf', 'sfz', 'fp', 'sfp', 'rfz']
   const TEMPO_WORDS = /^(rit|ritard|rall|accel|a tempo|largo|lento|grave|adagio|andante|moderato|allegretto|allegro|vivace|presto)/i
   const nMeasures = Math.max(...used.map((u) => u.part.querySelectorAll(':scope > measure').length))
@@ -296,7 +296,7 @@ export function scoreFromMusicXml(xml: string): { score: Score; warnings: string
               const pd = el.querySelector('pedal')
               if (pd) {
                 const ty = pd.getAttribute('type'), no = pd.getAttribute('number') ?? '1'
-                if (ty === 'start') st.pedPending.push(no)
+                if (ty === 'start') st.pedPending.push({ no, style: pd.getAttribute('line') !== 'yes' ? 'star' : pd.getAttribute('sign') === 'no' ? 'bracket' : 'line' })
                 else if (ty === 'stop') { const a = st.ped.get(no); if (a?.pedal && st.lastEv) { a.pedal.end = st.lastEv.id; st.ped.delete(no) } }
               }
               const wt = el.querySelector('wedge')?.getAttribute('type')
@@ -363,7 +363,7 @@ export function scoreFromMusicXml(xml: string): { score: Score; warnings: string
             if (pitchEl && st.harmony) { ev.chord = st.harmony; st.harmony = undefined }
             for (const w of st.words.splice(0)) { if (w.italic) ev.expr = w.text; else ev.staffText = w.text }
             for (const o_ of st.ottPending.splice(0)) { ev.ottava = { n: o_.n, end: ev.id }; st.ott.set(o_.no, ev) }
-            for (const no of st.pedPending.splice(0)) { ev.pedal = { end: ev.id }; st.ped.set(no, ev) }
+            for (const p of st.pedPending.splice(0)) { ev.pedal = { end: ev.id, ...(p.style === 'star' ? {} : { style: p.style }) }; st.ped.set(p.no, ev) }
             el.querySelectorAll('glissando').forEach((g_) => {
               const no = g_.getAttribute('number') ?? '1', ty = g_.getAttribute('type')
               if (ty === 'start') st.gliss.set(no, { ev, wavy: g_.getAttribute('line-type') === 'wavy' })
@@ -406,7 +406,8 @@ export function scoreFromMusicXml(xml: string): { score: Score; warnings: string
       const list = [...voices.values()].filter((v) => v.length)
       if (!list.length) list.push([])
       list.forEach((v) => {
-        const sum = v.reduce((a, e) => a + e.ticks, 0)
+        let sum = v.reduce((a, e) => a + e.ticks, 0)
+        if (sum > bar) { overfull++; sum = trimToBar(v, bar) } // more music than the bar holds (a misread scan): what goes past the barline is dropped
         if (sum < bar) v.push(...splitLength(sum, bar - sum, { dots: false, bar }).map((t) => ({ id: newId(s), ticks: t, pitches: [] as Pitch[] })))
         for (const e of v) e.pitches.sort((a, b) => midiOf(a) - midiOf(b))
       })
@@ -426,7 +427,19 @@ export function scoreFromMusicXml(xml: string): { score: Score; warnings: string
   if (used.length === 1) fillSecondStaff(s)
   if (tempo === undefined) s.tempo = 100
   if (unsupported) warnings.push(`${unsupported} nốt có độ dài chưa hỗ trợ hiển thị (bộ ba…): nhịp vẫn đúng nhưng hình có thể sai`)
+  if (overfull) warnings.push(`${overfull} giọng dài quá ô nhịp của nó (thường do nhận dạng ảnh): phần vượt vạch nhịp đã được bỏ`)
   return { score: s, warnings: [...new Set(warnings)] }
+}
+
+/**
+ * Cut a voice down to the bar: the event that crosses the barline ends there, those after it go. Returns the new length.
+ * ponytail: a tuplet cut in two keeps its marks (validate reports it); split it into plain notes if scans ever produce that.
+ */
+export function trimToBar(v: Ev[], bar: number): number {
+  let at = 0, k = 0
+  for (; k < v.length && at < bar; k++) { if (at + v[k].ticks > bar) { v[k].ticks = bar - at; v[k].tie = false } at += v[k].ticks }
+  v.length = k
+  return at
 }
 
 function fillSecondStaff(s: Score) {

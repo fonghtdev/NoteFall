@@ -93,6 +93,7 @@ export class PianoView {
     this.drawHitLine(hitY, w, pressed, t)
     this.drawSparks(t, hitY, w, o?.dt)
     this.drawKeyboard(hitY, kbH, w, pressed)
+    this.drawKeyLight(t, hitY, kbH, w)
   }
 
   /** What lies behind the glass: a sky, plain black or your own picture, with faint lanes and beat lines on top. */
@@ -218,10 +219,42 @@ export class PianoView {
       // this very note is sounding (not just another of the same pitch): a flash on the strike that settles to a steady glow, and a fade on release
       const age = t - n.start, left = n.start + n.duration - t
       const hot = age < 0 ? 0 : (0.55 + 0.45 * Math.exp(-age * 7)) * Math.min(1, Math.max(0, left / 0.12))
-      const base = this.handColor(handOf(n)) // each hand keeps its own colour; the note that is sounding just glows brighter
+      const base = mix(this.handColor(handOf(n)), [8, 10, 22], 0.38 * (1 - n.velocity / 127)) // each hand keeps its own colour, deeper for a soft note, full for a loud one; the note that is sounding glows brighter
       out.push({ x: x + 1, y: top, w: kw - 2, h: bottom - top, hot, color: hot > 0 ? mix(base, [255, 255, 255], 0.45 * hot) : base })
     }
     return out
+  }
+
+  /**
+   * The notes light the keyboard: one about to land throws its colour onto the felt and the key below (stronger as it nears), one that sounds
+   * pools light where it meets the felt and runs it down its key. A function of time, like the rest, so seeking and video export agree.
+   */
+  private drawKeyLight(t: number, hitY: number, kbH: number, w: number) {
+    const g = this.g, fh = Math.max(4, kbH * 0.055), AHEAD = 0.6
+    g.save()
+    g.globalCompositeOperation = 'lighter'
+    for (const n of this.keys.visible(t, AHEAD)) {
+      const [x, kw] = keyRect(n.pitch, w), cx = x + kw / 2, v = 0.35 + 0.65 * (n.velocity / 127)
+      const c = mix(this.handColor(handOf(n)), [255, 255, 255], 0.25)
+      const coming = n.start > t ? (1 - (n.start - t) / AHEAD) ** 2 : 0                        // 0 … 1 as it nears the keys
+      const age = t - n.start, left = n.start + n.duration - t
+      const sounding = age >= 0 && left > 0 ? (0.6 + 0.4 * Math.exp(-age * 6)) * Math.min(1, left / 0.15) : 0
+      const a = Math.max(coming * 0.32, sounding * 0.5) * v
+      if (a < 0.01) continue
+      const r = kw * (1.4 + 0.8 * sounding)
+      g.save(); g.translate(cx, hitY + fh * 0.5); g.scale(1, 0.45)                                // a flat pool of light on the felt
+      const pool = g.createRadialGradient(0, 0, 0, 0, 0, r)
+      pool.addColorStop(0, rgb(c, 1, a)); pool.addColorStop(1, rgb(c, 1, 0))
+      g.fillStyle = pool; g.fillRect(-r, -r, 2 * r, 2 * r)
+      g.restore()
+      if (sounding > 0) {                                                                         // light running down the pressed key, fading toward its front
+        const len = (isBlack(n.pitch) ? 0.6 : 0.9) * kbH
+        const run = g.createLinearGradient(0, hitY + fh, 0, hitY + fh + len)
+        run.addColorStop(0, rgb(c, 1, 0.28 * sounding * v)); run.addColorStop(1, rgb(c, 1, 0))
+        g.fillStyle = run; g.fillRect(x + 1, hitY + fh, kw - 2, len)
+      }
+    }
+    g.restore()
   }
 
   /** Without WebGL: the same idea in 2D, a clear pane with a lit edge. */
@@ -274,21 +307,93 @@ export class PianoView {
     }
   }
 
+  /**
+   * A keyboard that looks like one: a strip of red felt, ivory white keys with a front lip and gaps, black keys with a glossy top, bevelled sides
+   * and a shadow on the white keys. A pressed key goes down: its lip shortens, the back darkens as it tilts, and it takes the hand's colour.
+   * The keyboard at rest is drawn once and kept; each frame only the pressed keys (and the black keys over them) are drawn again.
+   */
+  private kbCache?: { key: string; canvas: HTMLCanvasElement }
   private drawKeyboard(top: number, kbH: number, w: number, pressed: Map<number, [number, number, 0 | 1]>) {
-    const g = this.g
-    g.strokeStyle = 'rgb(40,40,50)'
-    g.lineWidth = 1
-    for (const black of [false, true]) {
-      for (let pitch = LOW; pitch <= HIGH; pitch++) {
-        if (isBlack(pitch) !== black) continue
-        const [x, kw] = keyRect(pitch, w)
-        const [press, vel, hand] = pressed.get(pitch) ?? [0, 0, 0 as const]
-        const dip = 4 * press, k = 0.6 * press * (vel / 127)
-        const [y, hh] = black ? [top, kbH * 0.62 + dip] : [top + dip, kbH - dip]
-        g.fillStyle = black ? 'rgb(25,25,30)' : rgb(mix([245, 245, 250], this.handColor(hand), k))
-        g.fillRect(x, y, kw, hh)
-        g.strokeRect(x, y, kw, hh)
-      }
+    const g = this.g, dpr = g.getTransform().a
+    const key = `${Math.round(w)}x${Math.round(kbH)}@${dpr}`
+    if (this.kbCache?.key !== key) {
+      const cv = document.createElement('canvas')
+      cv.width = Math.round(w * dpr); cv.height = Math.round(kbH * dpr)
+      const c = cv.getContext('2d')!
+      c.setTransform(dpr, 0, 0, dpr, 0, 0)
+      for (let p = LOW; p <= HIGH; p++) if (!isBlack(p)) this.whiteKey(c, p, 0, kbH, w, 0, 0, 0)
+      for (let p = LOW; p <= HIGH; p++) if (isBlack(p)) this.blackKey(c, p, 0, kbH, w, 0, 0, 0)
+      this.felt(c, 0, kbH, w)
+      this.kbCache = { key, canvas: cv }
     }
+    g.drawImage(this.kbCache.canvas, 0, top, w, kbH)
+    if (!pressed.size) return
+    const blacks = new Set<number>()
+    for (const [p, [press, vel, hand]] of pressed) {
+      if (isBlack(p)) { blacks.add(p); continue }
+      this.whiteKey(g, p, top, kbH, w, press, vel, hand)
+      for (const nb of [p - 1, p + 1]) if (nb >= LOW && nb <= HIGH && isBlack(nb)) blacks.add(nb) // the black keys that lie over it
+    }
+    for (const p of [...blacks].sort((x, y) => x - y)) { const [press, vel, hand] = pressed.get(p) ?? [0, 0, 0 as const]; this.blackKey(g, p, top, kbH, w, press, vel, hand) }
+    this.felt(g, top, kbH, w)
+  }
+
+  /** The felt strip the keys disappear under, with the soft shadow it throws on them. */
+  private felt(g: CanvasRenderingContext2D, top: number, kbH: number, w: number) {
+    const fh = Math.max(4, kbH * 0.055)
+    const f = g.createLinearGradient(0, top, 0, top + fh)
+    f.addColorStop(0, 'rgb(118,26,38)'); f.addColorStop(0.55, 'rgb(86,16,27)'); f.addColorStop(1, 'rgb(52,9,16)')
+    g.fillStyle = f; g.fillRect(0, top, w, fh)
+    g.fillStyle = 'rgba(255,180,190,0.18)'; g.fillRect(0, top, w, 1) // the light catching its top edge
+    const sh = g.createLinearGradient(0, top + fh, 0, top + fh + kbH * 0.09)
+    sh.addColorStop(0, 'rgba(0,0,0,0.38)'); sh.addColorStop(1, 'rgba(0,0,0,0)')
+    g.fillStyle = sh; g.fillRect(0, top + fh, w, kbH * 0.09)
+  }
+
+  /** One white key; `press` 0..1 how far down it is. */
+  private whiteKey(g: CanvasRenderingContext2D, pitch: number, top: number, kbH: number, w: number, press: number, vel: number, hand: 0 | 1) {
+    const [x0, kw] = keyRect(pitch, w), x = x0 + 0.5, kx = kw - 1 // a hairline gap between keys
+    const y = top + Math.max(4, kbH * 0.055), bottom = top + kbH - 1
+    const lip = Math.max(3, kbH * 0.075) * (1 - 0.65 * press) // the front edge: shorter as the key goes down
+    const tint = this.handColor(hand), k = press * (0.25 + 0.4 * (vel / 127))
+    const shade = (c: [number, number, number], d: number) => rgb(mix(mix(c, tint, k), [0, 0, 0], d))
+    g.save()
+    g.beginPath(); g.roundRect(x, y - 2, kx, bottom - y + 2, [0, 0, 3, 3]); g.clip()
+    const body = g.createLinearGradient(0, y, 0, bottom - lip)
+    body.addColorStop(0, shade([214, 211, 204], 0.18 * press))   // the back, under the felt: darker as the key tilts down
+    body.addColorStop(0.12, shade([240, 238, 233], 0.08 * press))
+    body.addColorStop(1, shade([252, 251, 248], 0))
+    g.fillStyle = body; g.fillRect(x, y, kx, bottom - y)
+    const face = g.createLinearGradient(0, bottom - lip, 0, bottom)
+    face.addColorStop(0, shade([206, 202, 195], 0)); face.addColorStop(1, shade([176, 171, 163], 0))
+    g.fillStyle = face; g.fillRect(x, bottom - lip, kx, lip)
+    g.fillStyle = 'rgba(255,255,255,0.55)'; g.fillRect(x, bottom - lip, kx, 1) // the rounded edge where top meets front
+    g.fillStyle = 'rgba(0,0,0,0.10)'; g.fillRect(x + kx - 1, y, 1, bottom - y) // a faint side, so neighbours read as separate keys
+    g.restore()
+  }
+
+  /** One black key: a block with a glossy top, bevelled sides and a front face; it shades the white keys beside it. */
+  private blackKey(g: CanvasRenderingContext2D, pitch: number, top: number, kbH: number, w: number, press: number, vel: number, hand: 0 | 1) {
+    const [x, bw] = keyRect(pitch, w)
+    const y = top + Math.max(4, kbH * 0.055), h = kbH * 0.6 + 2 * press
+    const front = Math.max(3, kbH * 0.06) * (1 - 0.6 * press), bev = Math.max(1.5, bw * 0.13)
+    const tint = this.handColor(hand), k = press * (0.35 + 0.45 * (vel / 127))
+    const col = (c: [number, number, number]) => rgb(mix(c, tint, k))
+    g.save()
+    g.shadowColor = 'rgba(0,0,0,0.45)'; g.shadowBlur = 6; g.shadowOffsetX = 2; g.shadowOffsetY = 3 - 2 * press // lower, so its shadow shrinks
+    g.fillStyle = col([14, 14, 17])
+    g.beginPath(); g.roundRect(x, y - 2, bw, h + 2, [0, 0, 2, 2]); g.fill()
+    g.restore()
+    const sides = g.createLinearGradient(x, 0, x + bw, 0) // the bevels catch a little light, the top between them stays dark
+    sides.addColorStop(0, col([58, 58, 64])); sides.addColorStop(bev / bw, col([30, 30, 34])); sides.addColorStop(1 - bev / bw, col([24, 24, 28])); sides.addColorStop(1, col([44, 44, 50]))
+    g.fillStyle = sides; g.fillRect(x, y, bw, h - front)
+    const top_ = g.createLinearGradient(0, y, 0, y + h - front)
+    top_.addColorStop(0, 'rgba(0,0,0,0.35)'); top_.addColorStop(0.35, 'rgba(255,255,255,0.05)'); top_.addColorStop(1, 'rgba(255,255,255,0.12)')
+    g.fillStyle = top_; g.fillRect(x + bev, y, bw - 2 * bev, h - front)
+    g.fillStyle = 'rgba(255,255,255,0.16)'; g.fillRect(x + bev + 1, y + h * 0.18, Math.max(1, bw * 0.08), h * 0.55) // a long highlight on the gloss
+    const face = g.createLinearGradient(0, y + h - front, 0, y + h)
+    face.addColorStop(0, col([70, 70, 78])); face.addColorStop(1, col([34, 34, 40]))
+    g.fillStyle = face
+    g.beginPath(); g.roundRect(x + 0.5, y + h - front, bw - 1, front, [0, 0, 2, 2]); g.fill()
   }
 }

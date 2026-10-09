@@ -222,6 +222,7 @@ export class Composer {
   refresh() {
     const keep = this.root.querySelector('.cmp-page')?.scrollTop ?? 0
     this.layout = renderScore(this.host, this.score, { width: LOGICAL_WIDTH, selected: new Set(this.grace() ? [] : this.targets()), selectedMark: this.selMark, selectedGrace: this.grace() })
+    if (this.ghost && !this.ghost.isConnected) this.svg().appendChild(this.ghost) // the shadow note stays under the pointer when a new drawing replaces the old one
     const page = this.root.querySelector('.cmp-page')
     if (page) page.scrollTop = keep
     this.drawBarHighlight()

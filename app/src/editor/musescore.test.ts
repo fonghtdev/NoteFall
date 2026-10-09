@@ -114,3 +114,15 @@ describe('composer keys behave like MuseScore', { timeout: 20000 }, () => { // (
   })
 })
 
+
+describe('shadow note', () => {
+  it('stays on the page after a note is placed, without leaving the score first', () => {
+    const c = make(); c.setMode('input')
+    const m = c.layout.measures[0], st = m.staves[0]
+    const ghost = () => (c as unknown as { ghost?: SVGGElement }).ghost
+    ;(c as unknown as { moveGhost(x: number, y: number, v: number): void }).moveGhost(m.x + m.w / 2, st.bottom - st.spacing * 2, 0)
+    expect(ghost()?.isConnected).toBe(true)
+    c.key('c')                                                      // the score is drawn again in a new <svg>
+    expect(ghost()?.isConnected).toBe(true)
+  })
+})

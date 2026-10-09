@@ -133,32 +133,47 @@ export function notationOf(ticks: number): { name: string; dots: number } | null
 /** The written value of an event: tuplet members are written at the value they imitate (a 3:2 eighth is 320 ticks long but written as an eighth, 480). */
 export const nominalTicks = (e: { ticks: number; tup?: Tup }) => (e.tup ? Math.round((e.ticks * e.tup.n) / e.tup.m) : e.ticks)
 
-/** The beat of a compound time (6/8, 9/8, 12/8: a dotted quarter), which rests are grouped by; undefined in simple time. */
-export const compoundBeat = (time: TimeSig) => (time.unit === 8 && time.beats % 3 === 0 && time.beats >= 6 ? TPQ * 1.5 : undefined)
+/**
+ * How a bar's rests are grouped, when it is not simple time: the tick where each group starts, and whether a group may be one dotted rest.
+ * Compound time (6, 9 or 12 beats, any unit: 6/8, 6/4, 12/16) groups by three units; 5 beats by 3+2 and 7 by 2+2+3. A whole group of
+ * eighths or shorter is one dotted rest (a dotted quarter in 6/8 or 5/8); 5/4 and 7/4 stay with plain rests. Simple time: undefined.
+ */
+export function restGroups(time: TimeSig): RestGroups | undefined {
+  const u = (4 * TPQ) / time.unit, { beats } = time
+  const sizes = beats % 3 === 0 && beats >= 6 ? Array<number>(beats / 3).fill(3) : beats === 5 ? [3, 2] : beats === 7 ? [2, 2, 3] : undefined
+  if (!sizes) return undefined
+  const starts = sizes.reduce<number[]>((acc, n) => [...acc, acc[acc.length - 1] + n * u], [0]).slice(0, -1)
+  return { starts, dotted: beats % 3 === 0 || time.unit >= 8 }
+}
+export interface RestGroups { starts: number[]; dotted: boolean }
 
 /**
  * Split `ticks` starting at `at` (within a bar) into writable lengths that respect the beat grid
  * (no half note across beat 2). Fewest pieces wins. Rests pass `dots: false` (engraving avoids dotted rests)
- * and `bar`, so a whole empty bar stays a single whole-measure rest.
- * In compound time (`beat` = a dotted quarter) a rest keeps to the beats instead: a whole beat is a dotted quarter rest, a piece inside a beat
- * starts or ends on the beat, and nothing runs across a beat but whole beats.
+ * and `bar`, so a whole empty bar stays a single whole-measure rest; a whole rest is never used for less than the whole bar.
+ * With `groups` (compound and odd times, see restGroups) a rest keeps to its group: inside a group it starts or ends with the group or sits
+ * on its own grid from the group's start, a whole group may be one dotted rest, and a rest runs across groups only by whole groups.
  */
-export function splitLength(at: number, ticks: number, opts: { dots?: boolean; bar?: number; beat?: number } = {}): number[] {
-  const { dots = true, bar, beat } = opts
+export function splitLength(at: number, ticks: number, opts: { dots?: boolean; bar?: number; groups?: RestGroups } = {}): number[] {
+  const { dots = true, bar, groups } = opts
   if (bar !== undefined && at === 0 && ticks === bar) return [ticks]
   const U = TPQ / 16 // one 64th
   if (at % U || ticks % U) return [ticks] // finer than a 64th: leave as is
-  const B = beat && !dots ? beat / U : 0 // the compound beat, for rests
-  const options: { len: number; unit: number; cost: number }[] = []
-  for (const v of VALUES) for (let d = 0; d <= (dots || B ? (B ? 1 : 2) : 0); d++) {
+  const G = !dots && groups && bar !== undefined ? [...groups.starts, bar].map((t) => t / U) : undefined // group bounds, for rests
+  const options: { len: number; unit: number; cost: number; dot: boolean }[] = []
+  for (const v of VALUES) for (let d = 0; d <= (dots ? 2 : G && groups!.dotted ? 1 : 0); d++) {
     const len = (v.ticks * (2 - 0.5 ** d)) / U
-    if (!Number.isInteger(len) || (B && d && len % B)) continue // in compound time a dotted rest is whole beats only
-    options.push({ len, unit: v.ticks / U, cost: 1 + 0.3 * d })        // fewest pieces, then fewest dots
+    if (!Number.isInteger(len) || (!dots && !d && v.ticks === 4 * TPQ)) continue // (a whole rest only ever fills a whole bar, which is handled above)
+    options.push({ len, unit: v.ticks / U, cost: 1 + 0.3 * d, dot: d > 0 }) // fewest pieces, then fewest dots
   }
-  const fits = (pos: number, o: { len: number; unit: number }) => {
-    if (!B) return pos % o.unit === 0
-    const inBeat = Math.floor(pos / B) === Math.floor((pos + o.len - 1) / B)
-    return inBeat ? pos % B === 0 || (pos + o.len) % B === 0 : pos % B === 0 && o.len % B === 0 && pos % o.len === 0
+  const fits = (pos: number, o: { len: number; unit: number; dot: boolean }) => {
+    if (!G) return pos % o.unit === 0
+    const i = G.findIndex((g, k) => g <= pos && pos < G[k + 1]), gs = G[i], ge = G[i + 1]
+    if (pos + o.len <= ge) { // inside one group
+      if (o.dot) return pos === gs && pos + o.len === ge                                        // a dotted rest is the whole group
+      return (pos - gs) % o.unit === 0 || (groups!.dotted && (pos === gs || pos + o.len === ge)) // its own grid, or (eighth groups) up to an edge
+    }
+    return pos === gs && G.includes(pos + o.len) && pos % o.len === 0 // across groups: whole groups only, on its own grid (a dotted half on beat 1 or 3 of 12/8)
   }
   options.sort((x, y) => y.len - x.len)
   const end = (at + ticks) / U, memo = new Map<number, { n: number; len: number }>()
@@ -188,8 +203,8 @@ export function splitLength(at: number, ticks: number, opts: { dots?: boolean; b
 let _id = 1
 export const newId = (s?: Score) => (s ? s.nextId++ : _id++)
 
-function restsFor(s: Score, at: number, ticks: number, bar: number, beat?: number): Ev[] {
-  return splitLength(at, ticks, { dots: false, bar, beat }).map((t) => ({ id: newId(s), ticks: t, pitches: [] }))
+function restsFor(s: Score, at: number, ticks: number, bar: number, groups?: RestGroups): Ev[] {
+  return splitLength(at, ticks, { dots: false, bar, groups }).map((t) => ({ id: newId(s), ticks: t, pitches: [] }))
 }
 
 export function emptyScore(measures = 4, time: TimeSig = { beats: 4, unit: 4 }, key = 0): Score {
@@ -249,8 +264,8 @@ function voiceOf(s: Score, l: Loc): Ev[] {
  */
 function overwrite(s: Score, l: Loc, at: number, ticks: number, content: Ev[]) {
   const events = voiceOf(s, l)
-  const time = contextAt(s, l.m).time, bar = barTicks(time), beat = compoundBeat(time)
-  const filler = (from: number, len: number) => restsFor(s, from, len, bar, beat) // rests that fill what was cut (these may merge)
+  const time = contextAt(s, l.m).time, bar = barTicks(time), groups = restGroups(time)
+  const filler = (from: number, len: number) => restsFor(s, from, len, bar, groups) // rests that fill what was cut (these may merge)
   // a tuplet is all or nothing: touching one member replaces the whole group (what the new content leaves free becomes rests)
   {
     const st = starts(events)
@@ -284,7 +299,7 @@ function overwrite(s: Score, l: Loc, at: number, ticks: number, content: Ev[]) {
   let pos = 0
   for (const e of out) {
     if (!e.pitches.length && !e.tup) {
-      splitLength(pos, e.ticks, { dots: false, bar, beat }).forEach((len, k) => { fixed.push({ ...e, id: k ? newId(s) : e.id, ticks: len }); pos += len })
+      splitLength(pos, e.ticks, { dots: false, bar, groups }).forEach((len, k) => { fixed.push({ ...e, id: k ? newId(s) : e.id, ticks: len }); pos += len })
     } else { fixed.push(e); pos += e.ticks }
   }
   // merge neighbouring rests into the value that spans them on the beat grid (two eighth rests that are really a quarter on the beat);
@@ -294,7 +309,7 @@ function overwrite(s: Score, l: Loc, at: number, ticks: number, content: Ev[]) {
   for (const e of fixed) {
     const prev = merged[merged.length - 1]
     if (!e.pitches.length && prev && !prev.pitches.length && !e.tup && !prev.tup && !e.kept && !prev.kept) {
-      const startPrev = pos - prev.ticks, ok = splitLength(startPrev, prev.ticks + e.ticks, { dots: false, bar, beat })
+      const startPrev = pos - prev.ticks, ok = splitLength(startPrev, prev.ticks + e.ticks, { dots: false, bar, groups })
       if (ok.length === 1) { prev.ticks += e.ticks; pos += e.ticks; continue }
     }
     merged.push(e); pos += e.ticks
@@ -353,7 +368,7 @@ function writeChord(s: Score, l: Loc, at: number, ticks: number, pitches: Pitch[
 export function putRest(s: Score, l: Loc, at: number, ticks: number, kept = false) {
   const time = contextAt(s, l.m).time, bar = barTicks(time)
   const len = Math.min(ticks, bar - at)
-  overwrite(s, l, at, len, restsFor(s, at, len, bar, compoundBeat(time)).map((r) => (kept ? { ...r, kept } : r)))
+  overwrite(s, l, at, len, restsFor(s, at, len, bar, restGroups(time)).map((r) => (kept ? { ...r, kept } : r)))
 }
 
 export function findEv(s: Score, id: number): (Loc & { index: number; at: number; ev: Ev }) | undefined {
@@ -420,7 +435,7 @@ export function setLength(s: Score, id: number, ticks: number) {
   const time = contextAt(s, f.m).time, bar = barTicks(time)
   if (f.ev.pitches.length) { writeChord(s, f, f.at, ticks, f.ev.pitches, f.ev); return } // (a re-timed note leaves its tuplet)
   const len = Math.min(ticks, bar - f.at)
-  overwrite(s, f, f.at, len, restsFor(s, f.at, len, bar, compoundBeat(time)).map((r) => ({ ...r, kept: true })))
+  overwrite(s, f, f.at, len, restsFor(s, f.at, len, bar, restGroups(time)).map((r) => ({ ...r, kept: true })))
 }
 
 /**
@@ -523,9 +538,9 @@ export function setTime(s: Score, i: number, time: TimeSig): boolean {
       if (!ok) break
       for (let k = 0; k < count; k++) {
         const used = bars[k].reduce((a, x) => a + x.ticks, 0)
-        if (used < newBar) bars[k].push(...restsFor(s, used, newBar - used, newBar)) // the last bar is padded
+        if (used < newBar) bars[k].push({ id: newId(s), ticks: newBar - used, pitches: [] }) // the last bar is padded
         fresh[k].staves[si] ??= []
-        fresh[k].staves[si][v] = bars[k]
+        fresh[k].staves[si][v] = respellRests(s, bars[k], newBar, restGroups(time))
       }
     }
   })
@@ -538,6 +553,20 @@ export function setTime(s: Score, i: number, time: TimeSig): boolean {
   fresh[0].time = i === 0 ? undefined : time
   s.measures.splice(i, e - i, ...fresh)
   return true
+}
+
+/** Each run of rests in a re-barred bar becomes one gap, written again in the new time (a rest the user wrote or in a tuplet stays). */
+function respellRests(s: Score, events: Ev[], bar: number, groups?: RestGroups): Ev[] {
+  const out: Ev[] = []
+  let pos = 0, gap = 0
+  const flush = () => { if (gap) out.push(...restsFor(s, pos - gap, gap, bar, groups)); gap = 0 }
+  for (const e of events) {
+    if (!e.pitches.length && !e.tup && !e.kept) gap += e.ticks
+    else { flush(); out.push(e) }
+    pos += e.ticks
+  }
+  flush()
+  return out
 }
 
 export function setKey(s: Score, i: number, fifths: number) {

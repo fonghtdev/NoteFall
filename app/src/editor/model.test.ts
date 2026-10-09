@@ -386,3 +386,45 @@ describe('joining the movements of a piece', () => {
     expect(validate(j)).toEqual([])
   })
 })
+
+describe('rests in every time signature', () => {
+  const NAME: Record<number, string> = { 2880: 'h.', 1920: 'h', 1440: 'q.', 960: 'q', 480: 'e' }
+  const with8th = (beats: number, unit: number, at: number) => {
+    const s = emptyScore(1, { beats, unit }); putNote(s, L, at, 480, P('C', 5))
+    return s.measures[0].staves[0][0].map((e) => (e.pitches.length ? 'N' : 'r') + (NAME[e.ticks] ?? e.ticks)).join(' ')
+  }
+  it('a whole rest only ever fills a whole bar (5/4, 7/4, 3/2 use half rests for part of a bar)', () => {
+    expect(with8th(5, 4, 3840)).toBe('rh rq rq Ne re')
+    expect(with8th(7, 4, 3840)).toBe('rh rh Ne re rq rq')
+    expect(with8th(3, 2, 3840)).toBe('rh rh Ne re rq')
+  })
+  it('6/4 is compound like 6/8: two dotted-half beats, nothing runs across the middle', () => {
+    expect(with8th(6, 4, 0)).toBe('Ne re rh rh.')
+    expect(with8th(6, 4, 3840)).toBe('rh. rq Ne re rq')
+  })
+  it('5 and 7 beats group as 3+2 and 2+2+3; a whole group of eighths is a dotted quarter rest', () => {
+    expect(with8th(5, 8, 0)).toBe('Ne rq rq')
+    expect(with8th(5, 8, 1440)).toBe('rq. Ne re')
+    expect(with8th(7, 8, 0)).toBe('Ne re rq rq.')
+    expect(with8th(5, 4, 0)).toBe('Ne re rq rq rh')    // 5/4 keeps plain rests
+  })
+  it('simple time and 6/8 are as before', () => {
+    expect(with8th(4, 4, 2880)).toBe('rh rq Ne re')
+    expect(with8th(3, 8, 960)).toBe('rq Ne')
+    expect(with8th(6, 8, 1440)).toBe('rq. Ne rq')
+  })
+})
+
+describe('changing the time signature writes the rests again in the new time', () => {
+  const NAME: Record<number, string> = { 2880: 'h.', 1440: 'q.', 960: 'q', 480: 'e' }
+  const bars = (s: Score) => s.measures.map((m) => m.staves[0][0].map((e) => (e.pitches.length ? 'N' : 'r') + (NAME[e.ticks] ?? e.ticks)).join(' '))
+  it('4/4 to 3/8: an empty stretch is one rest per bar, not a quarter and an eighth', () => {
+    const s = emptyScore(2, { beats: 4, unit: 4 }); setTime(s, 0, { beats: 3, unit: 8 })
+    expect(bars(s)).toEqual(Array(6).fill('rq.'))
+  })
+  it('4/4 to 6/8: the rests after a note follow the dotted beats', () => {
+    const s = emptyScore(1, { beats: 4, unit: 4 }); putNote(s, L, 0, 960, P('C', 5)); setTime(s, 0, { beats: 6, unit: 8 })
+    expect(bars(s)).toEqual(['Nq re rq.', 'rh.'])
+  })
+})
+
